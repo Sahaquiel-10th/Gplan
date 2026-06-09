@@ -146,6 +146,9 @@ export class BailianCompanyKnowledgeService {
       rerankMinScore: companyKnowledgeConfig.threshold,
       enableReranking: true
     }));
+    if (response.body?.success === false || response.body?.code) {
+      throw new Error(`百炼知识库检索失败：${response.body.code || "UnknownError"} ${response.body.message || ""}`.trim());
+    }
     const nodes = response.body?.data?.nodes ?? [];
     return nodes
       .map((node): RetrievedItem | null => {
