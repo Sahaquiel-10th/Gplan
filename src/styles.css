@@ -530,10 +530,20 @@ pre {
   overflow: auto;
 }
 
-.copy-message {
+.message-actions {
   position: absolute;
   right: 8px;
   bottom: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+}
+
+.bubble:hover .message-actions {
+  opacity: 1;
+}
+
+.message-actions button {
   width: 30px;
   height: 30px;
   min-height: 30px;
@@ -544,17 +554,16 @@ pre {
   padding: 0;
   display: grid;
   place-items: center;
-  opacity: 0;
 }
 
-.bubble:hover .copy-message {
-  opacity: 1;
+.message-actions button:hover {
+  background: #dde7f0;
 }
 
 .bubble small {
   display: block;
   margin-top: 8px;
-  padding-right: 34px;
+  padding-right: 70px;
 }
 
 .generated-image {
@@ -628,6 +637,64 @@ pre {
   display: grid;
   grid-template-rows: auto auto auto 1fr;
   background: #ffffff;
+}
+
+.memory-page {
+  min-width: 0;
+  height: 100vh;
+  overflow: auto;
+  background: #ffffff;
+}
+
+.memory-list {
+  display: grid;
+  gap: 12px;
+  padding: 22px;
+  max-width: 920px;
+}
+
+.memory-create {
+  display: grid;
+  gap: 10px;
+  max-width: 920px;
+  margin: 10px 22px 0;
+  padding: 14px;
+  border: 1px solid #dfe4ea;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.memory-create-actions,
+.memory-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.memory-create-actions .primary {
+  width: auto;
+  min-width: 96px;
+  margin-top: 0;
+}
+
+.memory-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #dfe4ea;
+  border-radius: 8px;
+  padding: 14px;
+  background: #ffffff;
+}
+
+.memory-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.empty-state.compact {
+  margin: 80px auto;
 }
 
 .admin-header {

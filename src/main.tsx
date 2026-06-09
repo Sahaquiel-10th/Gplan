@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Archive,
+  Brain,
   Bot,
   Copy,
   Edit3,
@@ -29,6 +30,7 @@ type Role = "admin" | "user";
 
 type User = {
   id: string;
+  companyId: string;
   username: string;
   role: Role;
   enabled: boolean;
@@ -50,6 +52,7 @@ type Model = {
 };
 
 type Message = {
+  id?: string;
   role: "user" | "assistant" | "system";
   content: string;
   imageUrl?: string;
@@ -86,6 +89,21 @@ type IntegrationToken = {
 
 type SystemSettings = {
   safetyRules: string;
+};
+
+type MemoryItem = {
+  id: string;
+  text: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type MemoryLimits = {
+  maxItems: number;
+  maxCharsPerItem: number;
+  maxTotalChars: number;
+  usedItems: number;
+  usedChars: number;
 };
 
 const tokenKey = "enterprise-ai-token";
@@ -185,7 +203,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [content, setContent] = useState("");
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
-  const [view, setView] = useState<"chat" | "admin">("chat");
+  const [notice, setNotice] = useState("");
+  const [view, setView] = useState<"chat" | "admin" | "memories">("chat");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [waitIndex, setWaitIndex] = useState(0);
@@ -249,6 +268,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setError("");
     const text = content;
     const userMessage: Message = {
+      id: localId("msg"),
       role: "user",
       content: text,
       modelId,
@@ -279,7 +299,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       );
     }
     try {
-      const result = await api<{ conversation: Conversation }>("/api/chat", {
+      const result = await api<{ conversation: Conversation; memoryNotice?: string }>("/api/chat", {
         method: "POST",
         body: JSON.stringify({ content: text, modelId, conversationId: isNewConversation ? "" : active.id, workspaceId: draftWorkspaceId })
       });
@@ -288,6 +308,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         return [result.conversation, ...rest];
       });
       setActiveId((current) => (current === tempId || current === active?.id ? result.conversation.id : current));
+      if (result.memoryNotice) {
+        setNotice(result.memoryNotice);
+        window.setTimeout(() => setNotice(""), 2800);
+      }
     } catch (err) {
       setContent(text);
       if (tempId) setConversations((items) => items.filter((item) => item.id !== tempId));
@@ -356,6 +380,24 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     await navigator.clipboard.writeText(content);
   }
 
+  async function saveMessageToMemory(conversation: Conversation, message: Message) {
+    if (!message.content.trim()) return;
+    try {
+      await api("/api/memories/save", {
+        method: "POST",
+        body: JSON.stringify({
+          conversation_id: conversation.id,
+          message_id: message.id,
+          content: message.content
+        })
+      });
+      setNotice("已提交到个人记忆，百炼提取后会在“我的记忆”里显示。");
+      window.setTimeout(() => setNotice(""), 2800);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -380,6 +422,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <button className={`nav-item ${!activeId && view === "chat" ? "active" : ""}`} onClick={() => { setActiveId(""); setView("chat"); }}>
           <MessageSquare size={17} />
           新聊天
+        </button>
+        <button className={`nav-item ${view === "memories" ? "active" : ""}`} onClick={() => { setView("memories"); setActiveId(""); }}>
+          <Brain size={16} />
+          我的记忆
         </button>
         {user.role === "admin" ? (
           <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => setView("admin")}>
@@ -438,6 +484,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       {view === "admin" && user.role === "admin" ? (
         <AdminPanel refreshModels={refresh} />
+      ) : view === "memories" ? (
+        <MemoriesPage />
       ) : (
       <section className="chat">
         <header className="chat-header">
@@ -476,9 +524,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                       <div className="markdown-body">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
                       </div>
-                      <button className="copy-message" onClick={() => copyMarkdown(message.content)}>
-                        <Copy size={14} />
-                      </button>
+                      <div className="message-actions">
+                        <button title="复制" onClick={() => copyMarkdown(message.content)}>
+                          <Copy size={14} />
+                        </button>
+                        {active ? (
+                          <button title="记录这句对话" onClick={() => saveMessageToMemory(active, message)}>
+                            <Brain size={14} />
+                          </button>
+                        ) : null}
+                      </div>
                     </>
                   ) : (
                     <pre>{message.content}</pre>
@@ -498,6 +553,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>
 
         <form className="composer" onSubmit={send}>
+          {notice ? <div className="notice">{notice}</div> : null}
           {error ? <div className="error">{error}</div> : null}
           <div className="composer-row">
             <textarea
@@ -517,6 +573,159 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
       )}
     </main>
+  );
+}
+
+function MemoriesPage() {
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [limits, setLimits] = useState<MemoryLimits>({
+    maxItems: 10,
+    maxCharsPerItem: 200,
+    maxTotalChars: 2000,
+    usedItems: 0,
+    usedChars: 0
+  });
+  const [content, setContent] = useState("");
+  const [editing, setEditing] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState("");
+
+  async function load() {
+    setLoading(true);
+    try {
+      const result = await api<{ memories: MemoryItem[]; limits: MemoryLimits }>("/api/memories");
+      setMemories(result.memories);
+      setLimits(result.limits);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function addMemory(event: FormEvent) {
+    event.preventDefault();
+    if (!content.trim()) return;
+    try {
+      await api("/api/memories", {
+        method: "POST",
+        body: JSON.stringify({ content: content.trim() })
+      });
+      setContent("");
+      setNotice("记忆已添加");
+      await load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "添加失败");
+    }
+  }
+
+  async function saveMemory(memory: MemoryItem) {
+    const value = editing[memory.id]?.trim();
+    if (!value) return;
+    try {
+      await api(`/api/memories/${encodeURIComponent(memory.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ content: value })
+      });
+      setEditing(({ [memory.id]: _removed, ...rest }) => rest);
+      setNotice("记忆已更新");
+      await load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "更新失败");
+    }
+  }
+
+  async function deleteMemory(memory: MemoryItem) {
+    if (!confirm("确认删除这条个人记忆？")) return;
+    try {
+      await api(`/api/memories/${encodeURIComponent(memory.id)}`, { method: "DELETE" });
+      setNotice("记忆已删除");
+      await load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "删除失败");
+    }
+  }
+
+  return (
+    <section className="memory-page">
+      <header className="admin-header">
+        <div>
+          <h2>我的记忆</h2>
+          <p>{limits.usedItems}/{limits.maxItems} 条 · {limits.usedChars}/{limits.maxTotalChars} 字</p>
+        </div>
+        <button className="secondary" onClick={load}>
+          <Brain size={16} />
+          刷新
+        </button>
+      </header>
+      {notice ? <div className="notice">{notice}</div> : null}
+      <form className="memory-create" onSubmit={addMemory}>
+        <textarea
+          value={content}
+          maxLength={limits.maxCharsPerItem}
+          rows={3}
+          placeholder="添加一条希望 AI 长期记住的内容"
+          onChange={(event) => setContent(event.target.value)}
+        />
+        <div className="memory-create-actions">
+          <small>{content.length}/{limits.maxCharsPerItem}</small>
+          <button className="primary" type="submit" disabled={!content.trim() || limits.usedItems >= limits.maxItems}>
+            <Plus size={16} />
+            添加
+          </button>
+        </div>
+      </form>
+      {loading ? (
+        <div className="empty-state compact">加载中...</div>
+      ) : memories.length ? (
+        <div className="memory-list">
+          {memories.map((memory) => (
+            <article className="memory-card" key={memory.id}>
+              {editing[memory.id] !== undefined ? (
+                <textarea
+                  value={editing[memory.id]}
+                  maxLength={limits.maxCharsPerItem}
+                  rows={3}
+                  onChange={(event) => setEditing({ ...editing, [memory.id]: event.target.value })}
+                />
+              ) : (
+                <pre>{memory.text}</pre>
+              )}
+              <div className="memory-meta">
+                <small>{memory.updatedAt ? dateTime(memory.updatedAt) : memory.createdAt ? dateTime(memory.createdAt) : ""}</small>
+                {editing[memory.id] !== undefined ? <small>{editing[memory.id].length}/{limits.maxCharsPerItem}</small> : null}
+              </div>
+              <div className="memory-card-actions">
+                {editing[memory.id] !== undefined ? (
+                  <button className="secondary" onClick={() => saveMemory(memory)}>
+                    <Save size={15} />
+                    保存
+                  </button>
+                ) : (
+                  <button className="secondary" onClick={() => setEditing({ ...editing, [memory.id]: memory.text })}>
+                    <Edit3 size={15} />
+                    编辑
+                  </button>
+                )}
+                <button className="danger" onClick={() => deleteMemory(memory)}>
+                  <Trash2 size={15} />
+                  删除
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">
+          <Brain size={36} />
+          <h2>暂无个人记忆</h2>
+        </div>
+      )}
+    </section>
   );
 }
 
