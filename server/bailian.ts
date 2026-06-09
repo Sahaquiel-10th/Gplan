@@ -2,6 +2,10 @@ import BailianClient, { RetrieveRequest } from "@alicloud/bailian20231229";
 import { Config } from "@alicloud/openapi-client";
 import { MessageRecord } from "./types.js";
 
+const BailianClientConstructor = (
+  (BailianClient as unknown as { default?: typeof BailianClient }).default ?? BailianClient
+) as typeof BailianClient;
+
 export type RetrievedItem = {
   text: string;
   score: number;
@@ -73,7 +77,7 @@ function createKnowledgeClient() {
     accessKeySecret,
     endpoint: process.env.BAILIAN_OPENAPI_ENDPOINT?.trim() || "bailian.cn-beijing.aliyuncs.com"
   });
-  return new BailianClient(config);
+  return new BailianClientConstructor(config);
 }
 
 async function requestBailian(path: string, body: unknown, method = "POST") {
