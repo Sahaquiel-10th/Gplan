@@ -41,6 +41,9 @@ app.use(express.json({ limit: "2mb" }));
 app.set("trust proxy", "loopback");
 app.disable("x-powered-by");
 app.use((req, res, next) => {
+  const requestId = req.headers["x-request-id"]?.toString().trim() || uid("req");
+  res.locals.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "same-origin");
@@ -248,6 +251,14 @@ app.post(
     const conversation = await store.mutate((mutableDb) => {
       if (existing) {
         const target = mutableDb.conversations.find((item) => item.id === existing.id && item.userId === req.user!.id)!;
+        const staleMessageIds: string[] = [];
+        while (target.messages.at(-1)?.role === "user") {
+          const stale = target.messages.pop();
+          if (stale?.id) staleMessageIds.push(stale.id);
+        }
+        if (staleMessageIds.length) {
+          mutableDb.messages = mutableDb.messages.filter((message) => !staleMessageIds.includes(message.id));
+        }
         target.messages.push(userMessage);
         target.updatedAt = userMessage.createdAt;
         mutableDb.messages.push(messageRecord(userMessage, {
@@ -302,7 +313,7 @@ app.post(
       }));
     const memories = [...explicitMemories, ...implicitMemories];
     const recentMessages = latestDb.messages
-      .filter((message) => message.conversationId === conversation.id)
+      .filter((message) => message.conversationId === conversation.id && message.id !== userMessage.id)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .slice(-12);
     const injectedContext = model.kind === "chat"
@@ -341,7 +352,23 @@ app.post(
           userMessage
         ]
       : conversation.messages;
-    const result = await callModel(model, modelMessages, db.settings.safetyRules);
+    let result;
+    try {
+      result = await callModel(model, modelMessages, db.settings.safetyRules, res.locals.requestId);
+    } catch (error) {
+      await store.mutate((mutableDb) => {
+        const target = mutableDb.conversations.find((item) => item.id === conversation.id && item.userId === req.user!.id);
+        if (!target) return;
+        target.messages = target.messages.filter((message) => message.id !== userMessage.id);
+        mutableDb.messages = mutableDb.messages.filter((message) => message.id !== userMessage.id);
+        const lastMessage = target.messages.at(-1);
+        if (lastMessage) target.updatedAt = lastMessage.createdAt;
+        if (!target.messages.length) {
+          mutableDb.conversations = mutableDb.conversations.filter((item) => item.id !== target.id);
+        }
+      });
+      throw error;
+    }
     const assistantMessage: Message = {
       id: uid("msg"),
       role: "assistant",
@@ -721,13 +748,23 @@ app.post(
         modelId: model.id,
         createdAt: now()
       }
-    ], db.settings.safetyRules);
+    ], db.settings.safetyRules, res.locals.requestId);
     res.json({ reply: result.content, imageUrl: result.imageUrl, modelId: model.id });
   })
 );
 
-app.use((err: Error, _req: Request, res: Response, _next: unknown) => {
-  res.status(400).json({ error: err.message || "请求处理失败" });
+app.use((err: Error, req: Request, res: Response, _next: unknown) => {
+  const message = err.message || "请求处理失败";
+  const status = /响应超时|无法连接模型服务/.test(message) ? 504 : 400;
+  console.error(JSON.stringify({
+    event: "request_failed",
+    requestId: res.locals.requestId,
+    method: req.method,
+    path: req.path,
+    status,
+    error: message
+  }));
+  res.status(status).json({ error: message, requestId: res.locals.requestId });
 });
 
 if (process.env.NODE_ENV === "production") {

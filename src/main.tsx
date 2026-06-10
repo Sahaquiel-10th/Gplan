@@ -108,6 +108,12 @@ type MemoryLimits = {
   usedChars: number;
 };
 
+class ApiError extends Error {
+  constructor(message: string, readonly requestId?: string) {
+    super(message);
+  }
+}
+
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...options,
@@ -118,7 +124,11 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
     }
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || "请求失败");
+  if (!response.ok) {
+    const requestId = payload.requestId || response.headers.get("x-request-id") || undefined;
+    const message = payload.error || (response.status === 504 ? "模型响应超时，请稍后重试" : `请求失败（${response.status}）`);
+    throw new ApiError(requestId ? `${message} · 编号 ${requestId}` : message, requestId);
+  }
   return payload as T;
 }
 
@@ -321,7 +331,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       }
     } catch (err) {
       setContent(text);
-      if (tempId) setConversations((items) => items.filter((item) => item.id !== tempId));
+      setConversations((items) =>
+        tempId
+          ? items.filter((item) => item.id !== tempId)
+          : items.map((item) =>
+              item.id === active?.id
+                ? { ...item, messages: item.messages.filter((message) => message.id !== userMessage.id) }
+                : item
+            )
+      );
       setError(err instanceof Error ? err.message : "发送失败");
     } finally {
       setLoadingByConversation((items) => ({ ...items, [loadingKey]: false }));
