@@ -14,7 +14,12 @@ declare global {
 export function auth(secret: string) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const header = req.headers.authorization;
-    const token = header?.startsWith("Bearer ") ? header.slice(7) : "";
+    const cookieToken = req.headers.cookie
+      ?.split(";")
+      .map((item) => item.trim())
+      .find((item) => item.startsWith("gplan_session="))
+      ?.slice("gplan_session=".length);
+    const token = header?.startsWith("Bearer ") ? header.slice(7) : decodeURIComponent(cookieToken || "");
     const payload = token ? verifyToken(token, secret) : null;
     if (!payload) return res.status(401).json({ error: "未登录或登录已过期" });
 

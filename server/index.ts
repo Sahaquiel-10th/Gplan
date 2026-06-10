@@ -24,15 +24,39 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
-const jwtSecret = process.env.JWT_SECRET ?? "dev-secret-change-me";
+const jwtSecret = process.env.JWT_SECRET?.trim() || "dev-secret-change-me";
 const companyKnowledgeService = new BailianCompanyKnowledgeService();
 const memoryService = new BailianMemoryService();
 const memorySyncScheduler = new MemorySyncScheduler(store, memoryService);
 const userMemoryMaxItems = 10;
 const userMemoryMaxChars = 200;
 const userMemoryMaxTotalChars = 2000;
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+if (process.env.NODE_ENV === "production" && jwtSecret === "dev-secret-change-me") {
+  throw new Error("生产环境必须配置安全的 JWT_SECRET");
+}
 
 app.use(express.json({ limit: "2mb" }));
+app.set("trust proxy", "loopback");
+app.disable("x-powered-by");
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; img-src 'self' data: https:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+  );
+  if (req.path.startsWith("/api/")) res.setHeader("Cache-Control", "no-store");
+  const origin = req.headers.origin;
+  const allowedOrigin = process.env.APP_ORIGIN?.trim();
+  if (req.method !== "GET" && req.method !== "HEAD" && origin && allowedOrigin && origin !== allowedOrigin) {
+    return res.status(403).json({ error: "请求来源无效" });
+  }
+  next();
+});
 
 function now() {
   return new Date().toISOString();
@@ -125,19 +149,40 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.post("/api/auth/login", asyncRoute(async (req, res) => {
+  const attemptKey = req.ip || req.socket.remoteAddress || "unknown";
+  const currentTime = Date.now();
+  const attempt = loginAttempts.get(attemptKey);
+  if (attempt && attempt.resetAt > currentTime && attempt.count >= 8) {
+    return res.status(429).json({ error: "登录尝试过多，请 15 分钟后再试" });
+  }
+  if (attempt && attempt.resetAt <= currentTime) loginAttempts.delete(attemptKey);
   const username = requiredString(req.body.username, "用户名");
   const password = requiredString(req.body.password, "密码");
   const db = await store.read();
   const user = db.users.find((item) => item.username === username && item.enabled);
   if (!user || !verifyPassword(password, user.passwordHash)) {
+    const latest = loginAttempts.get(attemptKey);
+    loginAttempts.set(attemptKey, {
+      count: (latest?.count ?? 0) + 1,
+      resetAt: latest?.resetAt && latest.resetAt > currentTime ? latest.resetAt : currentTime + 15 * 60 * 1000
+    });
     return res.status(401).json({ error: "用户名或密码错误" });
   }
+  loginAttempts.delete(attemptKey);
   const token = signToken({ sub: user.id, role: user.role }, jwtSecret);
-  res.json({ token, user: publicUser(user) });
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `gplan_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure}`);
+  res.json({ user: publicUser(user) });
 }));
 
 app.get("/api/me", auth(jwtSecret), (req, res) => {
   res.json({ user: publicUser(req.user!) });
+});
+
+app.post("/api/auth/logout", (_req, res) => {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `gplan_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`);
+  res.json({ ok: true });
 });
 
 app.get("/api/models", auth(jwtSecret), asyncRoute(async (_req, res) => {
@@ -504,6 +549,7 @@ app.get("/api/admin/users", ...admin, asyncRoute(async (_req, res) => {
 app.post("/api/admin/users", ...admin, asyncRoute(async (req, res) => {
   const username = requiredString(req.body.username, "用户名");
   const password = requiredString(req.body.password, "密码");
+  if (password.length < 8) throw new Error("密码至少需要 8 个字符");
   const role = req.body.role === "admin" ? "admin" : "user";
   const user = await store.mutate((db) => {
     if (db.users.some((item) => item.username === username)) throw new Error("用户名已存在");
@@ -534,6 +580,7 @@ app.patch("/api/admin/users/:id", ...admin, asyncRoute(async (req, res) => {
     if (typeof req.body.enabled === "boolean") target.enabled = req.body.enabled;
     if (req.body.role === "admin" || req.body.role === "user") target.role = req.body.role;
     if (typeof req.body.password === "string" && req.body.password.trim()) {
+      if (req.body.password.trim().length < 8) throw new Error("密码至少需要 8 个字符");
       target.passwordHash = hashPassword(req.body.password.trim());
     }
     return target;
@@ -589,7 +636,7 @@ app.patch("/api/admin/models/:id", ...admin, asyncRoute(async (req, res) => {
     }
     if (typeof req.body.systemPrompt === "string") target.systemPrompt = req.body.systemPrompt;
     if (req.body.kind === "image" || req.body.kind === "chat") target.kind = req.body.kind;
-    if (typeof req.body.apiKey === "string") target.apiKey = req.body.apiKey.trim();
+    if (typeof req.body.apiKey === "string" && req.body.apiKey.trim()) target.apiKey = req.body.apiKey.trim();
     if (typeof req.body.enabled === "boolean") target.enabled = req.body.enabled;
     return target;
   });
@@ -631,13 +678,12 @@ app.post("/api/admin/integration-tokens", ...admin, asyncRoute(async (req, res) 
     const created = {
       id: uid("tok"),
       name,
-      token: plainToken,
       tokenHash: hashToken(plainToken),
       enabled: true,
       createdAt: now()
     };
     db.integrationTokens.push(created);
-    return created;
+    return { ...created, token: plainToken };
   });
   const { tokenHash, ...safe } = token;
   res.json({ token: safe });

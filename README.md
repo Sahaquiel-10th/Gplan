@@ -26,7 +26,7 @@ npm run dev
 
 ```text
 账号：admin
-密码：admin123
+开发环境初始密码：admin123（生产环境必须通过 `ADMIN_INITIAL_PASSWORD` 配置强密码）
 ```
 
 首次部署后请立即修改管理员密码，或者删除 `data/db.json` 后调整 `server/db.ts` 中的初始化逻辑再启动。

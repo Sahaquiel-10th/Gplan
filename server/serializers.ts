@@ -14,9 +14,5 @@ export function publicModel(model: ModelConfig): PublicModel {
 }
 
 export function adminModel(model: ModelConfig): AdminModel {
-  return {
-    ...publicModel(model),
-    apiKey: model.apiKey,
-    systemPrompt: model.systemPrompt
-  };
+  return { ...publicModel(model), systemPrompt: model.systemPrompt };
 }

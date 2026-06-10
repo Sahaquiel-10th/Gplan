@@ -13,6 +13,7 @@ import {
   Folder,
   KeyRound,
   LogOut,
+  Menu,
   MoreHorizontal,
   MessageSquare,
   Plus,
@@ -22,7 +23,8 @@ import {
   Shield,
   Trash2,
   UserPlus,
-  Users
+  Users,
+  X
 } from "lucide-react";
 import "./styles.css";
 
@@ -106,15 +108,12 @@ type MemoryLimits = {
   usedChars: number;
 };
 
-const tokenKey = "enterprise-ai-token";
-
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = localStorage.getItem(tokenKey);
   const response = await fetch(path, {
     ...options,
+    credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers
     }
   });
@@ -141,19 +140,18 @@ function titleFrom(content: string) {
 }
 
 function Login({ onDone }: { onDone: (user: User) => void }) {
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("admin123");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
     try {
-      const result = await api<{ token: string; user: User }>("/api/auth/login", {
+      const result = await api<{ user: User }>("/api/auth/login", {
         method: "POST",
         body: JSON.stringify({ username, password })
       });
-      localStorage.setItem(tokenKey, result.token);
       onDone(result.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败");
@@ -163,16 +161,23 @@ function Login({ onDone }: { onDone: (user: User) => void }) {
   return (
     <main className="login-shell">
       <form className="login-panel" onSubmit={submit}>
-        <div className="brand-row">
-          <Shield size={28} />
+        <div className="login-brand">
+          <img src="/brand/xiaoxiang-wordmark.png" alt="小象优选" />
+          <div className="login-divider" />
           <div>
-            <h1>企业 AI 工作台</h1>
-            <p>统一接入多个外部大模型，内部账号登录使用。</p>
+            <h1>AI 工作台</h1>
+            <p>企业内部智能协作平台</p>
           </div>
         </div>
         <label>
           账号
-          <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+          <input
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            autoComplete="off"
+            name="workspace-account"
+            spellCheck={false}
+          />
         </label>
         <label>
           密码
@@ -180,7 +185,8 @@ function Login({ onDone }: { onDone: (user: User) => void }) {
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             type="password"
-            autoComplete="current-password"
+            autoComplete="off"
+            name="workspace-passcode"
           />
         </label>
         {error ? <div className="error">{error}</div> : null}
@@ -208,6 +214,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [waitIndex, setWaitIndex] = useState(0);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
   const activeModelId = active?.modelId || draftModelId;
@@ -400,12 +407,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   return (
     <main className="app-shell">
-      <aside className="sidebar">
+      {sidebarOpen ? <button className="sidebar-scrim" aria-label="关闭导航" onClick={() => setSidebarOpen(false)} /> : null}
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="side-top">
           <div className="product">
-            <Bot size={24} />
-            <span>企业 AI</span>
+            <img src="/brand/xiaoxiang-wordmark.png" alt="小象优选" />
           </div>
+          <button className="mobile-close" title="关闭导航" onClick={() => setSidebarOpen(false)}>
+            <X size={19} />
+          </button>
           <button
             className="icon-btn"
             title="新对话"
@@ -414,21 +424,22 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               setContent("");
               setError("");
               setView("chat");
+              setSidebarOpen(false);
             }}
           >
             <Plus size={18} />
           </button>
         </div>
-        <button className={`nav-item ${!activeId && view === "chat" ? "active" : ""}`} onClick={() => { setActiveId(""); setView("chat"); }}>
+        <button className={`nav-item ${!activeId && view === "chat" ? "active" : ""}`} onClick={() => { setActiveId(""); setView("chat"); setSidebarOpen(false); }}>
           <MessageSquare size={17} />
           新聊天
         </button>
-        <button className={`nav-item ${view === "memories" ? "active" : ""}`} onClick={() => { setView("memories"); setActiveId(""); }}>
+        <button className={`nav-item ${view === "memories" ? "active" : ""}`} onClick={() => { setView("memories"); setActiveId(""); setSidebarOpen(false); }}>
           <Brain size={16} />
           我的记忆
         </button>
         {user.role === "admin" ? (
-          <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => setView("admin")}>
+          <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => { setView("admin"); setSidebarOpen(false); }}>
             <Settings size={16} />
             管理后台
           </button>
@@ -451,6 +462,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                       setActiveId(conversation.id);
                       setView("chat");
                       setError("");
+                      setSidebarOpen(false);
                     }}
                   >
                     <MessageSquare size={16} />
@@ -483,12 +495,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </aside>
 
       {view === "admin" && user.role === "admin" ? (
-        <AdminPanel refreshModels={refresh} />
+        <AdminPanel refreshModels={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "memories" ? (
-        <MemoriesPage />
+        <MemoriesPage onOpenSidebar={() => setSidebarOpen(true)} />
       ) : (
       <section className="chat">
         <header className="chat-header">
+          <button className="mobile-menu" title="打开导航" onClick={() => setSidebarOpen(true)}>
+            <Menu size={20} />
+          </button>
           <div className="chat-title">
             <strong>{active?.title || "新对话"}</strong>
             <span>{user.username}</span>
@@ -545,8 +560,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             ))
           ) : (
             <div className="empty-state">
-              <Bot size={44} />
-              <h2>选择模型后开始提问</h2>
+              <img src="/brand/xiaoxiang-mark.png" alt="" />
+              <h2>今天想一起解决什么？</h2>
+              <p>选择模型，开始新的对话</p>
             </div>
           )}
           {activeLoading ? <div className="typing">{waitMessages[waitIndex % waitMessages.length]}</div> : null}
@@ -576,7 +592,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   );
 }
 
-function MemoriesPage() {
+function MemoriesPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [limits, setLimits] = useState<MemoryLimits>({
     maxItems: 10,
@@ -653,6 +669,9 @@ function MemoriesPage() {
   return (
     <section className="memory-page">
       <header className="admin-header">
+        <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}>
+          <Menu size={20} />
+        </button>
         <div>
           <h2>我的记忆</h2>
           <p>{limits.usedItems}/{limits.maxItems} 条 · {limits.usedChars}/{limits.maxTotalChars} 字</p>
@@ -729,7 +748,7 @@ function MemoriesPage() {
   );
 }
 
-function AdminPanel({ refreshModels }: { refreshModels: () => Promise<void> }) {
+function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
   const [tab, setTab] = useState<"settings" | "users" | "models" | "tokens" | "records">("settings");
   const [users, setUsers] = useState<User[]>([]);
   const [models, setModels] = useState<Model[]>([]);
@@ -760,6 +779,9 @@ function AdminPanel({ refreshModels }: { refreshModels: () => Promise<void> }) {
   return (
       <section className="admin-page">
         <header className="admin-header">
+          <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}>
+            <Menu size={20} />
+          </button>
           <div>
             <h2>管理后台</h2>
             <p>账号、模型、机器人 API 和对话审计</p>
@@ -870,7 +892,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
       <form className="admin-form" onSubmit={createUser}>
         <h3><UserPlus size={17} />开通账号</h3>
         <input placeholder="用户名" value={username} onChange={(event) => setUsername(event.target.value)} />
-        <input placeholder="初始密码" value={password} onChange={(event) => setPassword(event.target.value)} />
+        <input type="password" autoComplete="new-password" placeholder="初始密码（至少 8 位）" value={password} onChange={(event) => setPassword(event.target.value)} />
         <button className="primary"><Plus size={16} />创建</button>
       </form>
       <div className="table">
@@ -883,7 +905,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
                     <option value="user">普通用户</option>
                     <option value="admin">管理员</option>
                   </select></label>
-                <label className="field-label">新密码<input placeholder="留空不改" value={editing[user.id].password} onChange={(event) => setEditing({ ...editing, [user.id]: { ...editing[user.id], password: event.target.value } })} /></label>
+                <label className="field-label">新密码<input type="password" autoComplete="new-password" placeholder="留空不改，至少 8 位" value={editing[user.id].password} onChange={(event) => setEditing({ ...editing, [user.id]: { ...editing[user.id], password: event.target.value } })} /></label>
                 <label className="inline-check"><input type="checkbox" checked={editing[user.id].enabled} onChange={(event) => setEditing({ ...editing, [user.id]: { ...editing[user.id], enabled: event.target.checked } })} />启用</label>
                 <button className="secondary" onClick={() => saveUser(user)}><Save size={15} />保存</button>
               </>
@@ -947,14 +969,14 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
   return (
     <div className="admin-grid wide">
       <form className="admin-form" onSubmit={createModel}>
-        <h3><Bot size={17} />接入模型</h3>
+        <h3><img className="section-mark" src="/brand/xiaoxiang-mark.png" alt="" />接入模型</h3>
         <input placeholder="展示名称，如 通义千问" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
         <select value={form.kind} onChange={(event) => setForm({ ...form, kind: event.target.value as "chat" | "image" })}>
           <option value="chat">聊天模型</option>
           <option value="image">图片模型</option>
         </select>
         <input placeholder="Base URL，如 https://dashscope.aliyuncs.com/compatible-mode/v1" value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} />
-        <input placeholder="API Key" value={form.apiKey} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} />
+        <input type="password" autoComplete="new-password" placeholder="API Key" value={form.apiKey} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} />
         <input placeholder="模型 ID，如 qwen-plus / gpt-image-2" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} />
         <textarea placeholder="模型默认 System Prompt，可留空" value={form.systemPrompt} rows={4} onChange={(event) => setForm({ ...form, systemPrompt: event.target.value })} />
         <label className="check"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用</label>
@@ -972,7 +994,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
                   </select></label>
                 <label className="field-label">Base URL<input value={editing[model.id].baseUrl} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], baseUrl: event.target.value } })} /></label>
                 <label className="field-label">模型 ID<input value={editing[model.id].model} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], model: event.target.value } })} /></label>
-                <label className="field-label">API Key<input value={editing[model.id].apiKey} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], apiKey: event.target.value } })} /></label>
+                <label className="field-label">替换 API Key<input type="password" autoComplete="new-password" placeholder="留空则保持原 Key" value={editing[model.id].apiKey} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], apiKey: event.target.value } })} /></label>
                 <label className="field-label model-prompt-field">System Prompt<textarea rows={4} value={editing[model.id].systemPrompt} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], systemPrompt: event.target.value } })} /></label>
                 <label className="inline-check"><input type="checkbox" checked={editing[model.id].enabled} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], enabled: event.target.checked } })} />启用</label>
                 <button className="secondary" onClick={() => saveModel(model)}><Save size={15} />保存</button>
@@ -981,7 +1003,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
               <>
                 <span>{model.name}<small>{model.kind === "image" ? "图片" : "聊天"} · {model.model}</small></span>
                 <span>{model.hasApiKey ? "已配置 Key" : "缺少 Key"}</span>
-                <button className="secondary" onClick={() => setEditing({ ...editing, [model.id]: { name: model.name, kind: model.kind, baseUrl: model.baseUrl, model: model.model, apiKey: model.apiKey || "", systemPrompt: model.systemPrompt || "", enabled: model.enabled } })}><Edit3 size={15} />编辑</button>
+                <button className="secondary" onClick={() => setEditing({ ...editing, [model.id]: { name: model.name, kind: model.kind, baseUrl: model.baseUrl, model: model.model, apiKey: "", systemPrompt: model.systemPrompt || "", enabled: model.enabled } })}><Edit3 size={15} />编辑</button>
                 <button className="secondary" onClick={() => toggle(model)}>{model.enabled ? "停用" : "启用"}</button>
                 <button className="danger" onClick={() => deleteModel(model)}><Trash2 size={15} />删除</button>
               </>
@@ -1097,9 +1119,10 @@ function App() {
   const [booting, setBooting] = useState(true);
 
   useEffect(() => {
+    localStorage.removeItem("enterprise-ai-token");
     api<{ user: User }>("/api/me")
       .then((result) => setUser(result.user))
-      .catch(() => localStorage.removeItem(tokenKey))
+      .catch(() => undefined)
       .finally(() => setBooting(false));
   }, []);
 
@@ -1109,7 +1132,7 @@ function App() {
     <ChatApp
       user={user}
       onLogout={() => {
-        localStorage.removeItem(tokenKey);
+        api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
         setUser(null);
       }}
     />

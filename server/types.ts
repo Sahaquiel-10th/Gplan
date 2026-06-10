@@ -127,4 +127,4 @@ export type Database = {
 
 export type PublicUser = Omit<User, "passwordHash">;
 export type PublicModel = Omit<ModelConfig, "apiKey" | "systemPrompt"> & { hasApiKey: boolean };
-export type AdminModel = PublicModel & { apiKey: string; systemPrompt: string };
+export type AdminModel = PublicModel & { systemPrompt: string };
