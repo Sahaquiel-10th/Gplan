@@ -731,7 +731,17 @@ app.use((err: Error, _req: Request, res: Response, _next: unknown) => {
 });
 
 if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(root, "dist")));
+  app.use(express.static(path.join(root, "dist"), {
+    setHeaders(res, filePath) {
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      } else if (/\.(?:png|webp|ico)$/i.test(filePath)) {
+        res.setHeader("Cache-Control", "public, max-age=604800");
+      } else if (filePath.endsWith(".html")) {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+    }
+  }));
   app.get(/.*/, (_req, res) => res.sendFile(path.join(root, "dist", "index.html")));
 }
 
