@@ -17,6 +17,7 @@ import {
   MoreHorizontal,
   MessageSquare,
   Plus,
+  RotateCcw,
   Save,
   Send,
   Settings,
@@ -225,6 +226,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [isComposing, setIsComposing] = useState(false);
   const [waitIndex, setWaitIndex] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [failedMessage, setFailedMessage] = useState("");
 
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
   const activeModelId = active?.modelId || draftModelId;
@@ -244,10 +246,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     [visibleConversations, workspaces]
   );
   const waitMessages = [
-    "AI疯狂翻书中 (ง •̀_•́)ง",
-    "AI也会摸鱼哦 (￣▽￣)~*",
-    "什么？刚睡醒，等我找找 (。-ω-)zzz",
-    "答案正在路上 ( •̀ ω •́ )✧"
+    "正在理解问题",
+    "正在组织答案",
+    "正在核对上下文",
+    "正在生成回复"
   ];
 
   async function refresh() {
@@ -273,17 +275,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return () => window.clearInterval(timer);
   }, [loadingByConversation]);
 
-  async function send(event: FormEvent) {
-    event.preventDefault();
+  async function sendMessage(rawText: string) {
     const modelId = active?.modelId || draftModelId;
-    if (!content.trim() || !modelId) return;
+    const text = rawText.trim();
+    if (!text || !modelId) return;
     const isNewConversation = !active;
     const tempId = isNewConversation ? localId("tmp") : "";
     const loadingKey = active?.id || tempId;
     if (loadingByConversation[loadingKey]) return;
     setLoadingByConversation((items) => ({ ...items, [loadingKey]: true }));
     setError("");
-    const text = content;
+    setFailedMessage("");
     const userMessage: Message = {
       id: localId("msg"),
       role: "user",
@@ -330,7 +332,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         window.setTimeout(() => setNotice(""), 2800);
       }
     } catch (err) {
-      setContent(text);
+      setFailedMessage(text);
       setConversations((items) =>
         tempId
           ? items.filter((item) => item.id !== tempId)
@@ -340,10 +342,25 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 : item
             )
       );
+      if (tempId) setActiveId("");
       setError(err instanceof Error ? err.message : "发送失败");
     } finally {
       setLoadingByConversation((items) => ({ ...items, [loadingKey]: false }));
     }
+  }
+
+  async function send(event: FormEvent) {
+    event.preventDefault();
+    const text = content;
+    if (!text.trim()) return;
+    setContent("");
+    await sendMessage(text);
+  }
+
+  async function retryFailedMessage() {
+    const text = failedMessage;
+    if (!text || activeLoading) return;
+    await sendMessage(text);
   }
 
   function handleComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -550,7 +567,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
               <article key={`${message.createdAt}-${index}`} className={`message ${message.role}`}>
-                <div className="avatar">{message.role === "user" ? user.username.slice(0, 1).toUpperCase() : "AI"}</div>
+                {message.role === "assistant" ? (
+                  <div className="avatar"><img src="/brand/xiaoxiang-mark.png" alt="小象 AI" /></div>
+                ) : null}
                 <div className="bubble">
                   {message.role === "assistant" ? (
                     <>
@@ -572,7 +591,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                     <pre>{message.content}</pre>
                   )}
                   {message.imageUrl ? <img className="generated-image" src={message.imageUrl} alt={message.content} /> : null}
-                  <small>{dateTime(message.createdAt)}</small>
+                  <small className="message-time">{dateTime(message.createdAt)}</small>
                 </div>
               </article>
             ))
@@ -588,7 +607,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
         <form className="composer" onSubmit={send}>
           {notice ? <div className="notice">{notice}</div> : null}
-          {error ? <div className="error">{error}</div> : null}
+          {error ? (
+            <div className="chat-error" role="status">
+              <span>{error}</span>
+              {failedMessage ? (
+                <button type="button" onClick={retryFailedMessage} disabled={activeLoading}>
+                  <RotateCcw size={14} />
+                  重试
+                </button>
+              ) : null}
+            </div>
+          ) : null}
           <div className="composer-row">
             <textarea
               value={content}

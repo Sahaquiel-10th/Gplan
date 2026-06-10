@@ -8,7 +8,7 @@ type ChatResult = {
 
 const requestTimeoutMs = numberEnv("MODEL_REQUEST_TIMEOUT_MS", 150000);
 const imageRequestTimeoutMs = numberEnv("IMAGE_REQUEST_TIMEOUT_MS", 180000);
-const maxOutputTokens = numberEnv("MODEL_MAX_OUTPUT_TOKENS", 2000);
+const maxOutputTokens = numberEnv("MODEL_MAX_OUTPUT_TOKENS", 3000);
 
 function numberEnv(name: string, fallback: number) {
   const value = Number(process.env[name]);
