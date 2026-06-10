@@ -246,10 +246,18 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     [visibleConversations, workspaces]
   );
   const waitMessages = [
-    "正在理解问题",
-    "正在组织答案",
-    "正在核对上下文",
-    "正在生成回复"
+    "AI 疯狂翻书中 (ง •̀_•́)ง",
+    "什么？刚睡醒，等我找找 (。-ω-)zzz",
+    "答案正在路上，请勿催单 ( •̀ ω •́ )✧",
+    "正在知识库里东翻西找 (￣▽￣)~*",
+    "脑子转得有点快，先别打断我 (¬‿¬)",
+    "让我再想得像样一点 ( • ̀ω•́ )",
+    "正在努力避免一本正经地胡说八道 (._.)",
+    "这个问题有点东西，我再琢磨琢磨 (˘･_･˘)",
+    "AI 临时加班中，马上回来 (ง'̀-'́)ง",
+    "正在组织语言，争取不像机器人 (￣﹃￣)",
+    "别急，好的答案值得多等两秒 (๑•̀ㅂ•́)و",
+    "上下文有点多，我正在认真捋顺 (＠_＠;)"
   ];
 
   async function refresh() {
@@ -271,7 +279,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   useEffect(() => {
     const hasLoading = Object.values(loadingByConversation).some(Boolean);
     if (!hasLoading) return;
-    const timer = window.setInterval(() => setWaitIndex((index) => index + 1), 1400);
+    const timer = window.setInterval(() => setWaitIndex((index) => index + 1), 3200);
     return () => window.clearInterval(timer);
   }, [loadingByConversation]);
 
