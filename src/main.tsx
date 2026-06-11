@@ -236,6 +236,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [failedMessage, setFailedMessage] = useState("");
   const [workspaceSectionOpen, setWorkspaceSectionOpen] = useState(true);
+  const [conversationSectionOpen, setConversationSectionOpen] = useState(true);
   const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = useState<Set<string>>(() => new Set());
 
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
@@ -484,34 +485,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           </button>
         ) : null}
         <div className="sidebar-navigation">
-        <div className="sidebar-section">
-          <div className="sidebar-heading">
-            <span><MessageSquare size={14} />对话</span>
-          </div>
-          <div className="workspace-conversations">
-            {ungroupedConversations.map((conversation) => (
-              <div className={`conversation-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
-                <button className="conversation-main" onClick={() => { setActiveId(conversation.id); setView("chat"); setError(""); setSidebarOpen(false); }}>
-                  <MessageSquare size={15} />
-                  <span>{conversation.title}</span>
-                </button>
-                <label className="icon-inline move-control" title="移动到分组">
-                  <FolderInput size={14} />
-                  <select
-                    aria-label={`移动对话 ${conversation.title}`}
-                    value={conversation.workspaceId || ""}
-                    onChange={(event) => moveConversation(conversation, event.target.value)}
-                  >
-                    <option value="">对话</option>
-                    {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-                  </select>
-                </label>
-                <button className="icon-inline" title={conversation.archived ? "取消归档" : "归档"} onClick={() => archiveConversation(conversation)}><Archive size={14} /></button>
-                <button className="icon-inline danger-inline" title="删除" onClick={() => deleteConversation(conversation)}><Trash2 size={14} /></button>
-              </div>
-            ))}
-          </div>
-        </div>
         <div className="conversation-list">
           <div className="workspace-root">
             <div className="sidebar-heading">
@@ -569,6 +542,41 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               );
             }) : null}
           </div>
+        </div>
+        <div className="sidebar-section">
+          <div className="sidebar-heading">
+            <button className="workspace-toggle root-toggle" onClick={() => setConversationSectionOpen((open) => !open)}>
+              {conversationSectionOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              <MessageSquare size={14} />
+              <span>对话</span>
+              <small>{ungroupedConversations.length}</small>
+            </button>
+          </div>
+          {conversationSectionOpen ? (
+            <div className="workspace-conversations">
+              {ungroupedConversations.map((conversation) => (
+                <div className={`conversation-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
+                  <button className="conversation-main" onClick={() => { setActiveId(conversation.id); setView("chat"); setError(""); setSidebarOpen(false); }}>
+                    <MessageSquare size={15} />
+                    <span>{conversation.title}</span>
+                  </button>
+                  <label className="icon-inline move-control" title="移动到分组">
+                    <FolderInput size={14} />
+                    <select
+                      aria-label={`移动对话 ${conversation.title}`}
+                      value={conversation.workspaceId || ""}
+                      onChange={(event) => moveConversation(conversation, event.target.value)}
+                    >
+                      <option value="">对话</option>
+                      {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+                    </select>
+                  </label>
+                  <button className="icon-inline" title={conversation.archived ? "取消归档" : "归档"} onClick={() => archiveConversation(conversation)}><Archive size={14} /></button>
+                  <button className="icon-inline danger-inline" title="删除" onClick={() => deleteConversation(conversation)}><Trash2 size={14} /></button>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
         </div>
         <div className="side-bottom">

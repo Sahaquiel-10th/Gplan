@@ -438,9 +438,20 @@ textarea {
 }
 
 .root-toggle {
+  width: 100%;
   padding: 5px 2px;
   color: #8f98a6;
   font-size: 12px;
+}
+
+.root-toggle span {
+  min-width: 0;
+  flex: 1;
+}
+
+.root-toggle small {
+  color: #737d8a;
+  font-size: 11px;
 }
 
 .group-toggle {
