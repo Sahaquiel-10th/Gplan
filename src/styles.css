@@ -350,21 +350,36 @@ textarea {
   box-shadow: inset 2px 0 #74a9e8;
 }
 
-.sidebar-section {
-  margin-top: 4px;
+.sidebar-navigation {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #4a535f transparent;
 }
 
-.section-title,
-.workspace-name {
+.sidebar-section {
+  display: grid;
+  gap: 3px;
+}
+
+.sidebar-heading {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  min-height: 30px;
+  padding: 4px 7px;
   color: #8f98a6;
   font-size: 12px;
 }
 
-.section-title {
-  justify-content: space-between;
-  padding: 5px 8px;
+.sidebar-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .section-icon,
@@ -389,23 +404,63 @@ textarea {
 }
 
 .conversation-list {
-  min-height: 0;
   display: grid;
   align-content: start;
   gap: 6px;
-  overflow: auto;
-  scrollbar-width: thin;
-  scrollbar-color: #4a535f transparent;
 }
 
+.workspace-conversations,
 .workspace-group {
   display: grid;
   gap: 3px;
 }
 
-.workspace-name {
+.workspace-root {
+  display: grid;
+  gap: 3px;
+}
+
+.workspace-toggle {
+  min-width: 0;
+  border: 0;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
   gap: 6px;
-  padding: 10px 8px 4px;
+  background: transparent;
+  color: #aeb6c2;
+  text-align: left;
+}
+
+.workspace-toggle:hover {
+  background: #30353c;
+  color: #fff;
+}
+
+.root-toggle {
+  padding: 5px 2px;
+  color: #8f98a6;
+  font-size: 12px;
+}
+
+.group-toggle {
+  width: 100%;
+  min-height: 31px;
+  padding: 5px 8px 5px 11px;
+  font-size: 13px;
+}
+
+.group-toggle span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-toggle small {
+  color: #7e8794;
+  font-size: 11px;
 }
 
 .conversation-row {
@@ -445,6 +500,22 @@ textarea {
   width: 27px;
   height: 27px;
   opacity: 0;
+}
+
+.move-control {
+  position: relative;
+  cursor: pointer;
+}
+
+.move-control select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
 }
 
 .conversation-row:hover .icon-inline,
@@ -831,11 +902,41 @@ pre {
 }
 
 .admin-page,
+.account-page,
 .memory-page {
   min-width: 0;
   height: 100dvh;
   overflow: auto;
   background: #f7f8fa;
+}
+
+.account-body {
+  padding: 8px 26px 32px;
+}
+
+.account-panel {
+  width: min(460px, 100%);
+  padding: 18px;
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  background: #fff;
+}
+
+.account-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-panel-title h3 {
+  font-size: 17px;
+}
+
+.account-panel .primary {
+  width: fit-content;
+  min-width: 120px;
 }
 
 .admin-page {
@@ -919,6 +1020,71 @@ pre {
   border: 1px solid #dfe3e8;
   border-radius: 8px;
   background: #fff;
+}
+
+.admin-form-stack {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.template-download {
+  width: fit-content;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid #d8dde5;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: #fff;
+  color: #394150;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.template-download:hover {
+  background: #f4f6f8;
+}
+
+.file-picker {
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px dashed #bfc7d2;
+  border-radius: 6px;
+  display: flex;
+  grid-auto-flow: unset;
+  align-items: center;
+  gap: 8px;
+  background: #f8fafc;
+  color: #535d6b;
+  cursor: pointer;
+}
+
+.file-picker:hover {
+  border-color: #78a9df;
+  background: #f3f8fd;
+}
+
+.file-picker span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.import-notice {
+  margin-top: 0;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .admin-form h3 {
@@ -1303,6 +1469,10 @@ summary {
   .admin-header {
     justify-content: flex-start;
     padding: 12px 12px 10px;
+  }
+
+  .account-body {
+    padding: 8px 12px 24px;
   }
 
   .admin-header .secondary {

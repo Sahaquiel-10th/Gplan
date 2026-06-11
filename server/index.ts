@@ -2,6 +2,9 @@ import express, { Request, RequestHandler, Response } from "express";
 import "dotenv/config";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import multer from "multer";
+import { readSheet } from "read-excel-file/node";
+import { parse as parseCsv } from "csv-parse/sync";
 import {
   BailianCompanyKnowledgeService,
   BailianMemoryService,
@@ -32,6 +35,10 @@ const userMemoryMaxItems = 10;
 const userMemoryMaxChars = 200;
 const userMemoryMaxTotalChars = 2000;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const userImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 }
+});
 
 if (process.env.NODE_ENV === "production" && jwtSecret === "dev-secret-change-me") {
   throw new Error("生产环境必须配置安全的 JWT_SECRET");
@@ -181,6 +188,19 @@ app.post("/api/auth/login", asyncRoute(async (req, res) => {
 app.get("/api/me", auth(jwtSecret), (req, res) => {
   res.json({ user: publicUser(req.user!) });
 });
+
+app.post("/api/me/password", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const currentPassword = requiredString(req.body.currentPassword, "当前密码");
+  const newPassword = requiredString(req.body.newPassword, "新密码");
+  if (newPassword.length < 8) throw new Error("新密码至少需要 8 个字符");
+  if (currentPassword === newPassword) throw new Error("新密码不能与当前密码相同");
+  await store.mutate((db) => {
+    const target = db.users.find((item) => item.id === req.user!.id && item.enabled);
+    if (!target || !verifyPassword(currentPassword, target.passwordHash)) throw new Error("当前密码错误");
+    target.passwordHash = hashPassword(newPassword);
+  });
+  res.json({ ok: true });
+}));
 
 app.post("/api/auth/logout", (_req, res) => {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
@@ -594,6 +614,91 @@ app.post("/api/admin/users", ...admin, asyncRoute(async (req, res) => {
   });
   res.json({ user: publicUser(user) });
 }));
+
+app.get("/api/admin/users/import-template", ...admin, (_req, res) => {
+  const template = "\uFEFF用户名\nzhangsan\nlisi\n";
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", "attachment; filename*=UTF-8''xiaoxiang-user-import-template.csv");
+  res.send(template);
+});
+
+app.post(
+  "/api/admin/users/import",
+  ...admin,
+  userImportUpload.single("file"),
+  asyncRoute(async (req, res) => {
+    if (!req.file) throw new Error("请选择 CSV 或 XLSX 文件");
+    const password = requiredString(req.body.password, "统一初始密码");
+    if (password.length < 8) throw new Error("统一初始密码至少需要 8 个字符");
+    const extension = path.extname(req.file.originalname).toLowerCase();
+    let rows: unknown[][];
+    if (extension === ".xlsx") {
+      rows = await readSheet(req.file.buffer);
+    } else if (extension === ".csv") {
+      rows = parseCsv(req.file.buffer, {
+        bom: true,
+        skip_empty_lines: true,
+        relax_column_count: true
+      }) as unknown[][];
+    } else {
+      throw new Error("仅支持 .csv 和 .xlsx 文件");
+    }
+    if (!rows.length) throw new Error("文件中没有可导入的账号");
+    if (rows.length > 1001) throw new Error("单次最多导入 1000 个账号");
+
+    const headerAliases = new Set(["用户名", "账号", "username", "account", "user"]);
+    const firstValue = String(rows[0]?.[0] ?? "").trim().toLowerCase();
+    const dataRows = headerAliases.has(firstValue) ? rows.slice(1) : rows;
+    const candidates = dataRows
+      .map((row, index) => ({
+        row: index + (headerAliases.has(firstValue) ? 2 : 1),
+        username: String(row?.[0] ?? "").trim()
+      }))
+      .filter((item) => item.username);
+    if (!candidates.length) throw new Error("没有识别到账号，请把账号放在第一列");
+
+    const result = await store.mutate((db) => {
+      const existingNames = new Set(db.users.map((item) => item.username.toLowerCase()));
+      const seen = new Set<string>();
+      const created: string[] = [];
+      const skipped: Array<{ row: number; username: string; reason: string }> = [];
+      for (const candidate of candidates) {
+        const normalized = candidate.username.toLowerCase();
+        if (candidate.username.length > 64) {
+          skipped.push({ ...candidate, reason: "账号超过 64 个字符" });
+          continue;
+        }
+        if (existingNames.has(normalized)) {
+          skipped.push({ ...candidate, reason: "账号已存在" });
+          continue;
+        }
+        if (seen.has(normalized)) {
+          skipped.push({ ...candidate, reason: "文件内重复" });
+          continue;
+        }
+        seen.add(normalized);
+        db.users.push({
+          id: uid("usr"),
+          companyId: req.user!.companyId,
+          username: candidate.username,
+          passwordHash: hashPassword(password),
+          role: "user",
+          enabled: true,
+          createdAt: now()
+        });
+        existingNames.add(normalized);
+        created.push(candidate.username);
+      }
+      return { created, skipped };
+    });
+    res.json({
+      createdCount: result.created.length,
+      skippedCount: result.skipped.length,
+      created: result.created,
+      skipped: result.skipped
+    });
+  })
+);
 
 app.patch("/api/admin/users/:id", ...admin, asyncRoute(async (req, res) => {
   const user = await store.mutate((db) => {

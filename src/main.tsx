@@ -6,15 +6,20 @@ import {
   Archive,
   Brain,
   Bot,
+  ChevronDown,
+  ChevronRight,
   Copy,
+  Download,
   Edit3,
   Eye,
   EyeOff,
+  FileSpreadsheet,
   Folder,
+  FolderInput,
   KeyRound,
+  LockKeyhole,
   LogOut,
   Menu,
-  MoreHorizontal,
   MessageSquare,
   Plus,
   RotateCcw,
@@ -23,6 +28,8 @@ import {
   Settings,
   Shield,
   Trash2,
+  Upload,
+  UserRound,
   UserPlus,
   Users,
   X
@@ -116,11 +123,12 @@ class ApiError extends Error {
 }
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const isFormData = options.body instanceof FormData;
   const response = await fetch(path, {
     ...options,
     credentials: "same-origin",
     headers: {
-      "Content-Type": "application/json",
+      ...(!isFormData ? { "Content-Type": "application/json" } : {}),
       ...options.headers
     }
   });
@@ -221,12 +229,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "memories">("chat");
+  const [view, setView] = useState<"chat" | "admin" | "memories" | "account">("chat");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [waitIndex, setWaitIndex] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [failedMessage, setFailedMessage] = useState("");
+  const [workspaceSectionOpen, setWorkspaceSectionOpen] = useState(true);
+  const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = useState<Set<string>>(() => new Set());
 
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
   const activeModelId = active?.modelId || draftModelId;
@@ -234,17 +244,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const activeLoading = Boolean(loadingByConversation[activeLoadingKey]);
   const currentModel = models.find((model) => model.id === activeModelId);
   const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived);
-  const groupedConversations = useMemo(
-    () => [
-      { id: "", name: "未分组", conversations: visibleConversations.filter((conversation) => !conversation.workspaceId) },
-      ...workspaces.map((workspace) => ({
-        id: workspace.id,
-        name: workspace.name,
-        conversations: visibleConversations.filter((conversation) => conversation.workspaceId === workspace.id)
-      }))
-    ].filter((group) => group.conversations.length || (!group.id && !workspaces.length)),
-    [visibleConversations, workspaces]
-  );
+  const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.workspaceId);
   const waitMessages = [
     "AI 疯狂翻书中 (ง •̀_•́)ง",
     "什么？刚睡醒，等我找找 (。-ω-)zzz",
@@ -413,17 +413,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setDraftWorkspaceId(result.workspace.id);
   }
 
-  async function moveConversationWithPrompt(conversation: Conversation) {
-    const options = ["未分组", ...workspaces.map((workspace) => workspace.name)].join("\n");
-    const name = prompt(`移动到哪个工作空间？\n${options}`);
-    if (name === null) return;
-    const targetName = name.trim();
-    const workspace = workspaces.find((item) => item.name === targetName);
-    if (targetName && !workspace) {
-      alert("没有找到这个工作空间，请先新建。");
-      return;
-    }
-    await moveConversation(conversation, workspace?.id || "");
+  function toggleWorkspace(workspaceId: string) {
+    setCollapsedWorkspaceIds((current) => {
+      const next = new Set(current);
+      if (next.has(workspaceId)) next.delete(workspaceId);
+      else next.add(workspaceId);
+      return next;
+    });
   }
 
   async function copyMarkdown(content: string) {
@@ -487,17 +483,56 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             管理后台
           </button>
         ) : null}
+        <div className="sidebar-navigation">
         <div className="sidebar-section">
-          <div className="section-title">
-            <span>工作空间</span>
-            <button className="section-icon" title="新建工作空间" onClick={createWorkspace}><Plus size={14} /></button>
+          <div className="sidebar-heading">
+            <span><MessageSquare size={14} />对话</span>
+          </div>
+          <div className="workspace-conversations">
+            {ungroupedConversations.map((conversation) => (
+              <div className={`conversation-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
+                <button className="conversation-main" onClick={() => { setActiveId(conversation.id); setView("chat"); setError(""); setSidebarOpen(false); }}>
+                  <MessageSquare size={15} />
+                  <span>{conversation.title}</span>
+                </button>
+                <label className="icon-inline move-control" title="移动到分组">
+                  <FolderInput size={14} />
+                  <select
+                    aria-label={`移动对话 ${conversation.title}`}
+                    value={conversation.workspaceId || ""}
+                    onChange={(event) => moveConversation(conversation, event.target.value)}
+                  >
+                    <option value="">对话</option>
+                    {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+                  </select>
+                </label>
+                <button className="icon-inline" title={conversation.archived ? "取消归档" : "归档"} onClick={() => archiveConversation(conversation)}><Archive size={14} /></button>
+                <button className="icon-inline danger-inline" title="删除" onClick={() => deleteConversation(conversation)}><Trash2 size={14} /></button>
+              </div>
+            ))}
           </div>
         </div>
         <div className="conversation-list">
-          {groupedConversations.map((group) => (
-            <div className="workspace-group" key={group.id || "default"}>
-              <div className="workspace-name"><Folder size={13} />{group.name}</div>
-              {group.conversations.map((conversation) => (
+          <div className="workspace-root">
+            <div className="sidebar-heading">
+              <button className="workspace-toggle root-toggle" onClick={() => setWorkspaceSectionOpen((open) => !open)}>
+                {workspaceSectionOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                <span>工作空间</span>
+              </button>
+              <button className="section-icon" title="新建工作空间" onClick={createWorkspace}><Plus size={14} /></button>
+            </div>
+            {workspaceSectionOpen ? workspaces.map((workspace) => {
+              const collapsed = collapsedWorkspaceIds.has(workspace.id);
+              const workspaceConversations = visibleConversations.filter((conversation) => conversation.workspaceId === workspace.id);
+              return (
+                <div className="workspace-group" key={workspace.id}>
+                  <button className="workspace-toggle group-toggle" onClick={() => toggleWorkspace(workspace.id)}>
+                    {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                    <Folder size={13} />
+                    <span>{workspace.name}</span>
+                    <small>{workspaceConversations.length}</small>
+                  </button>
+                  {!collapsed ? workspaceConversations.map((conversation) => (
                 <div className={`conversation-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
                   <button
                     className="conversation-main"
@@ -511,9 +546,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                     <MessageSquare size={16} />
                     <span>{conversation.title}</span>
                   </button>
-                  <button className="icon-inline" title="移动" onClick={() => moveConversationWithPrompt(conversation)}>
-                    <MoreHorizontal size={14} />
-                  </button>
+                  <label className="icon-inline move-control" title="移动到分组">
+                    <FolderInput size={14} />
+                    <select
+                      aria-label={`移动对话 ${conversation.title}`}
+                      value={conversation.workspaceId || ""}
+                      onChange={(event) => moveConversation(conversation, event.target.value)}
+                    >
+                      <option value="">对话</option>
+                      {workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
                   <button className="icon-inline" title={conversation.archived ? "取消归档" : "归档"} onClick={() => archiveConversation(conversation)}>
                     <Archive size={14} />
                   </button>
@@ -521,14 +564,21 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                     <Trash2 size={14} />
                   </button>
                 </div>
-              ))}
-            </div>
-          ))}
+                  )) : null}
+                </div>
+              );
+            }) : null}
+          </div>
+        </div>
         </div>
         <div className="side-bottom">
           <button className="nav-item" onClick={() => setShowArchived(!showArchived)}>
             <Archive size={16} />
             {showArchived ? "未归档对话" : "归档对话"}
+          </button>
+          <button className={`nav-item ${view === "account" ? "active" : ""}`} onClick={() => { setView("account"); setActiveId(""); setSidebarOpen(false); }}>
+            <UserRound size={16} />
+            账号设置
           </button>
           <button className="ghost" onClick={onLogout}>
             <LogOut size={17} />
@@ -541,6 +591,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <AdminPanel refreshModels={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "memories" ? (
         <MemoriesPage onOpenSidebar={() => setSidebarOpen(true)} />
+      ) : view === "account" ? (
+        <AccountPage user={user} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : (
       <section className="chat">
         <header className="chat-header">
@@ -554,7 +606,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <div className="chat-controls">
           {!active ? (
             <select value={draftWorkspaceId} onChange={(event) => setDraftWorkspaceId(event.target.value)}>
-              <option value="">未分组</option>
+              <option value="">对话</option>
               {workspaces.map((workspace) => (
                 <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
               ))}
@@ -644,6 +696,56 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
       )}
     </main>
+  );
+}
+
+function AccountPage({ user, onOpenSidebar }: { user: User; onOpenSidebar: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function changePassword(event: FormEvent) {
+    event.preventDefault();
+    setNotice("");
+    if (newPassword !== confirmPassword) {
+      setNotice("两次输入的新密码不一致");
+      return;
+    }
+    try {
+      await api("/api/me/password", {
+        method: "POST",
+        body: JSON.stringify({ currentPassword, newPassword })
+      });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setNotice("密码已更新");
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "密码修改失败");
+    }
+  }
+
+  return (
+    <section className="account-page">
+      <header className="admin-header">
+        <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
+        <div>
+          <h2>账号设置</h2>
+          <p>{user.username} · {user.role === "admin" ? "管理员" : "员工账号"}</p>
+        </div>
+      </header>
+      <div className="account-body">
+        <form className="account-panel" onSubmit={changePassword}>
+          <div className="account-panel-title"><LockKeyhole size={18} /><h3>修改密码</h3></div>
+          <label>当前密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
+          <label>新密码<input type="password" autoComplete="new-password" placeholder="至少 8 个字符" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
+          <label>确认新密码<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
+          {notice ? <div className="notice">{notice}</div> : null}
+          <button className="primary" type="submit" disabled={!currentPassword || newPassword.length < 8 || !confirmPassword}>更新密码</button>
+        </form>
+      </div>
+    </section>
   );
 }
 
@@ -906,6 +1008,10 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [editing, setEditing] = useState<Record<string, { username: string; role: Role; enabled: boolean; password: string }>>({});
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importPassword, setImportPassword] = useState("");
+  const [importNotice, setImportNotice] = useState("");
+  const [importing, setImporting] = useState(false);
 
   async function createUser(event: FormEvent) {
     event.preventDefault();
@@ -942,14 +1048,61 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
     await reload();
   }
 
+  async function importUsers(event: FormEvent) {
+    event.preventDefault();
+    if (!importFile) return;
+    setImporting(true);
+    setImportNotice("");
+    const body = new FormData();
+    body.append("file", importFile);
+    body.append("password", importPassword);
+    try {
+      const result = await api<{
+        createdCount: number;
+        skippedCount: number;
+        skipped: Array<{ row: number; username: string; reason: string }>;
+      }>("/api/admin/users/import", { method: "POST", body });
+      const skippedDetail = result.skipped.slice(0, 5).map((item) => `第 ${item.row} 行 ${item.username}：${item.reason}`).join("；");
+      setImportNotice(`已创建 ${result.createdCount} 个账号，跳过 ${result.skippedCount} 个${skippedDetail ? `。${skippedDetail}` : ""}`);
+      setImportFile(null);
+      setImportPassword("");
+      await reload();
+    } catch (err) {
+      setImportNotice(err instanceof Error ? err.message : "批量导入失败");
+    } finally {
+      setImporting(false);
+    }
+  }
+
   return (
     <div className="admin-grid">
-      <form className="admin-form" onSubmit={createUser}>
-        <h3><UserPlus size={17} />开通账号</h3>
-        <input placeholder="用户名" value={username} onChange={(event) => setUsername(event.target.value)} />
-        <input type="password" autoComplete="new-password" placeholder="初始密码（至少 8 位）" value={password} onChange={(event) => setPassword(event.target.value)} />
-        <button className="primary"><Plus size={16} />创建</button>
-      </form>
+      <div className="admin-form-stack">
+        <form className="admin-form" onSubmit={createUser}>
+          <h3><UserPlus size={17} />开通账号</h3>
+          <input placeholder="用户名" value={username} onChange={(event) => setUsername(event.target.value)} />
+          <input type="password" autoComplete="new-password" placeholder="初始密码（至少 8 位）" value={password} onChange={(event) => setPassword(event.target.value)} />
+          <button className="primary"><Plus size={16} />创建</button>
+        </form>
+        <form className="admin-form import-form" onSubmit={importUsers}>
+          <h3><FileSpreadsheet size={17} />批量开通</h3>
+          <p className="hint no-margin">支持 CSV、XLSX。账号放在第一列，统一密码在这里填写。</p>
+          <a className="template-download" href="/api/admin/users/import-template">
+            <Download size={15} />
+            下载 CSV 模板
+          </a>
+          <label className="file-picker">
+            <Upload size={16} />
+            <span>{importFile?.name || "选择账号文件"}</span>
+            <input type="file" accept=".csv,.xlsx" onChange={(event) => setImportFile(event.target.files?.[0] || null)} />
+          </label>
+          <input type="password" autoComplete="new-password" placeholder="统一初始密码（至少 8 位）" value={importPassword} onChange={(event) => setImportPassword(event.target.value)} />
+          {importNotice ? <div className="notice import-notice">{importNotice}</div> : null}
+          <button className="primary" disabled={!importFile || importPassword.length < 8 || importing}>
+            <Upload size={16} />
+            {importing ? "正在导入" : "开始导入"}
+          </button>
+        </form>
+      </div>
       <div className="table">
         {users.map((user) => (
           <div className="table-row editable-row" key={user.id}>
