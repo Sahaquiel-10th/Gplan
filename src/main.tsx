@@ -8,6 +8,7 @@ import {
   Brain,
   Bot,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Download,
@@ -1014,12 +1015,9 @@ function SecureAdminTab({ users, refreshModels }: { users: User[]; refreshModels
   }
 
   useEffect(() => {
-    api<{ unlocked: boolean }>("/api/admin/tools/status")
-      .then(async (result) => {
-        setUnlocked(result.unlocked);
-        if (result.unlocked) await loadProtected();
-      })
-      .catch(() => setUnlocked(false))
+    api("/api/admin/tools/lock", { method: "POST" })
+      .catch(() => undefined)
+      .then(() => setUnlocked(false))
       .finally(() => setChecking(false));
   }, []);
 
@@ -1042,7 +1040,7 @@ function SecureAdminTab({ users, refreshModels }: { users: User[]; refreshModels
       <form className="secure-gate" onSubmit={unlock}>
         <div className="secure-gate-icon"><LockKeyhole size={24} /></div>
         <h3>模型充值后台</h3>
-        <p>这里包含模型密钥、员工对话记录与使用数据，需要二次验证。</p>
+        <p>用于配置模型服务和充值所需的 API Key。</p>
         <input
           type="password"
           autoComplete="current-password"
@@ -1430,11 +1428,40 @@ function localDateKey(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function dateDaysAgo(days: number) {
+  const date = new Date();
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() - days);
+  return localDateKey(date);
+}
+
 function RecordsTab({ records, users }: { records: (Conversation & { user: User })[]; users: User[] }) {
   const [userId, setUserId] = useState(users[0]?.id || "");
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [statsError, setStatsError] = useState("");
-  const filtered = userId ? records.filter((record) => record.userId === userId) : records;
+  const [period, setPeriod] = useState<"all" | "7" | "30" | "90" | "custom">("all");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [calendarMonth, setCalendarMonth] = useState(localDateKey(new Date()).slice(0, 7));
+  const range = useMemo(() => {
+    if (period === "all") return { from: "", to: "" };
+    if (period === "custom") return { from: fromDate, to: toDate };
+    return { from: dateDaysAgo(Number(period) - 1), to: localDateKey(new Date()) };
+  }, [period, fromDate, toDate]);
+  const rangeQuery = [
+    range.from ? `from=${encodeURIComponent(range.from)}` : "",
+    range.to ? `to=${encodeURIComponent(range.to)}` : ""
+  ].filter(Boolean).join("&");
+  const filtered = records
+    .filter((record) => record.userId === userId)
+    .map((record) => ({
+      ...record,
+      messages: record.messages.filter((message) => {
+        const key = localDateKey(new Date(message.createdAt));
+        return (!range.from || key >= range.from) && (!range.to || key <= range.to);
+      })
+    }))
+    .filter((record) => record.messages.length);
 
   useEffect(() => {
     if (!userId && users[0]) setUserId(users[0].id);
@@ -1446,36 +1473,66 @@ function RecordsTab({ records, users }: { records: (Conversation & { user: User 
       return;
     }
     setStatsError("");
-    api<{ stats: UsageStats }>(`/api/admin/usage-stats?userId=${encodeURIComponent(userId)}`)
+    const query = `userId=${encodeURIComponent(userId)}${rangeQuery ? `&${rangeQuery}` : ""}`;
+    api<{ stats: UsageStats }>(`/api/admin/usage-stats?${query}`)
       .then((result) => setStats(result.stats))
       .catch((err) => setStatsError(err instanceof Error ? err.message : "用量数据加载失败"));
-  }, [userId]);
+  }, [userId, rangeQuery]);
 
-  const heatmapDays = useMemo(() => {
+  const calendarDays = useMemo(() => {
     const usage = new Map(stats?.dailyUsage.map((item) => [item.date, item]) ?? []);
-    return Array.from({ length: 91 }, (_, index) => {
-      const date = new Date();
-      date.setHours(12, 0, 0, 0);
-      date.setDate(date.getDate() - (90 - index));
+    const [year, month] = calendarMonth.split("-").map(Number);
+    const firstDay = new Date(year, month - 1, 1, 12);
+    const offset = (firstDay.getDay() + 6) % 7;
+    const daysInMonth = new Date(year, month, 0).getDate();
+    return [
+      ...Array.from({ length: offset }, () => null),
+      ...Array.from({ length: daysInMonth }, (_, index) => {
+      const date = new Date(year, month - 1, index + 1, 12);
       const key = localDateKey(date);
-      return usage.get(key) ?? { date: key, turns: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-    });
-  }, [stats]);
-  const maxDailyTokens = Math.max(1, ...heatmapDays.map((item) => item.totalTokens));
+      return { ...(usage.get(key) ?? { date: key, turns: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 }), day: index + 1 };
+      })
+    ];
+  }, [stats, calendarMonth]);
+  const maxDailyTokens = Math.max(1, ...calendarDays.filter((item) => item !== null).map((item) => item.totalTokens));
   const recentUsage = stats?.dailyUsage.slice(-14) ?? [];
   const maxRecentTokens = Math.max(1, ...recentUsage.map((item) => item.totalTokens));
   const maxModelTurns = Math.max(1, ...(stats?.modelUsage.map((item) => item.turns) ?? []));
+  const exportQuery = `userId=${encodeURIComponent(userId)}${rangeQuery ? `&${rangeQuery}` : ""}`;
+
+  function shiftCalendarMonth(offset: number) {
+    const [year, month] = calendarMonth.split("-").map(Number);
+    const target = new Date(year, month - 1 + offset, 1, 12);
+    setCalendarMonth(localDateKey(target).slice(0, 7));
+  }
 
   return (
     <div className="records">
       <div className="records-toolbar">
-        <select value={userId} onChange={(event) => setUserId(event.target.value)}>
-          {users.map((user) => (
-            <option key={user.id} value={user.id}>{user.username}</option>
-          ))}
-        </select>
+        <label>员工
+          <select value={userId} onChange={(event) => setUserId(event.target.value)}>
+            {users.map((user) => (
+              <option key={user.id} value={user.id}>{user.username}</option>
+            ))}
+          </select>
+        </label>
+        <label>统计周期
+          <select value={period} onChange={(event) => setPeriod(event.target.value as typeof period)}>
+            <option value="all">全部时间</option>
+            <option value="7">近 7 天</option>
+            <option value="30">近 30 天</option>
+            <option value="90">近 90 天</option>
+            <option value="custom">自定义日期</option>
+          </select>
+        </label>
+        {period === "custom" ? (
+          <div className="custom-range">
+            <label>开始日期<input type="date" value={fromDate} max={toDate || undefined} onChange={(event) => setFromDate(event.target.value)} /></label>
+            <label>结束日期<input type="date" value={toDate} min={fromDate || undefined} onChange={(event) => setToDate(event.target.value)} /></label>
+          </div>
+        ) : null}
         {userId ? (
-          <a className="secondary export-link" href={`/api/admin/usage-stats/export?userId=${encodeURIComponent(userId)}`}>
+          <a className="secondary export-link" href={`/api/admin/usage-stats/export?${exportQuery}`}>
             <Download size={15} />导出 Excel
           </a>
         ) : null}
@@ -1491,12 +1548,25 @@ function RecordsTab({ records, users }: { records: (Conversation & { user: User 
           </div>
           <div className="analytics-grid">
             <article className="analytics-panel heatmap-panel">
-              <div className="panel-heading"><div><h3>近 13 周使用热力</h3><p>颜色综合当天轮次和 Token 用量</p></div></div>
-              <div className="usage-heatmap">
-                {heatmapDays.map((item) => {
+              <div className="panel-heading calendar-heading">
+                <div><h3>月度使用热力</h3><p>颜色综合当天轮次和 Token 用量</p></div>
+                <div className="calendar-switcher">
+                  <button title="上个月" onClick={() => shiftCalendarMonth(-1)}><ChevronLeft size={15} /></button>
+                  <input aria-label="热力图月份" type="month" value={calendarMonth} onChange={(event) => setCalendarMonth(event.target.value)} />
+                  <button title="下个月" onClick={() => shiftCalendarMonth(1)}><ChevronRight size={15} /></button>
+                </div>
+              </div>
+              <div className="calendar-weekdays">{["一", "二", "三", "四", "五", "六", "日"].map((day) => <span key={day}>{day}</span>)}</div>
+              <div className="calendar-heatmap">
+                {calendarDays.map((item, index) => {
+                  if (!item) return <span className="calendar-empty" key={`empty-${index}`} />;
                   const ratio = item.totalTokens / maxDailyTokens;
                   const level = item.turns === 0 ? 0 : ratio > 0.72 ? 4 : ratio > 0.42 ? 3 : ratio > 0.18 ? 2 : 1;
-                  return <span key={item.date} className={`heat-cell level-${level}`} title={`${item.date}：${item.turns} 轮，${numberText(item.totalTokens)} Token`} />;
+                  return (
+                    <span key={item.date} className={`calendar-day level-${level}`} title={`${item.date}：${item.turns} 轮，输入 ${numberText(item.inputTokens)}，输出 ${numberText(item.outputTokens)}，合计 ${numberText(item.totalTokens)} Token`}>
+                      {item.day}
+                    </span>
+                  );
                 })}
               </div>
               <div className="heat-legend"><span>少</span>{[0, 1, 2, 3, 4].map((level) => <i className={`heat-cell level-${level}`} key={level} />)}<span>多</span></div>

@@ -108,12 +108,21 @@ function dateKey(value: string) {
   }).format(new Date(value));
 }
 
-function userUsageStats(db: Awaited<ReturnType<typeof store.read>>, userId: string) {
+function userUsageStats(
+  db: Awaited<ReturnType<typeof store.read>>,
+  userId: string,
+  range: { from?: string; to?: string } = {}
+) {
   const user = db.users.find((item) => item.id === userId);
   if (!user) throw new Error("用户不存在");
-  const conversations = db.conversations.filter((item) => item.userId === userId);
-  const messages = db.messages.filter((item) => item.userId === userId);
-  const usageRecords = db.modelUsageRecords.filter((item) => item.userId === userId);
+  const inRange = (value: string) => {
+    const key = dateKey(value);
+    return (!range.from || key >= range.from) && (!range.to || key <= range.to);
+  };
+  const messages = db.messages.filter((item) => item.userId === userId && inRange(item.createdAt));
+  const conversationIds = new Set(messages.map((item) => item.conversationId));
+  const conversations = db.conversations.filter((item) => item.userId === userId && conversationIds.has(item.id));
+  const usageRecords = db.modelUsageRecords.filter((item) => item.userId === userId && inRange(item.createdAt));
   const usageByConversation = new Map<string, typeof usageRecords>();
   for (const usage of usageRecords) {
     const list = usageByConversation.get(usage.conversationId) ?? [];
@@ -979,16 +988,22 @@ app.get("/api/admin/conversations", ...protectedAdmin, asyncRoute(async (req, re
 
 app.get("/api/admin/usage-stats", ...protectedAdmin, asyncRoute(async (req, res) => {
   const userId = requiredString(req.query.userId, "账号");
+  const from = typeof req.query.from === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : undefined;
+  const to = typeof req.query.to === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : undefined;
   const db = await store.read();
-  res.json({ stats: userUsageStats(db, userId) });
+  res.json({ stats: userUsageStats(db, userId, { from, to }) });
 }));
 
 app.get("/api/admin/usage-stats/export", ...protectedAdmin, asyncRoute(async (req, res) => {
   const userId = requiredString(req.query.userId, "账号");
+  const from = typeof req.query.from === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : undefined;
+  const to = typeof req.query.to === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : undefined;
   const db = await store.read();
-  const stats = userUsageStats(db, userId);
+  const stats = userUsageStats(db, userId, { from, to });
   const summaryRows = [
     ["账号", stats.user.username],
+    ["统计开始日期", from || "全部"],
+    ["统计结束日期", to || "全部"],
     ["对话数", stats.summary.conversations],
     ["总对话轮次", stats.summary.totalTurns],
     ["输入 Token", stats.summary.inputTokens],
