@@ -45,6 +45,7 @@ export async function callModel(
   if (!model.enabled) throw new Error("模型未启用");
   if (!model.apiKey) throw new Error("模型缺少 API Key");
   if (model.kind === "image") return callImageModel(model, messages, safetyRules, requestId);
+  if (model.protocol === "anthropic") return callAnthropicModel(model, messages, safetyRules, requestId);
 
   const systemMessages: Message[] = [safetyRules, model.systemPrompt]
     .map((content) => content.trim())
@@ -132,6 +133,99 @@ export async function callModel(
       event: "model_request_failed",
       requestId,
       modelId: model.id,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : "未知错误"
+    }));
+    throw error;
+  }
+}
+
+async function callAnthropicModel(
+  model: ModelConfig,
+  messages: Message[],
+  safetyRules = "",
+  requestId = "unknown"
+): Promise<ChatResult> {
+  const system = [safetyRules, model.systemPrompt].map((content) => content.trim()).filter(Boolean).join("\n\n");
+  const endpoint = `${model.baseUrl.replace(/\/$/, "")}/messages`;
+  const startedAt = Date.now();
+  console.log(JSON.stringify({
+    event: "model_request_started",
+    requestId,
+    modelId: model.id,
+    model: model.model,
+    protocol: "anthropic",
+    inputMessages: messages.length,
+    inputChars: messages.reduce((total, message) => total + message.content.length, 0),
+    maxOutputTokens
+  }));
+  try {
+    const response = await fetchWithTimeout(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": model.apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: model.model,
+        system: system || undefined,
+        messages: messages
+          .filter((message) => message.role === "user" || message.role === "assistant")
+          .map((message) => ({ role: message.role, content: message.content })),
+        temperature: 0.7,
+        max_tokens: maxOutputTokens
+      })
+    }, requestTimeoutMs);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
+      console.error(JSON.stringify({
+        event: "model_upstream_error",
+        requestId,
+        modelId: model.id,
+        model: model.model,
+        protocol: "anthropic",
+        status: response.status,
+        detail
+      }));
+      const hint =
+        response.status === 503 || /temporarily unavailable/i.test(detail)
+          ? `供应商暂时无法提供模型 "${model.model}"，请在中转站确认该 Key 所属分组已包含此模型且模型 ID 完全一致`
+          : detail;
+      throw new Error(`模型调用失败（上游 ${response.status}）：${hint}`);
+    }
+    const content = Array.isArray(payload?.content)
+      ? payload.content.filter((item: { type?: string; text?: unknown }) => item?.type === "text" && typeof item.text === "string").map((item: { text: string }) => item.text).join("\n")
+      : "";
+    if (!content) throw new Error("模型响应格式不正确");
+    const inputTokens = Number(payload?.usage?.input_tokens);
+    const outputTokens = Number(payload?.usage?.output_tokens);
+    const hasProviderUsage = Number.isFinite(inputTokens) && Number.isFinite(outputTokens);
+    console.log(JSON.stringify({
+      event: "model_request_completed",
+      requestId,
+      modelId: model.id,
+      protocol: "anthropic",
+      durationMs: Date.now() - startedAt,
+      outputChars: content.length
+    }));
+    return {
+      content,
+      usage: hasProviderUsage ? {
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+        source: "provider"
+      } : undefined,
+      raw: payload
+    };
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "model_request_failed",
+      requestId,
+      modelId: model.id,
+      protocol: "anthropic",
       durationMs: Date.now() - startedAt,
       error: error instanceof Error ? error.message : "未知错误"
     }));

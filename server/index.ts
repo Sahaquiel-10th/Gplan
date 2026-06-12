@@ -898,6 +898,7 @@ app.post("/api/admin/models", ...protectedAdmin, asyncRoute(async (req, res) => 
       name: requiredString(req.body.name, "展示名称"),
       provider: typeof req.body.provider === "string" && req.body.provider.trim() ? req.body.provider.trim() : "yylx",
       kind: req.body.kind === "image" ? "image" : "chat",
+      protocol: req.body.protocol === "anthropic" ? "anthropic" : "openai",
       baseUrl: requiredString(req.body.baseUrl, "Base URL"),
       apiKey: typeof req.body.apiKey === "string" ? req.body.apiKey.trim() : "",
       model: requiredString(req.body.model, "模型 ID"),
@@ -928,6 +929,8 @@ app.patch("/api/admin/models/:id", ...protectedAdmin, asyncRoute(async (req, res
     }
     if (typeof req.body.systemPrompt === "string") target.systemPrompt = req.body.systemPrompt;
     if (req.body.kind === "image" || req.body.kind === "chat") target.kind = req.body.kind;
+    if (req.body.protocol === "openai" || req.body.protocol === "anthropic") target.protocol = req.body.protocol;
+    if (target.kind === "image") target.protocol = "openai";
     if (typeof req.body.apiKey === "string" && req.body.apiKey.trim()) target.apiKey = req.body.apiKey.trim();
     if (typeof req.body.enabled === "boolean") target.enabled = req.body.enabled;
     if (req.body.isDefault === true) {

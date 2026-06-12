@@ -34,6 +34,7 @@ function seed(): Database {
     name: "Claude 4.7",
     provider: "yylx",
     kind: "chat",
+    protocol: "anthropic",
     baseUrl: "https://app.yylx.io/v1",
     apiKey: process.env.YYLX_API_KEY ?? "",
     model: "claude4.7",
@@ -52,6 +53,7 @@ function seed(): Database {
         name: "GPT 5.5",
         provider: "yylx",
         kind: "chat",
+        protocol: "openai",
         baseUrl: "https://app.yylx.io/v1",
         apiKey: process.env.YYLX_API_KEY ?? "",
         model: "gpt5.5",
@@ -65,6 +67,7 @@ function seed(): Database {
         name: "Image 2",
         provider: "yylx",
         kind: "image",
+        protocol: "openai",
         baseUrl: "https://app.yylx.io/v1",
         apiKey: process.env.YYLX_API_KEY ?? "",
         model: "gpt-image-2",
@@ -234,6 +237,10 @@ function migrateDatabase(db: Database): boolean {
   for (const model of db.models) {
     if (!(model as Partial<ModelConfig>).kind) {
       model.kind = "chat";
+      changed = true;
+    }
+    if ((model as Partial<ModelConfig>).protocol !== "openai" && (model as Partial<ModelConfig>).protocol !== "anthropic") {
+      model.protocol = model.kind === "chat" && /^claude/i.test(model.model) ? "anthropic" : "openai";
       changed = true;
     }
     if (typeof (model as Partial<ModelConfig>).systemPrompt !== "string") {

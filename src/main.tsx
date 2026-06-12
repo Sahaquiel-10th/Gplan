@@ -55,6 +55,7 @@ type Model = {
   name: string;
   provider: string;
   kind: "chat" | "image";
+  protocol: "openai" | "anthropic";
   baseUrl: string;
   apiKey?: string;
   model: string;
@@ -1275,6 +1276,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
   const [form, setForm] = useState({
     name: "",
     kind: "chat" as "chat" | "image",
+    protocol: "openai" as "openai" | "anthropic",
     baseUrl: "https://app.yylx.io/v1",
     apiKey: "",
     model: "",
@@ -1282,12 +1284,12 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
     enabled: true,
     isDefault: false
   });
-  const [editing, setEditing] = useState<Record<string, { name: string; kind: "chat" | "image"; baseUrl: string; model: string; apiKey: string; systemPrompt: string; enabled: boolean; isDefault: boolean }>>({});
+  const [editing, setEditing] = useState<Record<string, { name: string; kind: "chat" | "image"; protocol: "openai" | "anthropic"; baseUrl: string; model: string; apiKey: string; systemPrompt: string; enabled: boolean; isDefault: boolean }>>({});
 
   async function createModel(event: FormEvent) {
     event.preventDefault();
     await api("/api/admin/models", { method: "POST", body: JSON.stringify(form) });
-    setForm({ name: "", kind: "chat", baseUrl: "https://app.yylx.io/v1", apiKey: "", model: "", systemPrompt: "", enabled: true, isDefault: false });
+    setForm({ name: "", kind: "chat", protocol: "openai", baseUrl: "https://app.yylx.io/v1", apiKey: "", model: "", systemPrompt: "", enabled: true, isDefault: false });
     await reload();
   }
 
@@ -1318,10 +1320,16 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
       <form className="admin-form" onSubmit={createModel}>
         <h3><img className="section-mark" src="/brand/xiaoxiang-mark.png" alt="" />接入模型</h3>
         <input placeholder="展示名称，如 通义千问" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-        <select value={form.kind} onChange={(event) => setForm({ ...form, kind: event.target.value as "chat" | "image" })}>
+        <select value={form.kind} onChange={(event) => setForm({ ...form, kind: event.target.value as "chat" | "image", protocol: event.target.value === "image" ? "openai" : form.protocol })}>
           <option value="chat">聊天模型</option>
           <option value="image">图片模型</option>
         </select>
+        {form.kind === "chat" ? (
+          <select value={form.protocol} onChange={(event) => setForm({ ...form, protocol: event.target.value as "openai" | "anthropic" })}>
+            <option value="openai">OpenAI 兼容协议</option>
+            <option value="anthropic">Claude / Anthropic 协议</option>
+          </select>
+        ) : null}
         <input placeholder="Base URL，如 https://dashscope.aliyuncs.com/compatible-mode/v1" value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} />
         <input type="password" autoComplete="new-password" placeholder="API Key" value={form.apiKey} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} />
         <input placeholder="模型 ID，如 qwen-plus / gpt-image-2" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} />
@@ -1340,6 +1348,12 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
                     <option value="chat">聊天模型</option>
                     <option value="image">图片模型</option>
                   </select></label>
+                {editing[model.id].kind === "chat" ? (
+                  <label className="field-label">接口协议<select value={editing[model.id].protocol} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], protocol: event.target.value as "openai" | "anthropic" } })}>
+                    <option value="openai">OpenAI 兼容协议</option>
+                    <option value="anthropic">Claude / Anthropic 协议</option>
+                  </select></label>
+                ) : null}
                 <label className="field-label">Base URL<input value={editing[model.id].baseUrl} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], baseUrl: event.target.value } })} /></label>
                 <label className="field-label">模型 ID<input value={editing[model.id].model} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], model: event.target.value } })} /></label>
                 <label className="field-label">替换 API Key<input type="password" autoComplete="new-password" placeholder="留空则保持原 Key" value={editing[model.id].apiKey} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], apiKey: event.target.value } })} /></label>
@@ -1350,9 +1364,9 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
               </>
             ) : (
               <>
-                <span>{model.name}<small>{model.kind === "image" ? "图片" : "聊天"} · {model.model}{model.isDefault ? " · 新聊天默认" : ""}</small></span>
+                <span>{model.name}<small>{model.kind === "image" ? "图片" : model.protocol === "anthropic" ? "聊天 · Anthropic" : "聊天 · OpenAI"} · {model.model}{model.isDefault ? " · 新聊天默认" : ""}</small></span>
                 <span>{model.hasApiKey ? "已配置 Key" : "缺少 Key"}</span>
-                <button className="secondary" onClick={() => setEditing({ ...editing, [model.id]: { name: model.name, kind: model.kind, baseUrl: model.baseUrl, model: model.model, apiKey: "", systemPrompt: model.systemPrompt || "", enabled: model.enabled, isDefault: model.isDefault } })}><Edit3 size={15} />编辑</button>
+                <button className="secondary" onClick={() => setEditing({ ...editing, [model.id]: { name: model.name, kind: model.kind, protocol: model.protocol, baseUrl: model.baseUrl, model: model.model, apiKey: "", systemPrompt: model.systemPrompt || "", enabled: model.enabled, isDefault: model.isDefault } })}><Edit3 size={15} />编辑</button>
                 <button className="secondary" onClick={() => toggle(model)}>{model.enabled ? "停用" : "启用"}</button>
                 <button className="danger" onClick={() => deleteModel(model)}><Trash2 size={15} />删除</button>
               </>
