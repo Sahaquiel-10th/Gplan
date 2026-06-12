@@ -27,6 +27,8 @@ npm run dev
 ```text
 账号：admin
 开发环境初始密码：admin123（生产环境必须通过 `ADMIN_INITIAL_PASSWORD` 配置强密码）
+
+模型充值后台使用独立的 `ADMIN_TOOLS_PASSWORD`；未配置时使用项目内置初始密码，正式环境建议在 `.env` 中覆盖。
 ```
 
 首次部署后请立即修改管理员密码，或者删除 `data/db.json` 后调整 `server/db.ts` 中的初始化逻辑再启动。

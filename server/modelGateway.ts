@@ -3,6 +3,12 @@ import { Message, ModelConfig } from "./types.js";
 type ChatResult = {
   content: string;
   imageUrl?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    source: "provider" | "estimated";
+  };
   raw?: unknown;
 };
 
@@ -91,6 +97,13 @@ export async function callModel(
 
     const content = payload?.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("模型响应格式不正确");
+    const providerInputTokens = Number(payload?.usage?.prompt_tokens ?? payload?.usage?.input_tokens);
+    const providerOutputTokens = Number(payload?.usage?.completion_tokens ?? payload?.usage?.output_tokens);
+    const hasProviderUsage = Number.isFinite(providerInputTokens) && Number.isFinite(providerOutputTokens);
+    const inputTokens = hasProviderUsage
+      ? providerInputTokens
+      : Math.ceil([...systemMessages, ...messages].reduce((total, message) => total + message.content.length, 0) / 4);
+    const outputTokens = hasProviderUsage ? providerOutputTokens : Math.ceil(content.length / 4);
     console.log(JSON.stringify({
       event: "model_request_completed",
       requestId,
@@ -98,7 +111,16 @@ export async function callModel(
       durationMs: Date.now() - startedAt,
       outputChars: content.length
     }));
-    return { content, raw: payload };
+    return {
+      content,
+      usage: {
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+        source: hasProviderUsage ? "provider" : "estimated"
+      },
+      raw: payload
+    };
   } catch (error) {
     console.error(JSON.stringify({
       event: "model_request_failed",
@@ -164,5 +186,11 @@ async function callImageModel(
     modelId: model.id,
     durationMs: Date.now() - startedAt
   }));
-  return { content: "图片已生成", imageUrl, raw: payload };
+  const inputTokens = Math.ceil(prompt.length / 4);
+  return {
+    content: "图片已生成",
+    imageUrl,
+    usage: { inputTokens, outputTokens: 0, totalTokens: inputTokens, source: "estimated" },
+    raw: payload
+  };
 }

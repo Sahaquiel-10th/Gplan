@@ -112,6 +112,19 @@ export type RagRetrievalLog = {
   createdAt: string;
 };
 
+export type ModelUsageRecord = {
+  id: string;
+  companyId: string;
+  userId: string;
+  conversationId: string;
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  source: "provider" | "estimated";
+  createdAt: string;
+};
+
 export type Database = {
   users: User[];
   models: ModelConfig[];
@@ -120,6 +133,7 @@ export type Database = {
   memorySyncStates: MemorySyncState[];
   userSavedMemories: UserSavedMemory[];
   ragRetrievalLogs: RagRetrievalLog[];
+  modelUsageRecords: ModelUsageRecord[];
   workspaces: Workspace[];
   integrationTokens: IntegrationToken[];
   settings: SystemSettings;

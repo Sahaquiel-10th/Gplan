@@ -39,7 +39,7 @@ export function verifyToken(token: string, secret: string) {
   if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
   const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
   if (typeof payload.exp !== "number" || payload.exp < Date.now()) return null;
-  return payload as { sub: string; role: string; exp: number };
+  return payload as { sub: string; role: string; scope?: string; exp: number };
 }
 
 export function hashToken(token: string) {

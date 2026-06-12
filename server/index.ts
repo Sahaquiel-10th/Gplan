@@ -19,7 +19,7 @@ import { asyncRoute, auth, requireRole } from "./middleware.js";
 import { MemorySyncScheduler } from "./memorySync.js";
 import { callModel } from "./modelGateway.js";
 import { buildPromptContext } from "./promptContext.js";
-import { createPlainToken, hashPassword, hashToken, signToken, uid, verifyPassword } from "./security.js";
+import { createPlainToken, hashPassword, hashToken, signToken, uid, verifyPassword, verifyToken } from "./security.js";
 import { adminModel, publicModel, publicUser } from "./serializers.js";
 import { Conversation, Message, MessageRecord, ModelConfig, RagRetrievalLog, User, UserSavedMemory, Workspace } from "./types.js";
 
@@ -28,6 +28,7 @@ const root = path.resolve(__dirname, "..");
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
 const jwtSecret = process.env.JWT_SECRET?.trim() || "dev-secret-change-me";
+const adminToolsPassword = process.env.ADMIN_TOOLS_PASSWORD?.trim() || "laozhu15658855442";
 const companyKnowledgeService = new BailianCompanyKnowledgeService();
 const memoryService = new BailianMemoryService();
 const memorySyncScheduler = new MemorySyncScheduler(store, memoryService);
@@ -35,6 +36,7 @@ const userMemoryMaxItems = 10;
 const userMemoryMaxChars = 200;
 const userMemoryMaxTotalChars = 2000;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+const adminToolsAttempts = new Map<string, { count: number; resetAt: number }>();
 const userImportUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 1 }
@@ -87,6 +89,122 @@ function hasExplicitMemoryIntent(content: string) {
 
 function estimateTokenCount(content: string) {
   return Math.ceil(content.length / 4);
+}
+
+function cookieValue(req: Request, name: string) {
+  return req.headers.cookie
+    ?.split(";")
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(`${name}=`))
+    ?.slice(name.length + 1);
+}
+
+function dateKey(value: string) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date(value));
+}
+
+function userUsageStats(db: Awaited<ReturnType<typeof store.read>>, userId: string) {
+  const user = db.users.find((item) => item.id === userId);
+  if (!user) throw new Error("用户不存在");
+  const conversations = db.conversations.filter((item) => item.userId === userId);
+  const messages = db.messages.filter((item) => item.userId === userId);
+  const usageRecords = db.modelUsageRecords.filter((item) => item.userId === userId);
+  const usageByConversation = new Map<string, typeof usageRecords>();
+  for (const usage of usageRecords) {
+    const list = usageByConversation.get(usage.conversationId) ?? [];
+    list.push(usage);
+    usageByConversation.set(usage.conversationId, list);
+  }
+
+  const legacyMessages = conversations.flatMap((conversation) => {
+    const conversationMessages = messages
+      .filter((message) => message.conversationId === conversation.id && message.role !== "system")
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const coveredCalls = usageByConversation.get(conversation.id)?.length ?? 0;
+    if (!coveredCalls) return conversationMessages;
+    let usersToSkip = coveredCalls;
+    let assistantsToSkip = coveredCalls;
+    return conversationMessages
+      .slice()
+      .reverse()
+      .filter((message) => {
+        if (message.role === "user" && usersToSkip > 0) {
+          usersToSkip -= 1;
+          return false;
+        }
+        if (message.role === "assistant" && assistantsToSkip > 0) {
+          assistantsToSkip -= 1;
+          return false;
+        }
+        return true;
+      })
+      .reverse();
+  });
+
+  const dailyMap = new Map<string, { date: string; turns: number; inputTokens: number; outputTokens: number; totalTokens: number }>();
+  function daily(date: string) {
+    const key = dateKey(date);
+    const existing = dailyMap.get(key) ?? { date: key, turns: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    dailyMap.set(key, existing);
+    return existing;
+  }
+  for (const message of messages) {
+    if (message.role === "user") daily(message.createdAt).turns += 1;
+  }
+  for (const usage of usageRecords) {
+    const item = daily(usage.createdAt);
+    item.inputTokens += usage.inputTokens;
+    item.outputTokens += usage.outputTokens;
+    item.totalTokens += usage.totalTokens;
+  }
+  for (const message of legacyMessages) {
+    const item = daily(message.createdAt);
+    const tokens = message.tokenCount ?? estimateTokenCount(message.content);
+    if (message.role === "user") item.inputTokens += tokens;
+    if (message.role === "assistant") item.outputTokens += tokens;
+    item.totalTokens += tokens;
+  }
+
+  const dailyUsage = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date));
+  const inputTokens = dailyUsage.reduce((sum, item) => sum + item.inputTokens, 0);
+  const outputTokens = dailyUsage.reduce((sum, item) => sum + item.outputTokens, 0);
+  const modelCounts = new Map<string, number>();
+  for (const message of messages.filter((item) => item.role === "user")) {
+    const modelName = db.models.find((model) => model.id === message.modelId)?.name || "已删除模型";
+    modelCounts.set(modelName, (modelCounts.get(modelName) ?? 0) + 1);
+  }
+  const modelUsage = [...modelCounts.entries()]
+    .map(([name, turns]) => ({ name, turns }))
+    .sort((a, b) => b.turns - a.turns);
+  const totalTurns = messages.filter((item) => item.role === "user").length;
+  return {
+    user: publicUser(user),
+    summary: {
+      conversations: conversations.length,
+      totalTurns,
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      activeDays: dailyUsage.filter((item) => item.turns > 0).length,
+      averageTurnsPerConversation: conversations.length ? Number((totalTurns / conversations.length).toFixed(1)) : 0,
+      providerUsageRecords: usageRecords.filter((item) => item.source === "provider").length
+    },
+    dailyUsage,
+    modelUsage
+  };
+}
+
+function xmlEscape(value: unknown) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function messageRecord(message: Message, params: { companyId: string; userId: string; conversationId: string }): MessageRecord {
@@ -408,6 +526,20 @@ app.post(
         userId: req.user!.id,
         conversationId: target.id
       }));
+      if (result.usage) {
+        mutableDb.modelUsageRecords.push({
+          id: uid("use"),
+          companyId: req.user!.companyId,
+          userId: req.user!.id,
+          conversationId: target.id,
+          modelId: model.id,
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          totalTokens: result.usage.totalTokens,
+          source: result.usage.source,
+          createdAt: assistantMessage.createdAt
+        });
+      }
       return target;
     });
 
@@ -574,6 +706,53 @@ app.delete("/api/memories/:id", auth(jwtSecret), asyncRoute(async (req, res) => 
 }));
 
 const admin: RequestHandler[] = [auth(jwtSecret), requireRole("admin")];
+const protectedAdmin: RequestHandler[] = [
+  ...admin,
+  (req, res, next) => {
+    const token = decodeURIComponent(cookieValue(req, "gplan_admin_tools") || "");
+    const payload = token ? verifyToken(token, jwtSecret) : null;
+    if (!payload || payload.sub !== req.user!.id || payload.scope !== "admin_tools") {
+      return res.status(401).json({ error: "请先验证模型充值后台密码" });
+    }
+    next();
+  }
+];
+
+app.get("/api/admin/tools/status", ...admin, (req, res) => {
+  const token = decodeURIComponent(cookieValue(req, "gplan_admin_tools") || "");
+  const payload = token ? verifyToken(token, jwtSecret) : null;
+  res.json({ unlocked: Boolean(payload && payload.sub === req.user!.id && payload.scope === "admin_tools") });
+});
+
+app.post("/api/admin/tools/unlock", ...admin, asyncRoute(async (req, res) => {
+  const attemptKey = `${req.user!.id}:${req.ip || req.socket.remoteAddress || "unknown"}`;
+  const currentTime = Date.now();
+  const attempt = adminToolsAttempts.get(attemptKey);
+  if (attempt && attempt.resetAt > currentTime && attempt.count >= 8) {
+    return res.status(429).json({ error: "验证尝试过多，请 15 分钟后再试" });
+  }
+  if (attempt && attempt.resetAt <= currentTime) adminToolsAttempts.delete(attemptKey);
+  const password = requiredString(req.body.password, "后台密码");
+  if (hashToken(password) !== hashToken(adminToolsPassword)) {
+    const latest = adminToolsAttempts.get(attemptKey);
+    adminToolsAttempts.set(attemptKey, {
+      count: (latest?.count ?? 0) + 1,
+      resetAt: latest?.resetAt && latest.resetAt > currentTime ? latest.resetAt : currentTime + 15 * 60 * 1000
+    });
+    return res.status(401).json({ error: "后台密码错误" });
+  }
+  adminToolsAttempts.delete(attemptKey);
+  const token = signToken({ sub: req.user!.id, role: req.user!.role, scope: "admin_tools" }, jwtSecret);
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `gplan_admin_tools=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/api/admin; Max-Age=43200${secure}`);
+  res.json({ unlocked: true });
+}));
+
+app.post("/api/admin/tools/lock", ...admin, (_req, res) => {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `gplan_admin_tools=; HttpOnly; SameSite=Strict; Path=/api/admin; Max-Age=0${secure}`);
+  res.json({ unlocked: false });
+});
 
 app.get("/api/admin/settings", ...admin, asyncRoute(async (_req, res) => {
   const db = await store.read();
@@ -728,18 +907,19 @@ app.delete("/api/admin/users/:id", ...admin, asyncRoute(async (req, res) => {
     db.users.splice(index, 1);
     db.conversations = db.conversations.filter((conversation) => conversation.userId !== req.params.id);
     db.messages = db.messages.filter((message) => message.userId !== req.params.id);
+    db.modelUsageRecords = db.modelUsageRecords.filter((usage) => usage.userId !== req.params.id);
     db.memorySyncStates = db.memorySyncStates.filter((state) => state.userId !== req.params.id);
     db.userSavedMemories = db.userSavedMemories.filter((memory) => memory.userId !== req.params.id);
   });
   res.json({ ok: true });
 }));
 
-app.get("/api/admin/models", ...admin, asyncRoute(async (_req, res) => {
+app.get("/api/admin/models", ...protectedAdmin, asyncRoute(async (_req, res) => {
   const db = await store.read();
   res.json({ models: db.models.map(adminModel) });
 }));
 
-app.post("/api/admin/models", ...admin, asyncRoute(async (req, res) => {
+app.post("/api/admin/models", ...protectedAdmin, asyncRoute(async (req, res) => {
   const created = await store.mutate((db) => {
     const model: ModelConfig = {
       id: uid("mdl"),
@@ -759,7 +939,7 @@ app.post("/api/admin/models", ...admin, asyncRoute(async (req, res) => {
   res.json({ model: publicModel(created) });
 }));
 
-app.patch("/api/admin/models/:id", ...admin, asyncRoute(async (req, res) => {
+app.patch("/api/admin/models/:id", ...protectedAdmin, asyncRoute(async (req, res) => {
   const model = await store.mutate((db) => {
     const target = db.models.find((item) => item.id === req.params.id);
     if (!target) throw new Error("模型不存在");
@@ -775,7 +955,7 @@ app.patch("/api/admin/models/:id", ...admin, asyncRoute(async (req, res) => {
   res.json({ model: publicModel(model) });
 }));
 
-app.delete("/api/admin/models/:id", ...admin, asyncRoute(async (req, res) => {
+app.delete("/api/admin/models/:id", ...protectedAdmin, asyncRoute(async (req, res) => {
   await store.mutate((db) => {
     const index = db.models.findIndex((item) => item.id === req.params.id);
     if (index === -1) throw new Error("模型不存在");
@@ -784,7 +964,7 @@ app.delete("/api/admin/models/:id", ...admin, asyncRoute(async (req, res) => {
   res.json({ ok: true });
 }));
 
-app.get("/api/admin/conversations", ...admin, asyncRoute(async (req, res) => {
+app.get("/api/admin/conversations", ...protectedAdmin, asyncRoute(async (req, res) => {
   const db = await store.read();
   const userId = typeof req.query.userId === "string" ? req.query.userId : "";
   const conversations = db.conversations
@@ -795,6 +975,50 @@ app.get("/api/admin/conversations", ...admin, asyncRoute(async (req, res) => {
     }))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   res.json({ conversations });
+}));
+
+app.get("/api/admin/usage-stats", ...protectedAdmin, asyncRoute(async (req, res) => {
+  const userId = requiredString(req.query.userId, "账号");
+  const db = await store.read();
+  res.json({ stats: userUsageStats(db, userId) });
+}));
+
+app.get("/api/admin/usage-stats/export", ...protectedAdmin, asyncRoute(async (req, res) => {
+  const userId = requiredString(req.query.userId, "账号");
+  const db = await store.read();
+  const stats = userUsageStats(db, userId);
+  const summaryRows = [
+    ["账号", stats.user.username],
+    ["对话数", stats.summary.conversations],
+    ["总对话轮次", stats.summary.totalTurns],
+    ["输入 Token", stats.summary.inputTokens],
+    ["输出 Token", stats.summary.outputTokens],
+    ["Token 合计", stats.summary.totalTokens],
+    ["活跃天数", stats.summary.activeDays],
+    ["平均每个对话轮次", stats.summary.averageTurnsPerConversation]
+  ];
+  const row = (values: unknown[]) =>
+    `<Row>${values.map((value) => `<Cell><Data ss:Type="${typeof value === "number" ? "Number" : "String"}">${xmlEscape(value)}</Data></Cell>`).join("")}</Row>`;
+  const workbook = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Worksheet ss:Name="使用概览"><Table>${summaryRows.map(row).join("")}</Table></Worksheet>
+ <Worksheet ss:Name="每日使用"><Table>
+  ${row(["日期", "对话轮次", "输入 Token", "输出 Token", "Token 合计"])}
+  ${stats.dailyUsage.map((item) => row([item.date, item.turns, item.inputTokens, item.outputTokens, item.totalTokens])).join("")}
+ </Table></Worksheet>
+ <Worksheet ss:Name="模型分布"><Table>
+  ${row(["模型", "对话轮次"])}
+  ${stats.modelUsage.map((item) => row([item.name, item.turns])).join("")}
+ </Table></Worksheet>
+</Workbook>`;
+  const filename = `ai-usage-${stats.user.username.replace(/[^\w\u4e00-\u9fa5-]/g, "_")}.xls`;
+  res.setHeader("Content-Type", "application/vnd.ms-excel; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  res.send(`\uFEFF${workbook}`);
 }));
 
 app.get("/api/admin/integration-tokens", ...admin, asyncRoute(async (_req, res) => {

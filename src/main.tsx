@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Archive,
+  BarChart3,
   Brain,
   Bot,
   ChevronDown,
@@ -18,6 +19,7 @@ import {
   FolderInput,
   KeyRound,
   LockKeyhole,
+  Lock,
   LogOut,
   Menu,
   MessageSquare,
@@ -99,6 +101,28 @@ type IntegrationToken = {
 
 type SystemSettings = {
   safetyRules: string;
+};
+
+type UsageStats = {
+  user: User;
+  summary: {
+    conversations: number;
+    totalTurns: number;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    activeDays: number;
+    averageTurnsPerConversation: number;
+    providerUsageRecords: number;
+  };
+  dailyUsage: Array<{
+    date: string;
+    turns: number;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  }>;
+  modelUsage: Array<{ name: string; turns: number }>;
 };
 
 type MemoryItem = {
@@ -275,6 +299,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   useEffect(() => {
     refresh().catch((err) => setError(err.message));
+  }, []);
+
+  useEffect(() => {
+    function refreshWhenVisible() {
+      if (document.visibilityState === "visible") refresh().catch(() => undefined);
+    }
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => document.removeEventListener("visibilitychange", refreshWhenVisible);
   }, []);
 
   useEffect(() => {
@@ -914,27 +946,21 @@ function MemoriesPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 }
 
 function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
-  const [tab, setTab] = useState<"settings" | "users" | "models" | "tokens" | "records">("settings");
+  const [tab, setTab] = useState<"settings" | "users" | "tokens" | "secure">("settings");
   const [users, setUsers] = useState<User[]>([]);
-  const [models, setModels] = useState<Model[]>([]);
   const [tokens, setTokens] = useState<IntegrationToken[]>([]);
-  const [records, setRecords] = useState<(Conversation & { user: User })[]>([]);
   const [settings, setSettings] = useState<SystemSettings>({ safetyRules: "" });
   const [notice, setNotice] = useState("");
 
   async function load() {
-    const [settingsResult, userResult, modelResult, tokenResult, recordResult] = await Promise.all([
+    const [settingsResult, userResult, tokenResult] = await Promise.all([
       api<{ settings: SystemSettings }>("/api/admin/settings"),
       api<{ users: User[] }>("/api/admin/users"),
-      api<{ models: Model[] }>("/api/admin/models"),
-      api<{ tokens: IntegrationToken[] }>("/api/admin/integration-tokens"),
-      api<{ conversations: (Conversation & { user: User })[] }>("/api/admin/conversations")
+      api<{ tokens: IntegrationToken[] }>("/api/admin/integration-tokens")
     ]);
     setSettings(settingsResult.settings);
     setUsers(userResult.users);
-    setModels(modelResult.models);
     setTokens(tokenResult.tokens);
-    setRecords(recordResult.conversations);
   }
 
   useEffect(() => {
@@ -949,25 +975,99 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           </button>
           <div>
             <h2>管理后台</h2>
-            <p>账号、模型、机器人 API 和对话审计</p>
+            <p>规则、员工账号与企业机器人接入</p>
           </div>
         </header>
         <nav className="tabs">
           <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Shield size={16} />规则</button>
           <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={16} />账号</button>
-          <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Bot size={16} />模型</button>
-          <button className={tab === "tokens" ? "active" : ""} onClick={() => setTab("tokens")}><KeyRound size={16} />API Token</button>
-          <button className={tab === "records" ? "active" : ""} onClick={() => setTab("records")}><MessageSquare size={16} />记录</button>
+          <button className={tab === "tokens" ? "active" : ""} onClick={() => setTab("tokens")}><KeyRound size={16} />外接机器人设置</button>
+          <button className={`secure-tab ${tab === "secure" ? "active" : ""}`} onClick={() => setTab("secure")}><Lock size={16} />模型充值后台</button>
         </nav>
         {notice ? <div className="notice">{notice}</div> : null}
         <div className="admin-body">
           {tab === "settings" ? <SettingsTab settings={settings} setNotice={setNotice} reload={load} /> : null}
           {tab === "users" ? <UsersTab users={users} reload={load} /> : null}
-          {tab === "models" ? <ModelsTab models={models} reload={async () => { await load(); await refreshModels(); }} /> : null}
           {tab === "tokens" ? <TokensTab tokens={tokens} reload={load} setNotice={setNotice} /> : null}
-          {tab === "records" ? <RecordsTab records={records} users={users} /> : null}
+          {tab === "secure" ? <SecureAdminTab users={users} refreshModels={refreshModels} /> : null}
         </div>
       </section>
+  );
+}
+
+function SecureAdminTab({ users, refreshModels }: { users: User[]; refreshModels: () => Promise<void> }) {
+  const [unlocked, setUnlocked] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [subtab, setSubtab] = useState<"models" | "records">("models");
+  const [models, setModels] = useState<Model[]>([]);
+  const [records, setRecords] = useState<(Conversation & { user: User })[]>([]);
+
+  async function loadProtected() {
+    const [modelResult, recordResult] = await Promise.all([
+      api<{ models: Model[] }>("/api/admin/models"),
+      api<{ conversations: (Conversation & { user: User })[] }>("/api/admin/conversations")
+    ]);
+    setModels(modelResult.models);
+    setRecords(recordResult.conversations);
+  }
+
+  useEffect(() => {
+    api<{ unlocked: boolean }>("/api/admin/tools/status")
+      .then(async (result) => {
+        setUnlocked(result.unlocked);
+        if (result.unlocked) await loadProtected();
+      })
+      .catch(() => setUnlocked(false))
+      .finally(() => setChecking(false));
+  }, []);
+
+  async function unlock(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    try {
+      await api("/api/admin/tools/unlock", { method: "POST", body: JSON.stringify({ password }) });
+      setUnlocked(true);
+      setPassword("");
+      await loadProtected();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "验证失败");
+    }
+  }
+
+  if (checking) return <div className="secure-loading">正在检查访问权限...</div>;
+  if (!unlocked) {
+    return (
+      <form className="secure-gate" onSubmit={unlock}>
+        <div className="secure-gate-icon"><LockKeyhole size={24} /></div>
+        <h3>模型充值后台</h3>
+        <p>这里包含模型密钥、员工对话记录与使用数据，需要二次验证。</p>
+        <input
+          type="password"
+          autoComplete="current-password"
+          placeholder="输入后台访问密码"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+        />
+        {error ? <div className="error">{error}</div> : null}
+        <button className="primary" disabled={!password}>验证并进入</button>
+      </form>
+    );
+  }
+
+  return (
+    <div className="secure-admin">
+      <nav className="subtabs">
+        <button className={subtab === "models" ? "active" : ""} onClick={() => setSubtab("models")}><Bot size={16} />模型配置</button>
+        <button className={subtab === "records" ? "active" : ""} onClick={() => setSubtab("records")}><BarChart3 size={16} />记录与用量</button>
+      </nav>
+      {subtab === "models" ? (
+        <ModelsTab models={models} reload={async () => { await loadProtected(); await refreshModels(); }} />
+      ) : (
+        <RecordsTab records={records} users={users} />
+      )}
+    </div>
   );
 }
 
@@ -1020,13 +1120,28 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
   const [importPassword, setImportPassword] = useState("");
   const [importNotice, setImportNotice] = useState("");
   const [importing, setImporting] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createNotice, setCreateNotice] = useState("");
 
   async function createUser(event: FormEvent) {
     event.preventDefault();
-    await api("/api/admin/users", { method: "POST", body: JSON.stringify({ username, password, role: "user" }) });
-    setUsername("");
-    setPassword("");
-    await reload();
+    if (password.length < 8) {
+      setCreateNotice("初始密码至少需要 8 个字符");
+      return;
+    }
+    setCreating(true);
+    setCreateNotice("");
+    try {
+      await api("/api/admin/users", { method: "POST", body: JSON.stringify({ username, password, role: "user" }) });
+      setUsername("");
+      setPassword("");
+      setCreateNotice("账号已开通");
+      await reload();
+    } catch (err) {
+      setCreateNotice(err instanceof Error ? err.message : "账号开通失败");
+    } finally {
+      setCreating(false);
+    }
   }
 
   async function toggle(user: User) {
@@ -1059,6 +1174,10 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
   async function importUsers(event: FormEvent) {
     event.preventDefault();
     if (!importFile) return;
+    if (importPassword.length < 8) {
+      setImportNotice("统一初始密码至少需要 8 个字符");
+      return;
+    }
     setImporting(true);
     setImportNotice("");
     const body = new FormData();
@@ -1089,7 +1208,10 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
           <h3><UserPlus size={17} />开通账号</h3>
           <input placeholder="用户名" value={username} onChange={(event) => setUsername(event.target.value)} />
           <input type="password" autoComplete="new-password" placeholder="初始密码（至少 8 位）" value={password} onChange={(event) => setPassword(event.target.value)} />
-          <button className="primary"><Plus size={16} />创建</button>
+          {createNotice ? <div className={createNotice === "账号已开通" ? "notice import-notice" : "error import-notice"}>{createNotice}</div> : null}
+          <button className="primary" type="submit" disabled={!username.trim() || !password || creating}>
+            <Plus size={16} />{creating ? "正在创建" : "创建"}
+          </button>
         </form>
         <form className="admin-form import-form" onSubmit={importUsers}>
           <h3><FileSpreadsheet size={17} />批量开通</h3>
@@ -1105,7 +1227,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
           </label>
           <input type="password" autoComplete="new-password" placeholder="统一初始密码（至少 8 位）" value={importPassword} onChange={(event) => setImportPassword(event.target.value)} />
           {importNotice ? <div className="notice import-notice">{importNotice}</div> : null}
-          <button className="primary" disabled={!importFile || importPassword.length < 8 || importing}>
+          <button className="primary" disabled={!importFile || !importPassword || importing}>
             <Upload size={16} />
             {importing ? "正在导入" : "开始导入"}
           </button>
@@ -1297,19 +1419,117 @@ function TokensTab({
   );
 }
 
+function numberText(value: number) {
+  return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function localDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function RecordsTab({ records, users }: { records: (Conversation & { user: User })[]; users: User[] }) {
-  const [userId, setUserId] = useState("");
+  const [userId, setUserId] = useState(users[0]?.id || "");
+  const [stats, setStats] = useState<UsageStats | null>(null);
+  const [statsError, setStatsError] = useState("");
   const filtered = userId ? records.filter((record) => record.userId === userId) : records;
+
+  useEffect(() => {
+    if (!userId && users[0]) setUserId(users[0].id);
+  }, [userId, users]);
+
+  useEffect(() => {
+    if (!userId) {
+      setStats(null);
+      return;
+    }
+    setStatsError("");
+    api<{ stats: UsageStats }>(`/api/admin/usage-stats?userId=${encodeURIComponent(userId)}`)
+      .then((result) => setStats(result.stats))
+      .catch((err) => setStatsError(err instanceof Error ? err.message : "用量数据加载失败"));
+  }, [userId]);
+
+  const heatmapDays = useMemo(() => {
+    const usage = new Map(stats?.dailyUsage.map((item) => [item.date, item]) ?? []);
+    return Array.from({ length: 91 }, (_, index) => {
+      const date = new Date();
+      date.setHours(12, 0, 0, 0);
+      date.setDate(date.getDate() - (90 - index));
+      const key = localDateKey(date);
+      return usage.get(key) ?? { date: key, turns: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    });
+  }, [stats]);
+  const maxDailyTokens = Math.max(1, ...heatmapDays.map((item) => item.totalTokens));
+  const recentUsage = stats?.dailyUsage.slice(-14) ?? [];
+  const maxRecentTokens = Math.max(1, ...recentUsage.map((item) => item.totalTokens));
+  const maxModelTurns = Math.max(1, ...(stats?.modelUsage.map((item) => item.turns) ?? []));
 
   return (
     <div className="records">
-      <div className="record-filter">
+      <div className="records-toolbar">
         <select value={userId} onChange={(event) => setUserId(event.target.value)}>
-          <option value="">全部账号</option>
           {users.map((user) => (
             <option key={user.id} value={user.id}>{user.username}</option>
           ))}
         </select>
+        {userId ? (
+          <a className="secondary export-link" href={`/api/admin/usage-stats/export?userId=${encodeURIComponent(userId)}`}>
+            <Download size={15} />导出 Excel
+          </a>
+        ) : null}
+      </div>
+      {statsError ? <div className="error">{statsError}</div> : null}
+      {stats ? (
+        <section className="usage-dashboard">
+          <div className="metric-grid">
+            <article><span>总对话轮次</span><strong>{numberText(stats.summary.totalTurns)}</strong><small>{numberText(stats.summary.conversations)} 个对话</small></article>
+            <article><span>输入 Token</span><strong>{numberText(stats.summary.inputTokens)}</strong><small>含历史估算数据</small></article>
+            <article><span>输出 Token</span><strong>{numberText(stats.summary.outputTokens)}</strong><small>总计 {numberText(stats.summary.totalTokens)}</small></article>
+            <article><span>活跃天数</span><strong>{numberText(stats.summary.activeDays)}</strong><small>平均 {stats.summary.averageTurnsPerConversation} 轮 / 对话</small></article>
+          </div>
+          <div className="analytics-grid">
+            <article className="analytics-panel heatmap-panel">
+              <div className="panel-heading"><div><h3>近 13 周使用热力</h3><p>颜色综合当天轮次和 Token 用量</p></div></div>
+              <div className="usage-heatmap">
+                {heatmapDays.map((item) => {
+                  const ratio = item.totalTokens / maxDailyTokens;
+                  const level = item.turns === 0 ? 0 : ratio > 0.72 ? 4 : ratio > 0.42 ? 3 : ratio > 0.18 ? 2 : 1;
+                  return <span key={item.date} className={`heat-cell level-${level}`} title={`${item.date}：${item.turns} 轮，${numberText(item.totalTokens)} Token`} />;
+                })}
+              </div>
+              <div className="heat-legend"><span>少</span>{[0, 1, 2, 3, 4].map((level) => <i className={`heat-cell level-${level}`} key={level} />)}<span>多</span></div>
+            </article>
+            <article className="analytics-panel">
+              <div className="panel-heading"><div><h3>最近用量</h3><p>最近 14 个有使用记录的日期</p></div></div>
+              <div className="daily-bars">
+                {recentUsage.length ? recentUsage.map((item) => (
+                  <div className="daily-bar-item" key={item.date} title={`${item.date}：${numberText(item.totalTokens)} Token`}>
+                    <div><span style={{ height: `${Math.max(4, (item.totalTokens / maxRecentTokens) * 100)}%` }} /></div>
+                    <small>{item.date.slice(5)}</small>
+                  </div>
+                )) : <p className="hint">暂无使用数据</p>}
+              </div>
+            </article>
+            <article className="analytics-panel model-panel">
+              <div className="panel-heading"><div><h3>模型使用分布</h3><p>按对话轮次统计</p></div></div>
+              <div className="model-bars">
+                {stats.modelUsage.map((item) => (
+                  <div className="model-bar-row" key={item.name}>
+                    <span>{item.name}</span>
+                    <div><i style={{ width: `${(item.turns / maxModelTurns) * 100}%` }} /></div>
+                    <strong>{item.turns}</strong>
+                  </div>
+                ))}
+              </div>
+            </article>
+          </div>
+        </section>
+      ) : null}
+      <div className="records-heading">
+        <h3>聊天记录</h3>
+        <span>{filtered.length} 个对话</span>
       </div>
       {filtered.map((record) => (
         <details key={record.id}>
