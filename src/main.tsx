@@ -60,6 +60,7 @@ type Model = {
   model: string;
   systemPrompt: string;
   enabled: boolean;
+  isDefault: boolean;
   hasApiKey: boolean;
   createdAt: string;
 };
@@ -249,6 +250,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeId, setActiveId] = useState<string>("");
   const [draftModelId, setDraftModelId] = useState("");
+  const [defaultModelId, setDefaultModelId] = useState("");
   const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
   const [content, setContent] = useState("");
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
@@ -288,14 +290,19 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function refresh() {
     const [modelResult, conversationResult, workspaceResult] = await Promise.all([
-      api<{ models: Model[] }>("/api/models"),
+      api<{ models: Model[]; defaultModelId: string }>("/api/models"),
       api<{ conversations: Conversation[] }>("/api/conversations"),
       api<{ workspaces: Workspace[] }>("/api/workspaces")
     ]);
     setModels(modelResult.models);
+    setDefaultModelId(modelResult.defaultModelId);
     setConversations(conversationResult.conversations);
     setWorkspaces(workspaceResult.workspaces);
-    setDraftModelId((current) => (modelResult.models.some((model) => model.id === current) ? current : modelResult.models[0]?.id || ""));
+    setDraftModelId((current) => (
+      modelResult.models.some((model) => model.id === current)
+        ? current
+        : modelResult.defaultModelId || modelResult.models[0]?.id || ""
+    ));
   }
 
   useEffect(() => {
@@ -316,6 +323,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const timer = window.setInterval(() => setWaitIndex((index) => index + 1), 3200);
     return () => window.clearInterval(timer);
   }, [loadingByConversation]);
+
+  function startNewChat() {
+    setActiveId("");
+    setDraftModelId(defaultModelId || models[0]?.id || "");
+    setContent("");
+    setError("");
+    setView("chat");
+    setSidebarOpen(false);
+  }
 
   async function sendMessage(rawText: string) {
     const modelId = active?.modelId || draftModelId;
@@ -492,18 +508,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <button
             className="icon-btn"
             title="新对话"
-            onClick={() => {
-              setActiveId("");
-              setContent("");
-              setError("");
-              setView("chat");
-              setSidebarOpen(false);
-            }}
+            onClick={startNewChat}
           >
             <Plus size={18} />
           </button>
         </div>
-        <button className={`nav-item ${!activeId && view === "chat" ? "active" : ""}`} onClick={() => { setActiveId(""); setView("chat"); setSidebarOpen(false); }}>
+        <button className={`nav-item ${!activeId && view === "chat" ? "active" : ""}`} onClick={startNewChat}>
           <MessageSquare size={17} />
           新聊天
         </button>
@@ -1269,14 +1279,15 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
     apiKey: "",
     model: "",
     systemPrompt: "",
-    enabled: true
+    enabled: true,
+    isDefault: false
   });
-  const [editing, setEditing] = useState<Record<string, { name: string; kind: "chat" | "image"; baseUrl: string; model: string; apiKey: string; systemPrompt: string; enabled: boolean }>>({});
+  const [editing, setEditing] = useState<Record<string, { name: string; kind: "chat" | "image"; baseUrl: string; model: string; apiKey: string; systemPrompt: string; enabled: boolean; isDefault: boolean }>>({});
 
   async function createModel(event: FormEvent) {
     event.preventDefault();
     await api("/api/admin/models", { method: "POST", body: JSON.stringify(form) });
-    setForm({ name: "", kind: "chat", baseUrl: "https://app.yylx.io/v1", apiKey: "", model: "", systemPrompt: "", enabled: true });
+    setForm({ name: "", kind: "chat", baseUrl: "https://app.yylx.io/v1", apiKey: "", model: "", systemPrompt: "", enabled: true, isDefault: false });
     await reload();
   }
 
@@ -1316,6 +1327,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
         <input placeholder="模型 ID，如 qwen-plus / gpt-image-2" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} />
         <textarea placeholder="模型默认 System Prompt，可留空" value={form.systemPrompt} rows={4} onChange={(event) => setForm({ ...form, systemPrompt: event.target.value })} />
         <label className="check"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用</label>
+        <label className="check"><input type="checkbox" checked={form.isDefault} disabled={form.kind !== "chat" || !form.enabled} onChange={(event) => setForm({ ...form, isDefault: event.target.checked })} />设为新聊天默认模型</label>
         <button className="primary"><Plus size={16} />保存模型</button>
       </form>
       <div className="table">
@@ -1333,13 +1345,14 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
                 <label className="field-label">替换 API Key<input type="password" autoComplete="new-password" placeholder="留空则保持原 Key" value={editing[model.id].apiKey} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], apiKey: event.target.value } })} /></label>
                 <label className="field-label model-prompt-field">System Prompt<textarea rows={4} value={editing[model.id].systemPrompt} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], systemPrompt: event.target.value } })} /></label>
                 <label className="inline-check"><input type="checkbox" checked={editing[model.id].enabled} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], enabled: event.target.checked } })} />启用</label>
+                <label className="inline-check"><input type="radio" checked={editing[model.id].isDefault} disabled={editing[model.id].kind !== "chat" || !editing[model.id].enabled} onChange={() => setEditing({ ...editing, [model.id]: { ...editing[model.id], isDefault: true } })} />新聊天默认</label>
                 <button className="secondary" onClick={() => saveModel(model)}><Save size={15} />保存</button>
               </>
             ) : (
               <>
-                <span>{model.name}<small>{model.kind === "image" ? "图片" : "聊天"} · {model.model}</small></span>
+                <span>{model.name}<small>{model.kind === "image" ? "图片" : "聊天"} · {model.model}{model.isDefault ? " · 新聊天默认" : ""}</small></span>
                 <span>{model.hasApiKey ? "已配置 Key" : "缺少 Key"}</span>
-                <button className="secondary" onClick={() => setEditing({ ...editing, [model.id]: { name: model.name, kind: model.kind, baseUrl: model.baseUrl, model: model.model, apiKey: "", systemPrompt: model.systemPrompt || "", enabled: model.enabled } })}><Edit3 size={15} />编辑</button>
+                <button className="secondary" onClick={() => setEditing({ ...editing, [model.id]: { name: model.name, kind: model.kind, baseUrl: model.baseUrl, model: model.model, apiKey: "", systemPrompt: model.systemPrompt || "", enabled: model.enabled, isDefault: model.isDefault } })}><Edit3 size={15} />编辑</button>
                 <button className="secondary" onClick={() => toggle(model)}>{model.enabled ? "停用" : "启用"}</button>
                 <button className="danger" onClick={() => deleteModel(model)}><Trash2 size={15} />删除</button>
               </>
@@ -1542,7 +1555,7 @@ function RecordsTab({ records, users }: { records: (Conversation & { user: User 
         <section className="usage-dashboard">
           <div className="metric-grid">
             <article><span>总对话轮次</span><strong>{numberText(stats.summary.totalTurns)}</strong><small>{numberText(stats.summary.conversations)} 个对话</small></article>
-            <article><span>输入 Token</span><strong>{numberText(stats.summary.inputTokens)}</strong><small>含历史估算数据</small></article>
+            <article><span>输入 Token</span><strong>{numberText(stats.summary.inputTokens)}</strong><small>仅统计供应商返回数据</small></article>
             <article><span>输出 Token</span><strong>{numberText(stats.summary.outputTokens)}</strong><small>总计 {numberText(stats.summary.totalTokens)}</small></article>
             <article><span>活跃天数</span><strong>{numberText(stats.summary.activeDays)}</strong><small>平均 {stats.summary.averageTurnsPerConversation} 轮 / 对话</small></article>
           </div>

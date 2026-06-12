@@ -7,7 +7,7 @@ type ChatResult = {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
-    source: "provider" | "estimated";
+    source: "provider";
   };
   raw?: unknown;
 };
@@ -88,9 +88,17 @@ export async function callModel(
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
+      console.error(JSON.stringify({
+        event: "model_upstream_error",
+        requestId,
+        modelId: model.id,
+        model: model.model,
+        status: response.status,
+        detail
+      }));
       const hint =
         response.status === 503 || /temporarily unavailable/i.test(detail)
-          ? "供应商服务暂时不可用，请稍后重试"
+          ? `供应商暂时无法提供模型 "${model.model}"，请在中转站确认该 Key 所属分组已包含此模型且模型 ID 完全一致`
           : detail;
       throw new Error(`模型调用失败（上游 ${response.status}）：${hint}`);
     }
@@ -100,10 +108,6 @@ export async function callModel(
     const providerInputTokens = Number(payload?.usage?.prompt_tokens ?? payload?.usage?.input_tokens);
     const providerOutputTokens = Number(payload?.usage?.completion_tokens ?? payload?.usage?.output_tokens);
     const hasProviderUsage = Number.isFinite(providerInputTokens) && Number.isFinite(providerOutputTokens);
-    const inputTokens = hasProviderUsage
-      ? providerInputTokens
-      : Math.ceil([...systemMessages, ...messages].reduce((total, message) => total + message.content.length, 0) / 4);
-    const outputTokens = hasProviderUsage ? providerOutputTokens : Math.ceil(content.length / 4);
     console.log(JSON.stringify({
       event: "model_request_completed",
       requestId,
@@ -113,12 +117,14 @@ export async function callModel(
     }));
     return {
       content,
-      usage: {
-        inputTokens,
-        outputTokens,
-        totalTokens: inputTokens + outputTokens,
-        source: hasProviderUsage ? "provider" : "estimated"
-      },
+      usage: hasProviderUsage ? {
+        inputTokens: providerInputTokens,
+        outputTokens: providerOutputTokens,
+        totalTokens: Number.isFinite(Number(payload?.usage?.total_tokens))
+          ? Number(payload.usage.total_tokens)
+          : providerInputTokens + providerOutputTokens,
+        source: "provider"
+      } : undefined,
       raw: payload
     };
   } catch (error) {
@@ -186,11 +192,20 @@ async function callImageModel(
     modelId: model.id,
     durationMs: Date.now() - startedAt
   }));
-  const inputTokens = Math.ceil(prompt.length / 4);
+  const providerInputTokens = Number(payload?.usage?.prompt_tokens ?? payload?.usage?.input_tokens);
+  const providerOutputTokens = Number(payload?.usage?.completion_tokens ?? payload?.usage?.output_tokens);
+  const hasProviderUsage = Number.isFinite(providerInputTokens) && Number.isFinite(providerOutputTokens);
   return {
     content: "图片已生成",
     imageUrl,
-    usage: { inputTokens, outputTokens: 0, totalTokens: inputTokens, source: "estimated" },
+    usage: hasProviderUsage ? {
+      inputTokens: providerInputTokens,
+      outputTokens: providerOutputTokens,
+      totalTokens: Number.isFinite(Number(payload?.usage?.total_tokens))
+        ? Number(payload.usage.total_tokens)
+        : providerInputTokens + providerOutputTokens,
+      source: "provider"
+    } : undefined,
     raw: payload
   };
 }

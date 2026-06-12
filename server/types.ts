@@ -20,6 +20,7 @@ export type ModelConfig = {
   model: string;
   systemPrompt: string;
   enabled: boolean;
+  isDefault: boolean;
   createdAt: string;
 };
 

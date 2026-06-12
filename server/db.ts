@@ -39,6 +39,7 @@ function seed(): Database {
     model: "claude4.7",
     systemPrompt: "",
     enabled: Boolean(process.env.YYLX_API_KEY),
+    isDefault: false,
     createdAt: now()
   };
 
@@ -56,6 +57,7 @@ function seed(): Database {
         model: "gpt5.5",
         systemPrompt: "",
         enabled: Boolean(process.env.YYLX_API_KEY),
+        isDefault: true,
         createdAt: now()
       },
       {
@@ -68,6 +70,7 @@ function seed(): Database {
         model: "gpt-image-2",
         systemPrompt: "",
         enabled: Boolean(process.env.YYLX_API_KEY),
+        isDefault: false,
         createdAt: now()
       }
     ],
@@ -237,9 +240,28 @@ function migrateDatabase(db: Database): boolean {
       model.systemPrompt = "";
       changed = true;
     }
+    if (typeof (model as Partial<ModelConfig>).isDefault !== "boolean") {
+      model.isDefault = false;
+      changed = true;
+    }
     if (model.provider === "yylx" && model.kind === "image" && model.model === "image2") {
       model.model = "gpt-image-2";
       changed = true;
+    }
+  }
+  const eligibleDefaults = db.models.filter((model) => model.enabled && model.apiKey && model.kind === "chat");
+  const currentDefaults = eligibleDefaults.filter((model) => model.isDefault);
+  if (currentDefaults.length !== 1 || db.models.filter((model) => model.isDefault).length !== 1) {
+    const preferred =
+      currentDefaults[0] ??
+      eligibleDefaults.find((model) => model.model === "gpt-5.5" || model.model === "gpt5.5") ??
+      eligibleDefaults[0];
+    for (const model of db.models) {
+      const shouldBeDefault = model.id === preferred?.id;
+      if (model.isDefault !== shouldBeDefault) {
+        model.isDefault = shouldBeDefault;
+        changed = true;
+      }
     }
   }
   const messageIds = new Set(db.messages.map((message) => message.id));
@@ -269,7 +291,6 @@ function migrateDatabase(db: Database): boolean {
           content: message.content,
           imageUrl: message.imageUrl,
           modelId: message.modelId,
-          tokenCount: estimateTokenCount(message.content),
           createdAt: message.createdAt
         });
         messageIds.add(message.id);
@@ -279,10 +300,6 @@ function migrateDatabase(db: Database): boolean {
   }
 
   return changed;
-}
-
-function estimateTokenCount(content: string) {
-  return Math.ceil(content.length / 4);
 }
 
 async function createStore(): Promise<Store> {

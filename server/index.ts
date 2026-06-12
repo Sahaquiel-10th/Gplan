@@ -87,10 +87,6 @@ function hasExplicitMemoryIntent(content: string) {
   return /(?:请)?(?:记住|记得|帮我记|你要记)|我的名字(?:是|叫)|我叫/.test(content);
 }
 
-function estimateTokenCount(content: string) {
-  return Math.ceil(content.length / 4);
-}
-
 function cookieValue(req: Request, name: string) {
   return req.headers.cookie
     ?.split(";")
@@ -122,38 +118,9 @@ function userUsageStats(
   const messages = db.messages.filter((item) => item.userId === userId && inRange(item.createdAt));
   const conversationIds = new Set(messages.map((item) => item.conversationId));
   const conversations = db.conversations.filter((item) => item.userId === userId && conversationIds.has(item.id));
-  const usageRecords = db.modelUsageRecords.filter((item) => item.userId === userId && inRange(item.createdAt));
-  const usageByConversation = new Map<string, typeof usageRecords>();
-  for (const usage of usageRecords) {
-    const list = usageByConversation.get(usage.conversationId) ?? [];
-    list.push(usage);
-    usageByConversation.set(usage.conversationId, list);
-  }
-
-  const legacyMessages = conversations.flatMap((conversation) => {
-    const conversationMessages = messages
-      .filter((message) => message.conversationId === conversation.id && message.role !== "system")
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    const coveredCalls = usageByConversation.get(conversation.id)?.length ?? 0;
-    if (!coveredCalls) return conversationMessages;
-    let usersToSkip = coveredCalls;
-    let assistantsToSkip = coveredCalls;
-    return conversationMessages
-      .slice()
-      .reverse()
-      .filter((message) => {
-        if (message.role === "user" && usersToSkip > 0) {
-          usersToSkip -= 1;
-          return false;
-        }
-        if (message.role === "assistant" && assistantsToSkip > 0) {
-          assistantsToSkip -= 1;
-          return false;
-        }
-        return true;
-      })
-      .reverse();
-  });
+  const usageRecords = db.modelUsageRecords.filter(
+    (item) => item.userId === userId && item.source === "provider" && inRange(item.createdAt)
+  );
 
   const dailyMap = new Map<string, { date: string; turns: number; inputTokens: number; outputTokens: number; totalTokens: number }>();
   function daily(date: string) {
@@ -171,14 +138,6 @@ function userUsageStats(
     item.outputTokens += usage.outputTokens;
     item.totalTokens += usage.totalTokens;
   }
-  for (const message of legacyMessages) {
-    const item = daily(message.createdAt);
-    const tokens = message.tokenCount ?? estimateTokenCount(message.content);
-    if (message.role === "user") item.inputTokens += tokens;
-    if (message.role === "assistant") item.outputTokens += tokens;
-    item.totalTokens += tokens;
-  }
-
   const dailyUsage = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date));
   const inputTokens = dailyUsage.reduce((sum, item) => sum + item.inputTokens, 0);
   const outputTokens = dailyUsage.reduce((sum, item) => sum + item.outputTokens, 0);
@@ -201,7 +160,7 @@ function userUsageStats(
       totalTokens: inputTokens + outputTokens,
       activeDays: dailyUsage.filter((item) => item.turns > 0).length,
       averageTurnsPerConversation: conversations.length ? Number((totalTurns / conversations.length).toFixed(1)) : 0,
-      providerUsageRecords: usageRecords.filter((item) => item.source === "provider").length
+      providerUsageRecords: usageRecords.length
     },
     dailyUsage,
     modelUsage
@@ -226,7 +185,6 @@ function messageRecord(message: Message, params: { companyId: string; userId: st
     content: message.content,
     imageUrl: message.imageUrl,
     modelId: message.modelId,
-    tokenCount: estimateTokenCount(message.content),
     createdAt: message.createdAt
   };
 }
@@ -337,8 +295,13 @@ app.post("/api/auth/logout", (_req, res) => {
 
 app.get("/api/models", auth(jwtSecret), asyncRoute(async (_req, res) => {
   const db = await store.read();
-  const models = db.models.filter((model) => model.enabled && model.apiKey).map(publicModel);
-  res.json({ models });
+  const available = db.models.filter((model) => model.enabled && model.apiKey);
+  const defaultModel = available.find((model) => model.isDefault) ?? available.find((model) => model.kind === "chat") ?? available[0];
+  const models = available
+    .slice()
+    .sort((a, b) => Number(b.id === defaultModel?.id) - Number(a.id === defaultModel?.id))
+    .map(publicModel);
+  res.json({ models, defaultModelId: defaultModel?.id ?? "" });
 }));
 
 app.get("/api/conversations", auth(jwtSecret), asyncRoute(async (req, res) => {
@@ -940,9 +903,17 @@ app.post("/api/admin/models", ...protectedAdmin, asyncRoute(async (req, res) => 
       model: requiredString(req.body.model, "模型 ID"),
       systemPrompt: typeof req.body.systemPrompt === "string" ? req.body.systemPrompt : "",
       enabled: Boolean(req.body.enabled),
+      isDefault: Boolean(req.body.isDefault),
       createdAt: now()
     };
+    if (model.isDefault) {
+      if (!model.enabled || model.kind !== "chat") throw new Error("默认模型必须是已启用的聊天模型");
+      for (const item of db.models) item.isDefault = false;
+    }
     db.models.push(model);
+    if (!db.models.some((item) => item.isDefault) && model.enabled && model.apiKey && model.kind === "chat") {
+      model.isDefault = true;
+    }
     return model;
   });
   res.json({ model: publicModel(created) });
@@ -959,6 +930,19 @@ app.patch("/api/admin/models/:id", ...protectedAdmin, asyncRoute(async (req, res
     if (req.body.kind === "image" || req.body.kind === "chat") target.kind = req.body.kind;
     if (typeof req.body.apiKey === "string" && req.body.apiKey.trim()) target.apiKey = req.body.apiKey.trim();
     if (typeof req.body.enabled === "boolean") target.enabled = req.body.enabled;
+    if (req.body.isDefault === true) {
+      if (!target.enabled || target.kind !== "chat") throw new Error("默认模型必须是已启用的聊天模型");
+      for (const item of db.models) item.isDefault = item.id === target.id;
+    }
+    if ((!target.enabled || target.kind !== "chat") && target.isDefault) {
+      target.isDefault = false;
+      const fallback = db.models.find((item) => item.id !== target.id && item.enabled && item.apiKey && item.kind === "chat");
+      if (fallback) fallback.isDefault = true;
+    }
+    if (!db.models.some((item) => item.isDefault)) {
+      const fallback = db.models.find((item) => item.enabled && item.apiKey && item.kind === "chat");
+      if (fallback) fallback.isDefault = true;
+    }
     return target;
   });
   res.json({ model: publicModel(model) });
@@ -968,7 +952,11 @@ app.delete("/api/admin/models/:id", ...protectedAdmin, asyncRoute(async (req, re
   await store.mutate((db) => {
     const index = db.models.findIndex((item) => item.id === req.params.id);
     if (index === -1) throw new Error("模型不存在");
-    db.models.splice(index, 1);
+    const [removed] = db.models.splice(index, 1);
+    if (removed.isDefault) {
+      const fallback = db.models.find((item) => item.enabled && item.apiKey && item.kind === "chat");
+      if (fallback) fallback.isDefault = true;
+    }
   });
   res.json({ ok: true });
 }));
