@@ -1481,8 +1481,8 @@ details {
 .calendar-weekdays,
 .calendar-heatmap {
   display: grid;
-  grid-template-columns: repeat(7, minmax(28px, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(7, minmax(32px, 1fr));
+  gap: 5px;
 }
 
 .calendar-weekdays {
@@ -1498,8 +1498,7 @@ details {
 
 .calendar-day,
 .calendar-empty {
-  aspect-ratio: 1.25;
-  min-height: 31px;
+  height: 42px;
   border-radius: 4px;
 }
 
@@ -1731,6 +1730,11 @@ summary {
 
   .calendar-switcher input {
     flex: 1;
+  }
+
+  .calendar-day,
+  .calendar-empty {
+    height: 38px;
   }
 
   .metric-grid {
