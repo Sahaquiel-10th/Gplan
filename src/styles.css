@@ -1498,7 +1498,7 @@ details {
 
 .calendar-day,
 .calendar-empty {
-  height: 42px;
+  height: 34px;
   border-radius: 4px;
 }
 
@@ -1543,7 +1543,7 @@ details {
 }
 
 .daily-bars {
-  height: 112px;
+  height: 250px;
   margin-top: 13px;
   display: flex;
   align-items: stretch;
@@ -1554,7 +1554,7 @@ details {
   min-width: 0;
   flex: 1;
   display: grid;
-  grid-template-rows: 88px auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 5px;
   text-align: center;
 }
@@ -1735,6 +1735,10 @@ summary {
   .calendar-day,
   .calendar-empty {
     height: 38px;
+  }
+
+  .daily-bars {
+    height: 160px;
   }
 
   .metric-grid {
