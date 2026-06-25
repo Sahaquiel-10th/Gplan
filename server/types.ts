@@ -47,6 +47,7 @@ export type Conversation = {
   id: string;
   userId: string;
   modelId: string;
+  agentId?: string;
   workspaceId?: string;
   archived: boolean;
   title: string;
@@ -69,6 +70,19 @@ export type IntegrationToken = {
   tokenHash: string;
   enabled: boolean;
   createdAt: string;
+};
+
+export type Agent = {
+  id: string;
+  companyId: string;
+  ownerId: string;
+  name: string;
+  description: string;
+  prompt: string;
+  published: boolean;
+  publicSlug: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type SystemSettings = {
@@ -138,6 +152,7 @@ export type Database = {
   modelUsageRecords: ModelUsageRecord[];
   workspaces: Workspace[];
   integrationTokens: IntegrationToken[];
+  agents: Agent[];
   settings: SystemSettings;
 };
 

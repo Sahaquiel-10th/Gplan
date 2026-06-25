@@ -1,10 +1,4 @@
-import BailianClient, { RetrieveRequest } from "@alicloud/bailian20231229";
-import { Config } from "@alicloud/openapi-client";
 import { MessageRecord } from "./types.js";
-
-const BailianClientConstructor = (
-  (BailianClient as unknown as { default?: typeof BailianClient }).default ?? BailianClient
-) as typeof BailianClient;
 
 export type RetrievedItem = {
   text: string;
@@ -68,16 +62,26 @@ function workspaceId() {
   return process.env.BAILIAN_WORKSPACE_ID?.trim() || "";
 }
 
-function createKnowledgeClient() {
+async function createKnowledgeClient() {
   const accessKeyId = process.env.ALIBABA_CLOUD_ACCESS_KEY_ID?.trim();
   const accessKeySecret = process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET?.trim();
   if (!accessKeyId || !accessKeySecret) return null;
+  const [{ default: BailianClient, RetrieveRequest }, { Config }] = await Promise.all([
+    import("@alicloud/bailian20231229"),
+    import("@alicloud/openapi-client")
+  ]);
+  const BailianClientConstructor = (
+    (BailianClient as unknown as { default?: typeof BailianClient }).default ?? BailianClient
+  ) as typeof BailianClient;
   const config = new Config({
     accessKeyId,
     accessKeySecret,
     endpoint: process.env.BAILIAN_OPENAPI_ENDPOINT?.trim() || "bailian.cn-beijing.aliyuncs.com"
   });
-  return new BailianClientConstructor(config);
+  return {
+    client: new BailianClientConstructor(config),
+    RetrieveRequest
+  };
 }
 
 async function requestBailian(path: string, body: unknown, method = "POST") {
@@ -136,9 +140,9 @@ export class BailianCompanyKnowledgeService {
   async retrieveCompanyKnowledge(params: { companyId: string; userId: string; query: string }): Promise<RetrievedItem[]> {
     const indexId = process.env.BAILIAN_COMPANY_KB_ID?.trim();
     const ws = workspaceId();
-    const client = createKnowledgeClient();
-    if (!client || !indexId || !ws) return [];
-    const response = await client.retrieve(ws, new RetrieveRequest({
+    const knowledgeClient = await createKnowledgeClient();
+    if (!knowledgeClient || !indexId || !ws) return [];
+    const response = await knowledgeClient.client.retrieve(ws, new knowledgeClient.RetrieveRequest({
       indexId,
       query: params.query,
       denseSimilarityTopK: companyKnowledgeConfig.topK,

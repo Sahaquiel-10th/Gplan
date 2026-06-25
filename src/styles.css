@@ -920,7 +920,8 @@ pre {
 
 .admin-page,
 .account-page,
-.memory-page {
+.memory-page,
+.agents-page {
   min-width: 0;
   height: 100dvh;
   overflow: auto;
@@ -1329,6 +1330,220 @@ details {
   display: grid;
   gap: 10px;
   padding: 15px;
+}
+
+.agents-board {
+  display: grid;
+  gap: 24px;
+  padding: 8px 26px 34px;
+}
+
+.agent-notice {
+  margin: 0 26px 14px;
+}
+
+.agent-section {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #727b88;
+}
+
+.agent-section-title h3 {
+  color: #252b33;
+  font-size: 16px;
+}
+
+.agent-section-title span {
+  font-size: 12px;
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.agent-card {
+  min-width: 0;
+  min-height: 188px;
+  padding: 15px;
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  background: #fff;
+  color: #242a31;
+  text-align: left;
+}
+
+.agent-card.official {
+  border-color: #c9d8ea;
+  background: linear-gradient(180deg, #fff, #f7fbff);
+}
+
+.agent-card-top {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-mark {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #edf3fa;
+  color: #2d76c5;
+}
+
+.agent-card h3 {
+  overflow: hidden;
+  font-size: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.agent-card p {
+  color: #5d6673;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.agent-card-actions {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.agent-card-actions .primary {
+  width: auto;
+  min-width: 82px;
+  margin: 0;
+}
+
+.compact-actions {
+  margin-top: 0;
+}
+
+.create-card {
+  align-items: center;
+  justify-items: center;
+  border-style: dashed;
+  color: #647081;
+  background: #fafbfc;
+  text-align: center;
+}
+
+.create-card strong {
+  color: #303741;
+}
+
+.create-card span {
+  font-size: 13px;
+}
+
+.create-card:hover {
+  border-color: #8db7e7;
+  background: #f4f9ff;
+}
+
+.agent-empty {
+  min-height: 120px;
+  padding: 20px;
+  border: 1px dashed #d5dbe3;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: #8b94a1;
+  background: #fff;
+}
+
+.agent-editor {
+  margin: 0 26px 22px;
+  padding: 16px;
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+  display: grid;
+  gap: 13px;
+  background: #fff;
+}
+
+.agent-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-editor-heading h3 {
+  font-size: 17px;
+}
+
+.agent-editor .primary {
+  width: fit-content;
+  min-width: 118px;
+}
+
+.public-agent-shell {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: #fff;
+}
+
+.public-agent-header {
+  padding: 22px clamp(18px, 6vw, 86px);
+  border-bottom: 1px solid #eceef1;
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  align-items: center;
+  gap: 22px;
+  background: rgb(255 255 255 / 92%);
+}
+
+.public-agent-header img {
+  width: 132px;
+  height: auto;
+}
+
+.public-agent-header h1 {
+  font-size: 22px;
+}
+
+.public-agent-header p {
+  margin-top: 5px;
+  color: #596371;
+  line-height: 1.5;
+}
+
+.public-agent-header small {
+  display: block;
+  margin-top: 5px;
+}
+
+.public-agent-chat {
+  min-width: 0;
+  padding: 36px clamp(20px, 6vw, 88px);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  overflow: auto;
+}
+
+.public-composer {
+  border-top: 1px solid #f0f2f5;
 }
 
 .memory-meta {
@@ -1743,6 +1958,40 @@ summary {
 
   .metric-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .agents-board {
+    padding: 8px 14px 24px;
+    gap: 20px;
+  }
+
+  .agent-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-editor,
+  .agent-notice {
+    margin-left: 14px;
+    margin-right: 14px;
+  }
+
+  .agent-editor-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .public-agent-header {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: 18px;
+  }
+
+  .public-agent-header img {
+    width: 118px;
+  }
+
+  .public-agent-chat {
+    padding: 24px 16px;
   }
 
   .app-shell {

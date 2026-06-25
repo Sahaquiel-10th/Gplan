@@ -21,7 +21,7 @@ import { callModel } from "./modelGateway.js";
 import { buildPromptContext } from "./promptContext.js";
 import { createPlainToken, hashPassword, hashToken, signToken, uid, verifyPassword, verifyToken } from "./security.js";
 import { adminModel, publicModel, publicUser } from "./serializers.js";
-import { Conversation, Message, MessageRecord, ModelConfig, RagRetrievalLog, User, UserSavedMemory, Workspace } from "./types.js";
+import { Agent, Conversation, Message, MessageRecord, ModelConfig, RagRetrievalLog, User, UserSavedMemory, Workspace } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -37,6 +37,7 @@ const userMemoryMaxChars = 200;
 const userMemoryMaxTotalChars = 2000;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 const adminToolsAttempts = new Map<string, { count: number; resetAt: number }>();
+const publicAgentAttempts = new Map<string, { count: number; resetAt: number }>();
 const userImportUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 1 }
@@ -81,6 +82,26 @@ function requiredString(value: unknown, field: string) {
 
 function titleFrom(content: string) {
   return content.replace(/\s+/g, " ").slice(0, 32) || "新对话";
+}
+
+function randomSlug() {
+  return uid("agt").replace("agt_", "");
+}
+
+function publicAgent(agent: Agent, users: User[]) {
+  const owner = users.find((user) => user.id === agent.ownerId);
+  return {
+    id: agent.id,
+    name: agent.name,
+    description: agent.description,
+    prompt: agent.prompt,
+    published: agent.published,
+    publicSlug: agent.publicSlug,
+    authorName: owner?.username || "已删除用户",
+    authorRole: owner?.role || "user",
+    createdAt: agent.createdAt,
+    updatedAt: agent.updatedAt
+  };
 }
 
 function hasExplicitMemoryIntent(content: string) {
@@ -335,6 +356,129 @@ app.post("/api/workspaces", auth(jwtSecret), asyncRoute(async (req, res) => {
   res.json({ workspace });
 }));
 
+app.get("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const db = await store.read();
+  const agents = db.agents
+    .filter((agent) =>
+      agent.companyId === req.user!.companyId &&
+      (agent.ownerId === req.user!.id || (agent.published && db.users.find((user) => user.id === agent.ownerId)?.role === "admin"))
+    )
+    .sort((a, b) => Number(b.published) - Number(a.published) || b.updatedAt.localeCompare(a.updatedAt))
+    .map((agent) => publicAgent(agent, db.users));
+  res.json({ agents });
+}));
+
+app.post("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const name = requiredString(req.body.name, "智能体名字");
+  const description = requiredString(req.body.description, "功能描述");
+  const prompt = typeof req.body.prompt === "string" ? req.body.prompt.trim() : "";
+  const createdAt = now();
+  const agent = await store.mutate((db) => {
+    let slug = randomSlug();
+    while (db.agents.some((item) => item.publicSlug === slug)) slug = randomSlug();
+    const created: Agent = {
+      id: uid("agt"),
+      companyId: req.user!.companyId,
+      ownerId: req.user!.id,
+      name: name.slice(0, 40),
+      description: description.slice(0, 220),
+      prompt: prompt.slice(0, 4000),
+      published: Boolean(req.body.published),
+      publicSlug: slug,
+      createdAt,
+      updatedAt: createdAt
+    };
+    db.agents.push(created);
+    return created;
+  });
+  const db = await store.read();
+  res.json({ agent: publicAgent(agent, db.users) });
+}));
+
+app.patch("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const agent = await store.mutate((db) => {
+    const target = db.agents.find((item) => item.id === req.params.id && item.companyId === req.user!.companyId);
+    if (!target) throw new Error("智能体不存在");
+    if (target.ownerId !== req.user!.id && req.user!.role !== "admin") throw new Error("没有权限修改这个智能体");
+    if (typeof req.body.name === "string" && req.body.name.trim()) target.name = req.body.name.trim().slice(0, 40);
+    if (typeof req.body.description === "string" && req.body.description.trim()) target.description = req.body.description.trim().slice(0, 220);
+    if (typeof req.body.prompt === "string") target.prompt = req.body.prompt.trim().slice(0, 4000);
+    if (typeof req.body.published === "boolean") target.published = req.body.published;
+    target.updatedAt = now();
+    return target;
+  });
+  const db = await store.read();
+  res.json({ agent: publicAgent(agent, db.users) });
+}));
+
+app.delete("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
+  await store.mutate((db) => {
+    const index = db.agents.findIndex((item) => item.id === req.params.id && item.companyId === req.user!.companyId);
+    if (index === -1) throw new Error("智能体不存在");
+    const agent = db.agents[index];
+    if (agent.ownerId !== req.user!.id && req.user!.role !== "admin") throw new Error("没有权限删除这个智能体");
+    db.agents.splice(index, 1);
+    for (const conversation of db.conversations) {
+      if (conversation.agentId === agent.id) delete conversation.agentId;
+    }
+  });
+  res.json({ ok: true });
+}));
+
+app.get("/api/public/agents/:slug", asyncRoute(async (req, res) => {
+  const db = await store.read();
+  const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published);
+  if (!agent) return res.status(404).json({ error: "智能体不存在或未发布" });
+  const { prompt, ...safe } = publicAgent(agent, db.users);
+  res.json({ agent: safe });
+}));
+
+app.post("/api/public/agents/:slug/chat", asyncRoute(async (req, res) => {
+  const attemptKey = `${req.params.slug}:${req.ip || req.socket.remoteAddress || "unknown"}`;
+  const currentTime = Date.now();
+  const attempt = publicAgentAttempts.get(attemptKey);
+  if (attempt && attempt.resetAt <= currentTime) publicAgentAttempts.delete(attemptKey);
+  const latest = publicAgentAttempts.get(attemptKey);
+  if (latest && latest.count >= 60) return res.status(429).json({ error: "这个智能体访问太频繁，请稍后再试" });
+  publicAgentAttempts.set(attemptKey, {
+    count: (latest?.count ?? 0) + 1,
+    resetAt: latest?.resetAt ?? currentTime + 15 * 60_000
+  });
+  const content = requiredString(req.body.content, "消息");
+  const incomingMessages = Array.isArray(req.body.messages) ? req.body.messages : [];
+  const db = await store.read();
+  const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published);
+  if (!agent) return res.status(404).json({ error: "智能体不存在或未发布" });
+  const model =
+    db.models.find((item) => item.enabled && item.apiKey && item.isDefault && item.kind === "chat") ??
+    db.models.find((item) => item.enabled && item.apiKey && item.kind === "chat");
+  if (!model) return res.status(404).json({ error: "没有可用聊天模型" });
+  const history: Message[] = incomingMessages
+    .filter((message: Partial<Message>) => message.role === "user" || message.role === "assistant")
+    .slice(-10)
+    .map((message: Partial<Message>) => ({
+      role: message.role!,
+      content: String(message.content ?? "").slice(0, 6000),
+      modelId: model.id,
+      createdAt: now()
+    }));
+  const messages: Message[] = [
+    ...(agent.prompt ? [{ role: "assistant" as const, content: agent.prompt, modelId: model.id, createdAt: now() }] : []),
+    ...history,
+    { role: "user", content, modelId: model.id, createdAt: now() }
+  ];
+  const result = await callModel(model, messages, db.settings.safetyRules, res.locals.requestId);
+  res.json({
+    message: {
+      role: "assistant",
+      content: result.content,
+      imageUrl: result.imageUrl,
+      modelId: model.id,
+      createdAt: now()
+    }
+  });
+}));
+
 app.post(
   "/api/chat",
   auth(jwtSecret),
@@ -347,6 +491,16 @@ app.post(
     const existing = conversationId
       ? db.conversations.find((item) => item.id === conversationId && item.userId === req.user!.id)
       : undefined;
+    const requestedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : "";
+    const lockedAgentId = existing?.agentId || requestedAgentId;
+    const agent = lockedAgentId
+      ? db.agents.find((item) =>
+          item.id === lockedAgentId &&
+          item.companyId === req.user!.companyId &&
+          (item.ownerId === req.user!.id || (item.published && db.users.find((user) => user.id === item.ownerId)?.role === "admin"))
+        )
+      : undefined;
+    if (lockedAgentId && !agent) return res.status(404).json({ error: "智能体不存在或无权使用" });
     const lockedModelId = existing?.modelId || modelId;
     const model = db.models.find((item) => item.id === lockedModelId && item.enabled);
     if (!model) return res.status(404).json({ error: "模型不存在或未启用" });
@@ -382,9 +536,10 @@ app.post(
         id: uid("cnv"),
         userId: req.user!.id,
         modelId: model.id,
+        agentId: agent?.id,
         workspaceId: typeof req.body.workspaceId === "string" ? req.body.workspaceId : undefined,
         archived: false,
-        title: titleFrom(content),
+        title: agent ? `${agent.name} · ${titleFrom(content)}` : titleFrom(content),
         messages: [userMessage],
         createdAt: userMessage.createdAt,
         updatedAt: userMessage.createdAt
@@ -459,6 +614,7 @@ app.post(
     const modelMessages: Message[] = model.kind === "chat"
       ? [
           { role: "system", content: injectedContext, modelId: model.id, createdAt: now() },
+          ...(agent?.prompt ? [{ role: "assistant" as const, content: agent.prompt, modelId: model.id, createdAt: now() }] : []),
           userMessage
         ]
       : conversation.messages;

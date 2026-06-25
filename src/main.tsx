@@ -79,6 +79,7 @@ type Conversation = {
   id: string;
   userId: string;
   modelId: string;
+  agentId?: string;
   workspaceId?: string;
   archived: boolean;
   title: string;
@@ -92,6 +93,19 @@ type Workspace = {
   userId: string;
   name: string;
   createdAt: string;
+};
+
+type Agent = {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  published: boolean;
+  publicSlug: string;
+  authorName: string;
+  authorRole: Role;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type IntegrationToken = {
@@ -185,6 +199,10 @@ function titleFrom(content: string) {
   return content.replace(/\s+/g, " ").slice(0, 32) || "新对话";
 }
 
+function publicAgentUrl(slug: string) {
+  return `${window.location.origin}/agents/${slug}`;
+}
+
 function Login({ onDone }: { onDone: (user: User) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -249,15 +267,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [models, setModels] = useState<Model[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [activeId, setActiveId] = useState<string>("");
   const [draftModelId, setDraftModelId] = useState("");
+  const [draftAgentId, setDraftAgentId] = useState("");
   const [defaultModelId, setDefaultModelId] = useState("");
   const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
   const [content, setContent] = useState("");
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "memories" | "account">("chat");
+  const [view, setView] = useState<"chat" | "admin" | "memories" | "account" | "agents">("chat");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [waitIndex, setWaitIndex] = useState(0);
@@ -272,6 +292,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const activeLoadingKey = active?.id || "draft";
   const activeLoading = Boolean(loadingByConversation[activeLoadingKey]);
   const currentModel = models.find((model) => model.id === activeModelId);
+  const activeAgentId = active?.agentId || draftAgentId;
+  const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived);
   const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.workspaceId);
   const waitMessages = [
@@ -290,15 +312,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   ];
 
   async function refresh() {
-    const [modelResult, conversationResult, workspaceResult] = await Promise.all([
+    const [modelResult, conversationResult, workspaceResult, agentResult] = await Promise.all([
       api<{ models: Model[]; defaultModelId: string }>("/api/models"),
       api<{ conversations: Conversation[] }>("/api/conversations"),
-      api<{ workspaces: Workspace[] }>("/api/workspaces")
+      api<{ workspaces: Workspace[] }>("/api/workspaces"),
+      api<{ agents: Agent[] }>("/api/agents")
     ]);
     setModels(modelResult.models);
     setDefaultModelId(modelResult.defaultModelId);
     setConversations(conversationResult.conversations);
     setWorkspaces(workspaceResult.workspaces);
+    setAgents(agentResult.agents);
     setDraftModelId((current) => (
       modelResult.models.some((model) => model.id === current)
         ? current
@@ -327,7 +351,18 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   function startNewChat() {
     setActiveId("");
+    setDraftAgentId("");
     setDraftModelId(defaultModelId || models[0]?.id || "");
+    setContent("");
+    setError("");
+    setView("chat");
+    setSidebarOpen(false);
+  }
+
+  function startAgentChat(agent: Agent) {
+    setActiveId("");
+    setDraftAgentId(agent.id);
+    setDraftModelId(defaultModelId || models.find((model) => model.kind === "chat")?.id || models[0]?.id || "");
     setContent("");
     setError("");
     setView("chat");
@@ -359,8 +394,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         userId: user.id,
         modelId,
         workspaceId: draftWorkspaceId || undefined,
+        agentId: draftAgentId || undefined,
         archived: false,
-        title: titleFrom(text),
+        title: activeAgent ? `${activeAgent.name} · ${titleFrom(text)}` : titleFrom(text),
         messages: [userMessage],
         createdAt: userMessage.createdAt,
         updatedAt: userMessage.createdAt
@@ -379,7 +415,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     try {
       const result = await api<{ conversation: Conversation; memoryNotice?: string }>("/api/chat", {
         method: "POST",
-        body: JSON.stringify({ content: text, modelId, conversationId: isNewConversation ? "" : active.id, workspaceId: draftWorkspaceId })
+        body: JSON.stringify({ content: text, modelId, conversationId: isNewConversation ? "" : active.id, workspaceId: draftWorkspaceId, agentId: isNewConversation ? draftAgentId : active.agentId })
       });
       setConversations((items) => {
         const rest = items.filter((item) => item.id !== result.conversation.id && item.id !== tempId);
@@ -522,6 +558,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <Brain size={16} />
           我的记忆
         </button>
+        <button className={`nav-item ${view === "agents" ? "active" : ""}`} onClick={() => { setView("agents"); setActiveId(""); setSidebarOpen(false); }}>
+          <Bot size={16} />
+          智能体
+        </button>
         {user.role === "admin" ? (
           <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => { setView("admin"); setSidebarOpen(false); }}>
             <Settings size={16} />
@@ -643,6 +683,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <AdminPanel refreshModels={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "memories" ? (
         <MemoriesPage onOpenSidebar={() => setSidebarOpen(true)} />
+      ) : view === "agents" ? (
+        <AgentsPage user={user} agents={agents} reload={refresh} onStartChat={startAgentChat} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "account" ? (
         <AccountPage user={user} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : (
@@ -653,7 +695,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           </button>
           <div className="chat-title">
             <strong>{active?.title || "新对话"}</strong>
-            <span>{user.username}</span>
+            <span>{activeAgent ? `${activeAgent.name} · ${user.username}` : user.username}</span>
           </div>
           <div className="chat-controls">
           {!active ? (
@@ -748,6 +790,203 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
       )}
     </main>
+  );
+}
+
+function AgentCard({
+  agent,
+  official,
+  canEdit,
+  onStartChat,
+  onCopyLink,
+  onEdit,
+  onTogglePublish,
+  onDelete
+}: {
+  agent: Agent;
+  official?: boolean;
+  canEdit: boolean;
+  onStartChat: (agent: Agent) => void;
+  onCopyLink: (agent: Agent) => void;
+  onEdit: (agent: Agent) => void;
+  onTogglePublish: (agent: Agent) => void;
+  onDelete: (agent: Agent) => void;
+}) {
+  return (
+    <article className={`agent-card ${official ? "official" : ""}`}>
+      <div className="agent-card-top">
+        <span className="agent-mark"><Bot size={18} /></span>
+        <div>
+          <h3>{agent.name}</h3>
+          <small>{official ? "官方发布" : agent.published ? "已发布链接" : "仅自己可见"} · {agent.authorName}</small>
+        </div>
+      </div>
+      <p>{agent.description}</p>
+      <div className="agent-card-actions">
+        <button className="primary" onClick={() => onStartChat(agent)}><Send size={15} />使用</button>
+        {agent.published ? <button className="secondary" onClick={() => onCopyLink(agent)}><Copy size={15} />链接</button> : null}
+        {canEdit ? <button className="secondary" onClick={() => onEdit(agent)}><Edit3 size={15} />编辑</button> : null}
+      </div>
+      {canEdit ? (
+        <div className="agent-card-actions compact-actions">
+          <button className="secondary" onClick={() => onTogglePublish(agent)}>{agent.published ? "取消发布" : "发布链接"}</button>
+          <button className="danger" onClick={() => onDelete(agent)}><Trash2 size={15} />删除</button>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function AgentsPage({
+  user,
+  agents,
+  reload,
+  onStartChat,
+  onOpenSidebar
+}: {
+  user: User;
+  agents: Agent[];
+  reload: () => Promise<void>;
+  onStartChat: (agent: Agent) => void;
+  onOpenSidebar: () => void;
+}) {
+  const [editingId, setEditingId] = useState<string | "new" | "">("");
+  const [draft, setDraft] = useState({ name: "", description: "", prompt: "", published: false });
+  const [notice, setNotice] = useState("");
+  const officialAgents = agents.filter((agent) => agent.published && agent.authorRole === "admin");
+  const myAgents = agents.filter((agent) => agent.authorName === user.username && !(agent.published && agent.authorRole === "admin"));
+
+  function startCreate() {
+    setEditingId("new");
+    setDraft({ name: "", description: "", prompt: "", published: false });
+    setNotice("");
+  }
+
+  function startEdit(agent: Agent) {
+    setEditingId(agent.id);
+    setDraft({ name: agent.name, description: agent.description, prompt: agent.prompt || "", published: agent.published });
+    setNotice("");
+  }
+
+  async function saveAgent(event: FormEvent) {
+    event.preventDefault();
+    setNotice("");
+    if (!draft.name.trim() || !draft.description.trim()) return;
+    const body = JSON.stringify({
+      name: draft.name.trim(),
+      description: draft.description.trim(),
+      prompt: draft.prompt.trim(),
+      published: draft.published
+    });
+    try {
+      if (editingId === "new") {
+        await api("/api/agents", { method: "POST", body });
+      } else if (editingId) {
+        await api(`/api/agents/${editingId}`, { method: "PATCH", body });
+      }
+      setEditingId("");
+      setNotice("智能体已保存");
+      await reload();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "保存失败");
+    }
+  }
+
+  async function togglePublish(agent: Agent) {
+    try {
+      await api(`/api/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ published: !agent.published }) });
+      await reload();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "操作失败");
+    }
+  }
+
+  async function deleteAgent(agent: Agent) {
+    if (!confirm(`确认删除智能体「${agent.name}」？`)) return;
+    try {
+      await api(`/api/agents/${agent.id}`, { method: "DELETE" });
+      await reload();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "删除失败");
+    }
+  }
+
+  async function copyAgentLink(agent: Agent) {
+    await navigator.clipboard.writeText(publicAgentUrl(agent.publicSlug));
+    setNotice("公开链接已复制");
+  }
+
+  function canEdit(agent: Agent) {
+    return agent.authorName === user.username || user.role === "admin";
+  }
+
+  return (
+    <section className="agents-page">
+      <header className="admin-header">
+        <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
+        <div>
+          <h2>智能体</h2>
+          <p>把常用任务封装成固定角色、流程和输出风格</p>
+        </div>
+        <button className="secondary" onClick={startCreate}><Plus size={16} />创建智能体</button>
+      </header>
+      {notice ? <div className={notice.includes("失败") || notice.includes("不存在") ? "error agent-notice" : "notice agent-notice"}>{notice}</div> : null}
+      {editingId ? (
+        <form className="agent-editor" onSubmit={saveAgent}>
+          <div className="agent-editor-heading">
+            <h3>{editingId === "new" ? "创建智能体" : "编辑智能体"}</h3>
+            <button className="secondary" type="button" onClick={() => setEditingId("")}>取消</button>
+          </div>
+          <label>智能体名字<input maxLength={40} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：详情页策划助手" /></label>
+          <label>功能描述<textarea maxLength={220} rows={3} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="说明这个智能体适合处理什么任务" /></label>
+          <label>提示词<textarea rows={7} value={draft.prompt} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} placeholder="可选。不填就是普通对话智能体。这里适合写角色、流程、边界和输出格式。" /></label>
+          <label className="check"><input type="checkbox" checked={draft.published} onChange={(event) => setDraft({ ...draft, published: event.target.checked })} />发布独立链接</label>
+          <button className="primary" type="submit" disabled={!draft.name.trim() || !draft.description.trim()}><Save size={16} />保存</button>
+        </form>
+      ) : null}
+      <div className="agents-board">
+        <section className="agent-section">
+          <div className="agent-section-title"><h3>官方发布</h3><span>{officialAgents.length} 个</span></div>
+          <div className="agent-grid">
+            {officialAgents.length ? officialAgents.map((agent) => (
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                official
+                canEdit={canEdit(agent)}
+                onStartChat={onStartChat}
+                onCopyLink={copyAgentLink}
+                onEdit={startEdit}
+                onTogglePublish={togglePublish}
+                onDelete={deleteAgent}
+              />
+            )) : <div className="agent-empty">暂无官方智能体</div>}
+          </div>
+        </section>
+        <section className="agent-section">
+          <div className="agent-section-title"><h3>我的智能体</h3><span>{myAgents.length} 个</span></div>
+          <div className="agent-grid">
+            {myAgents.map((agent) => (
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                canEdit={canEdit(agent)}
+                onStartChat={onStartChat}
+                onCopyLink={copyAgentLink}
+                onEdit={startEdit}
+                onTogglePublish={togglePublish}
+                onDelete={deleteAgent}
+              />
+            ))}
+            <button className="agent-card create-card" onClick={startCreate}>
+              <Plus size={24} />
+              <strong>创建智能体</strong>
+              <span>保存一套常用提示词和使用入口</span>
+            </button>
+          </div>
+        </section>
+      </div>
+    </section>
   );
 }
 
@@ -1647,18 +1886,115 @@ function RecordsTab({ records, users }: { records: (Conversation & { user: User 
   );
 }
 
+function PublicAgentPage({ slug }: { slug: string }) {
+  const [agent, setAgent] = useState<Omit<Agent, "prompt"> | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [content, setContent] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const [isComposing, setIsComposing] = useState(false);
+
+  useEffect(() => {
+    api<{ agent: Omit<Agent, "prompt"> }>(`/api/public/agents/${encodeURIComponent(slug)}`)
+      .then((result) => setAgent(result.agent))
+      .catch((err) => setError(err instanceof Error ? err.message : "智能体加载失败"))
+      .finally(() => setLoading(false));
+  }, [slug]);
+
+  async function send(event: FormEvent) {
+    event.preventDefault();
+    const text = content.trim();
+    if (!text || sending) return;
+    const userMessage: Message = { id: localId("msg"), role: "user", content: text, createdAt: new Date().toISOString() };
+    const history = messages.slice(-10);
+    setMessages((items) => [...items, userMessage]);
+    setContent("");
+    setSending(true);
+    setError("");
+    try {
+      const result = await api<{ message: Message }>(`/api/public/agents/${encodeURIComponent(slug)}/chat`, {
+        method: "POST",
+        body: JSON.stringify({ content: text, messages: history })
+      });
+      setMessages((items) => [...items, result.message]);
+    } catch (err) {
+      setMessages((items) => items.filter((message) => message.id !== userMessage.id));
+      setError(err instanceof Error ? err.message : "发送失败");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey && !isComposing && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
+    }
+  }
+
+  if (loading) return <div className="boot">加载中...</div>;
+  if (!agent) return <div className="boot">{error || "智能体不存在"}</div>;
+
+  return (
+    <main className="public-agent-shell">
+      <header className="public-agent-header">
+        <img src="/brand/xiaoxiang-wordmark.png" alt="小象优选" />
+        <div>
+          <h1>{agent.name}</h1>
+          <p>{agent.description}</p>
+          <small>{agent.authorName} 发布</small>
+        </div>
+      </header>
+      <section className="public-agent-chat">
+        {messages.length ? messages.map((message, index) => (
+          <article className={`message ${message.role}`} key={`${message.createdAt}-${index}`}>
+            {message.role === "assistant" ? <div className="avatar"><img src="/brand/xiaoxiang-mark.png" alt="" /></div> : null}
+            <div className="bubble">
+              {message.role === "assistant" ? (
+                <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>
+              ) : <pre>{message.content}</pre>}
+              <small className="message-time">{dateTime(message.createdAt)}</small>
+            </div>
+          </article>
+        )) : (
+          <div className="empty-state">
+            <img src="/brand/xiaoxiang-mark.png" alt="" />
+            <h2>开始使用这个智能体</h2>
+            <p>{agent.description}</p>
+          </div>
+        )}
+        {sending ? <div className="typing">正在认真琢磨这个问题 (˘･_･˘)</div> : null}
+      </section>
+      <form className="composer public-composer" onSubmit={send}>
+        {error ? <div className="chat-error"><span>{error}</span></div> : null}
+        <div className="composer-row">
+          <textarea value={content} rows={2} placeholder="输入消息，Enter 发送" onChange={(event) => setContent(event.target.value)} onCompositionStart={() => setIsComposing(true)} onCompositionEnd={() => setIsComposing(false)} onKeyDown={handleKeyDown} />
+          <button className="primary send" type="submit" disabled={!content.trim() || sending}><Send size={18} /></button>
+        </div>
+      </form>
+    </main>
+  );
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [booting, setBooting] = useState(true);
+  const publicAgentSlug = window.location.pathname.match(/^\/agents\/([^/]+)\/?$/)?.[1] || "";
 
   useEffect(() => {
+    if (publicAgentSlug) {
+      setBooting(false);
+      return;
+    }
     localStorage.removeItem("enterprise-ai-token");
     api<{ user: User }>("/api/me")
       .then((result) => setUser(result.user))
       .catch(() => undefined)
       .finally(() => setBooting(false));
-  }, []);
+  }, [publicAgentSlug]);
 
+  if (publicAgentSlug) return <PublicAgentPage slug={decodeURIComponent(publicAgentSlug)} />;
   if (booting) return <div className="boot">加载中...</div>;
   if (!user) return <Login onDone={setUser} />;
   return (
