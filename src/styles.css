@@ -1334,8 +1334,8 @@ details {
 
 .agents-board {
   display: grid;
-  gap: 24px;
-  padding: 8px 26px 34px;
+  gap: 22px;
+  padding: 4px 26px 34px;
 }
 
 .agent-notice {
@@ -1365,22 +1365,23 @@ details {
 
 .agent-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(286px, 360px));
+  gap: 14px;
 }
 
 .agent-card {
   min-width: 0;
-  min-height: 188px;
-  padding: 15px;
+  min-height: 170px;
+  padding: 16px;
   border: 1px solid #dfe3e8;
   border-radius: 8px;
   display: grid;
   align-content: start;
-  gap: 12px;
+  gap: 11px;
   background: #fff;
   color: #242a31;
   text-align: left;
+  box-shadow: 0 8px 24px rgb(31 41 55 / 4%);
 }
 
 .agent-card.official {
@@ -1391,14 +1392,14 @@ details {
 .agent-card-top {
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
 }
 
 .agent-mark {
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
   border-radius: 8px;
   display: grid;
   place-items: center;
@@ -1408,33 +1409,73 @@ details {
 
 .agent-card h3 {
   overflow: hidden;
-  font-size: 16px;
+  font-size: 15px;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
 .agent-card p {
   color: #5d6673;
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .agent-card-actions {
   margin-top: auto;
   display: flex;
   align-items: center;
-  gap: 7px;
-  flex-wrap: wrap;
+  gap: 6px;
 }
 
-.agent-card-actions .primary {
-  width: auto;
-  min-width: 82px;
-  margin: 0;
+.agent-action,
+.agent-icon-action {
+  min-height: 32px;
+  border: 1px solid #d8dde5;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: #fff;
+  color: #394150;
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.compact-actions {
-  margin-top: 0;
+.agent-action {
+  padding: 6px 10px;
+}
+
+.agent-icon-action {
+  width: 32px;
+  padding: 0;
+}
+
+.agent-action:hover,
+.agent-icon-action:hover {
+  background: #f5f7fa;
+  border-color: #c7cdd6;
+}
+
+.primary-action {
+  border-color: #2878d4;
+  background: #2878d4;
+  color: #fff;
+}
+
+.primary-action:hover {
+  border-color: #1f69bd;
+  background: #1f69bd;
+}
+
+.danger-icon-action {
+  margin-left: auto;
+  border-color: #f0cfd0;
+  color: #ad3339;
+}
+
+.danger-icon-action:hover {
+  background: #fff5f5;
 }
 
 .create-card {
@@ -1496,6 +1537,17 @@ details {
   min-width: 118px;
 }
 
+.agent-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.agent-editor-actions .primary {
+  margin-top: 0;
+}
+
 .public-agent-shell {
   min-height: 100dvh;
   display: grid;
@@ -1504,38 +1556,40 @@ details {
 }
 
 .public-agent-header {
-  padding: 22px clamp(18px, 6vw, 86px);
+  padding: 18px clamp(18px, 7vw, 120px);
   border-bottom: 1px solid #eceef1;
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: 104px minmax(0, 1fr);
   align-items: center;
-  gap: 22px;
+  gap: 18px;
   background: rgb(255 255 255 / 92%);
 }
 
 .public-agent-header img {
-  width: 132px;
+  width: 104px;
   height: auto;
 }
 
 .public-agent-header h1 {
-  font-size: 22px;
+  font-size: 20px;
 }
 
 .public-agent-header p {
-  margin-top: 5px;
+  margin-top: 4px;
   color: #596371;
+  font-size: 13px;
   line-height: 1.5;
 }
 
 .public-agent-header small {
   display: block;
-  margin-top: 5px;
+  margin-top: 4px;
+  font-size: 12px;
 }
 
 .public-agent-chat {
   min-width: 0;
-  padding: 36px clamp(20px, 6vw, 88px);
+  padding: 34px clamp(20px, 7vw, 120px);
   display: flex;
   flex-direction: column;
   gap: 28px;

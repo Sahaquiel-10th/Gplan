@@ -800,7 +800,6 @@ function AgentCard({
   onStartChat,
   onCopyLink,
   onEdit,
-  onTogglePublish,
   onDelete
 }: {
   agent: Agent;
@@ -809,7 +808,6 @@ function AgentCard({
   onStartChat: (agent: Agent) => void;
   onCopyLink: (agent: Agent) => void;
   onEdit: (agent: Agent) => void;
-  onTogglePublish: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
 }) {
   return (
@@ -823,16 +821,11 @@ function AgentCard({
       </div>
       <p>{agent.description}</p>
       <div className="agent-card-actions">
-        <button className="primary" onClick={() => onStartChat(agent)}><Send size={15} />使用</button>
-        {agent.published ? <button className="secondary" onClick={() => onCopyLink(agent)}><Copy size={15} />链接</button> : null}
-        {canEdit ? <button className="secondary" onClick={() => onEdit(agent)}><Edit3 size={15} />编辑</button> : null}
+        <button className="agent-action primary-action" onClick={() => onStartChat(agent)}><Send size={14} />使用</button>
+        {agent.published ? <button className="agent-action" onClick={() => onCopyLink(agent)}><Copy size={14} />复制链接</button> : null}
+        {canEdit ? <button className="agent-icon-action" title="编辑" onClick={() => onEdit(agent)}><Edit3 size={14} /></button> : null}
+        {canEdit ? <button className="agent-icon-action danger-icon-action" title="删除" onClick={() => onDelete(agent)}><Trash2 size={14} /></button> : null}
       </div>
-      {canEdit ? (
-        <div className="agent-card-actions compact-actions">
-          <button className="secondary" onClick={() => onTogglePublish(agent)}>{agent.published ? "取消发布" : "发布链接"}</button>
-          <button className="danger" onClick={() => onDelete(agent)}><Trash2 size={15} />删除</button>
-        </div>
-      ) : null}
     </article>
   );
 }
@@ -854,11 +847,13 @@ function AgentsPage({
   const [draft, setDraft] = useState({ name: "", description: "", prompt: "", published: false });
   const [notice, setNotice] = useState("");
   const officialAgents = agents.filter((agent) => agent.published && agent.authorRole === "admin");
-  const myAgents = agents.filter((agent) => agent.authorName === user.username && !(agent.published && agent.authorRole === "admin"));
+  const myAgents = user.role === "admin"
+    ? []
+    : agents.filter((agent) => agent.authorName === user.username && agent.authorRole !== "admin");
 
   function startCreate() {
     setEditingId("new");
-    setDraft({ name: "", description: "", prompt: "", published: false });
+    setDraft({ name: "", description: "", prompt: "", published: true });
     setNotice("");
   }
 
@@ -876,7 +871,7 @@ function AgentsPage({
       name: draft.name.trim(),
       description: draft.description.trim(),
       prompt: draft.prompt.trim(),
-      published: draft.published
+      published: true
     });
     try {
       if (editingId === "new") {
@@ -885,16 +880,18 @@ function AgentsPage({
         await api(`/api/agents/${editingId}`, { method: "PATCH", body });
       }
       setEditingId("");
-      setNotice("智能体已保存");
+      setNotice(editingId === "new" ? "智能体已发布" : "智能体已更新");
       await reload();
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "保存失败");
     }
   }
 
-  async function togglePublish(agent: Agent) {
+  async function makePrivate(agent: Agent) {
     try {
-      await api(`/api/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ published: !agent.published }) });
+      await api(`/api/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ published: false }) });
+      setEditingId("");
+      setNotice("已转为私有，旧分享链接已作废");
       await reload();
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "操作失败");
@@ -928,7 +925,6 @@ function AgentsPage({
           <h2>智能体</h2>
           <p>把常用任务封装成固定角色、流程和输出风格</p>
         </div>
-        <button className="secondary" onClick={startCreate}><Plus size={16} />创建智能体</button>
       </header>
       {notice ? <div className={notice.includes("失败") || notice.includes("不存在") ? "error agent-notice" : "notice agent-notice"}>{notice}</div> : null}
       {editingId ? (
@@ -940,8 +936,20 @@ function AgentsPage({
           <label>智能体名字<input maxLength={40} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：详情页策划助手" /></label>
           <label>功能描述<textarea maxLength={220} rows={3} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="说明这个智能体适合处理什么任务" /></label>
           <label>提示词<textarea rows={7} value={draft.prompt} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} placeholder="可选。不填就是普通对话智能体。这里适合写角色、流程、边界和输出格式。" /></label>
-          <label className="check"><input type="checkbox" checked={draft.published} onChange={(event) => setDraft({ ...draft, published: event.target.checked })} />发布独立链接</label>
-          <button className="primary" type="submit" disabled={!draft.name.trim() || !draft.description.trim()}><Save size={16} />保存</button>
+          <div className="agent-editor-actions">
+            <button className="primary" type="submit" disabled={!draft.name.trim() || !draft.description.trim()}>
+              <Save size={16} />
+              {editingId === "new" ? "发布智能体" : "保存修改"}
+            </button>
+            {editingId !== "new" && draft.published ? (
+              <button className="secondary" type="button" onClick={() => {
+                const agent = agents.find((item) => item.id === editingId);
+                if (agent) makePrivate(agent);
+              }}>
+                转为私有智能体
+              </button>
+            ) : null}
+          </div>
         </form>
       ) : null}
       <div className="agents-board">
@@ -957,13 +965,20 @@ function AgentsPage({
                 onStartChat={onStartChat}
                 onCopyLink={copyAgentLink}
                 onEdit={startEdit}
-                onTogglePublish={togglePublish}
                 onDelete={deleteAgent}
               />
-            )) : <div className="agent-empty">暂无官方智能体</div>}
+            )) : null}
+            {user.role === "admin" ? (
+              <button className="agent-card create-card" onClick={startCreate}>
+                <Plus size={24} />
+                <strong>创建官方智能体</strong>
+                <span>发布后所有员工可见，并自动生成分享链接</span>
+              </button>
+            ) : null}
+            {!officialAgents.length && user.role !== "admin" ? <div className="agent-empty">暂无官方智能体</div> : null}
           </div>
         </section>
-        <section className="agent-section">
+        {user.role !== "admin" ? <section className="agent-section">
           <div className="agent-section-title"><h3>我的智能体</h3><span>{myAgents.length} 个</span></div>
           <div className="agent-grid">
             {myAgents.map((agent) => (
@@ -974,7 +989,6 @@ function AgentsPage({
                 onStartChat={onStartChat}
                 onCopyLink={copyAgentLink}
                 onEdit={startEdit}
-                onTogglePublish={togglePublish}
                 onDelete={deleteAgent}
               />
             ))}
@@ -984,7 +998,7 @@ function AgentsPage({
               <span>保存一套常用提示词和使用入口</span>
             </button>
           </div>
-        </section>
+        </section> : null}
       </div>
     </section>
   );

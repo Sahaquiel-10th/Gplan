@@ -88,6 +88,12 @@ function randomSlug() {
   return uid("agt").replace("agt_", "");
 }
 
+function uniqueAgentSlug(agents: Agent[]) {
+  let slug = randomSlug();
+  while (agents.some((item) => item.publicSlug === slug)) slug = randomSlug();
+  return slug;
+}
+
 function publicAgent(agent: Agent, users: User[]) {
   const owner = users.find((user) => user.id === agent.ownerId);
   return {
@@ -361,7 +367,10 @@ app.get("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
   const agents = db.agents
     .filter((agent) =>
       agent.companyId === req.user!.companyId &&
-      (agent.ownerId === req.user!.id || (agent.published && db.users.find((user) => user.id === agent.ownerId)?.role === "admin"))
+      (
+        agent.ownerId === req.user!.id ||
+        (agent.published && db.users.find((user) => user.id === agent.ownerId)?.role === "admin")
+      )
     )
     .sort((a, b) => Number(b.published) - Number(a.published) || b.updatedAt.localeCompare(a.updatedAt))
     .map((agent) => publicAgent(agent, db.users));
@@ -374,8 +383,7 @@ app.post("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
   const prompt = typeof req.body.prompt === "string" ? req.body.prompt.trim() : "";
   const createdAt = now();
   const agent = await store.mutate((db) => {
-    let slug = randomSlug();
-    while (db.agents.some((item) => item.publicSlug === slug)) slug = randomSlug();
+    const slug = uniqueAgentSlug(db.agents);
     const created: Agent = {
       id: uid("agt"),
       companyId: req.user!.companyId,
@@ -383,7 +391,7 @@ app.post("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
       name: name.slice(0, 40),
       description: description.slice(0, 220),
       prompt: prompt.slice(0, 4000),
-      published: Boolean(req.body.published),
+      published: true,
       publicSlug: slug,
       createdAt,
       updatedAt: createdAt
@@ -403,7 +411,12 @@ app.patch("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
     if (typeof req.body.name === "string" && req.body.name.trim()) target.name = req.body.name.trim().slice(0, 40);
     if (typeof req.body.description === "string" && req.body.description.trim()) target.description = req.body.description.trim().slice(0, 220);
     if (typeof req.body.prompt === "string") target.prompt = req.body.prompt.trim().slice(0, 4000);
-    if (typeof req.body.published === "boolean") target.published = req.body.published;
+    if (typeof req.body.published === "boolean") {
+      if (target.published && !req.body.published) {
+        target.publicSlug = uniqueAgentSlug(db.agents);
+      }
+      target.published = req.body.published;
+    }
     target.updatedAt = now();
     return target;
   });
