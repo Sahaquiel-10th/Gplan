@@ -666,6 +666,7 @@ pre {
 .markdown-body {
   line-height: 1.75;
   overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .markdown-body > :first-child {
@@ -701,19 +702,40 @@ pre {
   margin: 8px 0;
 }
 
-.markdown-body code {
+.markdown-body :not(pre) > code {
   padding: 2px 5px;
   border-radius: 4px;
   background: #eef1f5;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: break-word;
 }
 
 .markdown-body pre {
-  padding: 13px;
-  overflow: auto;
-  border-radius: 7px;
+  margin: 10px 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid #1c2530;
+  border-radius: 8px;
   background: #20252c;
   color: #f3f5f7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-wrap: normal;
+  scrollbar-width: thin;
+}
+
+.markdown-body pre code {
+  display: block;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: pre;
+  overflow-wrap: normal;
 }
 
 .message-actions {
