@@ -35,6 +35,7 @@ const memorySyncScheduler = new MemorySyncScheduler(store, memoryService);
 const userMemoryMaxItems = 10;
 const userMemoryMaxChars = 200;
 const userMemoryMaxTotalChars = 2000;
+const chatHistoryMessages = Math.max(0, Math.min(30, Number(process.env.CHAT_HISTORY_MESSAGES ?? 12)));
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 const adminToolsAttempts = new Map<string, { count: number; resetAt: number }>();
 const publicAgentAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -643,12 +644,20 @@ app.post(
         metadata: { visibility: "explicit" }
       }));
     const memories = [...explicitMemories, ...implicitMemories];
-    const recentMessages = latestDb.messages
+    const historyMessages: Message[] = latestDb.messages
       .filter((message) => message.conversationId === conversation.id && message.id !== userMessage.id)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .slice(-12);
+      .slice(-chatHistoryMessages)
+      .map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        imageUrl: message.imageUrl,
+        modelId: message.modelId,
+        createdAt: message.createdAt
+      }));
     const injectedContext = model.kind === "chat"
-      ? buildPromptContext({ memories, companyKnowledge, recentMessages })
+      ? buildPromptContext({ memories, companyKnowledge })
       : "";
     if (model.kind === "chat") {
       await Promise.all([
@@ -679,8 +688,9 @@ app.post(
 
     const modelMessages: Message[] = model.kind === "chat"
       ? [
-          { role: "system", content: injectedContext, modelId: model.id, createdAt: now() },
+          ...(injectedContext ? [{ role: "system" as const, content: injectedContext, modelId: model.id, createdAt: now() }] : []),
           ...(agent?.prompt ? [{ role: "assistant" as const, content: agent.prompt, modelId: model.id, createdAt: now() }] : []),
+          ...historyMessages,
           userMessage
         ]
       : conversation.messages;

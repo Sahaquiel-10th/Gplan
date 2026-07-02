@@ -1,5 +1,4 @@
 import { companyKnowledgeConfig } from "./bailian.js";
-import { MessageRecord } from "./types.js";
 import { RetrievedItem, RetrievedMemory } from "./bailian.js";
 
 const maxContextChars = Number(process.env.MAX_CONTEXT_CHARS ?? 8000);
@@ -12,7 +11,6 @@ function clip(value: string, remaining: number) {
 export function buildPromptContext(params: {
   memories: RetrievedMemory[];
   companyKnowledge: RetrievedItem[];
-  recentMessages: MessageRecord[];
 }) {
   const sections: string[] = [
     "你是企业内部 AI 助手。回答用户问题时，可以参考以下上下文。上下文可能包含用户个人记忆、历史偏好、企业知识库片段。请优先使用高相关、时间较新的信息。如果上下文不足以回答，不要编造。"
@@ -40,15 +38,6 @@ export function buildPromptContext(params: {
       `【企业知识库片段】\n${companyKnowledge
         .map((item, index) => `${index + 1}. 来源：${item.source || "企业知识库"}\n内容：${item.text}`)
         .join("\n\n")}`
-    );
-  }
-
-  const recentMessages = params.recentMessages.slice(-12);
-  if (recentMessages.length) {
-    sections.push(
-      `【当前对话】\n${recentMessages
-        .map((message) => `${message.role === "user" ? "用户" : message.role === "assistant" ? "AI" : "系统"}：${message.content}`)
-        .join("\n")}`
     );
   }
 
