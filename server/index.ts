@@ -21,7 +21,7 @@ import { callModel } from "./modelGateway.js";
 import { buildPromptContext } from "./promptContext.js";
 import { createPlainToken, hashPassword, hashToken, signToken, uid, verifyPassword, verifyToken } from "./security.js";
 import { adminModel, publicModel, publicUser } from "./serializers.js";
-import { Agent, Conversation, Message, MessageRecord, ModelConfig, RagRetrievalLog, User, UserSavedMemory, Workspace } from "./types.js";
+import { Agent, Conversation, DataConnector, DataConnectorId, DataSyncLog, Message, MessageRecord, ModelConfig, RagRetrievalLog, User, UserSavedMemory, Workspace } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -86,6 +86,59 @@ function titleFrom(content: string) {
 
 function randomSlug() {
   return uid("agt").replace("agt_", "");
+}
+
+function connectorHasCredentials(connector: DataConnector) {
+  return connector.requiredEnvVars.every((key) => Boolean(process.env[key]?.trim()));
+}
+
+function dataLayerOverview(connectors: DataConnector[]) {
+  const readyCount = connectors.filter((connector) => connectorHasCredentials(connector)).length;
+  return [
+    {
+      id: "source",
+      name: "数据源层",
+      description: "万里牛 ERP、企业支付宝以及后续银行账户仍保留在原系统。",
+      status: `${connectors.length} 个数据源已登记`
+    },
+    {
+      id: "ingestion",
+      name: "数据接入层",
+      description: "平台后端连接器负责凭证、签名、分页、限流、重试和同步留痕。",
+      status: `${readyCount}/${connectors.length} 个数据源凭证已配置`
+    },
+    {
+      id: "warehouse",
+      name: "业务数据库层",
+      description: "先落原始镜像表，再生成店铺日汇总、库存快照、现金流汇总等指标表。",
+      status: "表结构规划完成，等待真实同步任务落表"
+    },
+    {
+      id: "semantic",
+      name: "指标语义层",
+      description: "把店铺经营、商品排行、支付宝流水、到账核对封装成稳定工具。",
+      status: "第一批指标工具已登记"
+    },
+    {
+      id: "ai",
+      name: "AI 问数层",
+      description: "智能体只调用指标工具，不直接接触原始 API 和密钥。",
+      status: "等待店铺经营分析智能体接入工具"
+    }
+  ];
+}
+
+function syncLog(connectorId: DataConnectorId, action: DataSyncLog["action"], status: DataSyncLog["status"], message: string): DataSyncLog {
+  const timestamp = now();
+  return {
+    id: uid("dsl"),
+    connectorId,
+    action,
+    status,
+    message,
+    startedAt: timestamp,
+    finishedAt: timestamp
+  };
 }
 
 function uniqueAgentSlug(agents: Agent[]) {
@@ -1194,6 +1247,73 @@ app.get("/api/admin/usage-stats/export", ...protectedAdmin, asyncRoute(async (re
   res.setHeader("Content-Type", "application/vnd.ms-excel; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
   res.send(`\uFEFF${workbook}`);
+}));
+
+app.get("/api/admin/data-platform", ...protectedAdmin, asyncRoute(async (_req, res) => {
+  const db = await store.read();
+  const connectors = db.dataConnectors.map((connector) => ({
+    ...connector,
+    hasCredentials: connectorHasCredentials(connector),
+    missingEnvVars: connector.requiredEnvVars.filter((key) => !process.env[key]?.trim())
+  }));
+  res.json({
+    layers: dataLayerOverview(db.dataConnectors),
+    connectors,
+    metrics: db.dataMetricDefinitions,
+    syncLogs: db.dataSyncLogs.slice().sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 80)
+  });
+}));
+
+app.get("/api/admin/data-platform/plan", ...protectedAdmin, (_req, res) => {
+  res.type("text/markdown; charset=utf-8");
+  res.sendFile(path.join(root, "docs", "ai-data-query-platform-plan.md"));
+});
+
+app.post("/api/admin/data-platform/connectors/:id/check", ...protectedAdmin, asyncRoute(async (req, res) => {
+  const connectorId = req.params.id as DataConnectorId;
+  const result = await store.mutate((db) => {
+    const connector = db.dataConnectors.find((item) => item.id === connectorId);
+    if (!connector) throw new Error("数据源不存在");
+    const missing = connector.requiredEnvVars.filter((key) => !process.env[key]?.trim());
+    const hasCredentials = missing.length === 0;
+    connector.lastCheckedAt = now();
+    connector.status = hasCredentials ? "ready" : "waiting_credentials";
+    connector.message = hasCredentials
+      ? "凭证环境变量已配置，可以进入接口联调。"
+      : `缺少环境变量：${missing.join("、")}`;
+    const log = syncLog(
+      connector.id,
+      "check_credentials",
+      hasCredentials ? "success" : "blocked",
+      connector.message
+    );
+    db.dataSyncLogs.push(log);
+    return { connector, missingEnvVars: missing, hasCredentials, log };
+  });
+  res.json({ result });
+}));
+
+app.post("/api/admin/data-platform/connectors/:id/sync", ...protectedAdmin, asyncRoute(async (req, res) => {
+  const connectorId = req.params.id as DataConnectorId;
+  const result = await store.mutate((db) => {
+    const connector = db.dataConnectors.find((item) => item.id === connectorId);
+    if (!connector) throw new Error("数据源不存在");
+    const missing = connector.requiredEnvVars.filter((key) => !process.env[key]?.trim());
+    if (missing.length) {
+      connector.status = "waiting_credentials";
+      connector.message = `暂不能同步，缺少环境变量：${missing.join("、")}`;
+      const log = syncLog(connector.id, "manual_sync", "blocked", connector.message);
+      db.dataSyncLogs.push(log);
+      return { connector, missingEnvVars: missing, hasCredentials: false, log };
+    }
+    connector.status = "ready";
+    connector.lastCheckedAt = now();
+    connector.message = "凭证已配置；真实同步 adapter 等接口权限到位后接入。";
+    const log = syncLog(connector.id, "manual_sync", "blocked", connector.message);
+    db.dataSyncLogs.push(log);
+    return { connector, missingEnvVars: [], hasCredentials: true, log };
+  });
+  res.json({ result });
 }));
 
 app.get("/api/admin/integration-tokens", ...admin, asyncRoute(async (_req, res) => {

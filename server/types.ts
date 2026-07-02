@@ -141,6 +141,39 @@ export type ModelUsageRecord = {
   createdAt: string;
 };
 
+export type DataConnectorId = "wanliniu" | "alipay";
+
+export type DataConnector = {
+  id: DataConnectorId;
+  name: string;
+  sourceType: "erp" | "payment";
+  enabled: boolean;
+  status: "waiting_credentials" | "ready" | "syncing" | "error";
+  requiredEnvVars: string[];
+  lastCheckedAt?: string;
+  lastSyncedAt?: string;
+  message?: string;
+};
+
+export type DataSyncLog = {
+  id: string;
+  connectorId: DataConnectorId;
+  action: "check_credentials" | "manual_sync" | "scheduled_sync";
+  status: "success" | "blocked" | "failed";
+  message: string;
+  startedAt: string;
+  finishedAt: string;
+};
+
+export type DataMetricDefinition = {
+  id: string;
+  name: string;
+  layer: "semantic";
+  connectorIds: DataConnectorId[];
+  description: string;
+  status: "planned" | "available";
+};
+
 export type Database = {
   users: User[];
   models: ModelConfig[];
@@ -153,6 +186,9 @@ export type Database = {
   workspaces: Workspace[];
   integrationTokens: IntegrationToken[];
   agents: Agent[];
+  dataConnectors: DataConnector[];
+  dataSyncLogs: DataSyncLog[];
+  dataMetricDefinitions: DataMetricDefinition[];
   settings: SystemSettings;
 };
 

@@ -1909,6 +1909,216 @@ details {
   text-align: right;
 }
 
+.data-platform {
+  display: grid;
+  gap: 18px;
+}
+
+.data-platform-hero,
+.data-section,
+.data-layers article,
+.connector-card,
+.metric-tool-list article,
+.data-log-list article {
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.data-platform-hero {
+  padding: 18px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.data-platform-hero h3,
+.data-layers h4,
+.connector-card h4,
+.metric-tool-list h4 {
+  margin: 0;
+  color: #20252c;
+}
+
+.data-platform-hero p,
+.data-layers p,
+.connector-card p,
+.metric-tool-list p,
+.data-log-list p {
+  margin: 6px 0 0;
+  color: #6b7480;
+  line-height: 1.6;
+}
+
+.data-layers {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.data-layers article {
+  min-height: 150px;
+  padding: 14px;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.data-layers article > span {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #edf5ff;
+  color: #2b7ed8;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.data-layers small,
+.metric-tool-list small,
+.connector-meta {
+  color: #8a94a3;
+  font-size: 12px;
+}
+
+.data-section-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 18px;
+}
+
+.data-section {
+  padding: 16px;
+}
+
+.connector-list,
+.metric-tool-list,
+.data-log-list {
+  display: grid;
+  gap: 12px;
+}
+
+.connector-card {
+  padding: 14px;
+}
+
+.connector-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.status-pill {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-pill.ready {
+  background: #eaf7ef;
+  color: #237347;
+}
+
+.status-pill.waiting {
+  background: #fff7e5;
+  color: #9a6400;
+}
+
+.env-list {
+  margin: 12px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.env-list code {
+  padding: 5px 7px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.env-list code.ready {
+  background: #eaf7ef;
+  color: #237347;
+}
+
+.env-list code.missing {
+  background: #f5f7fa;
+  color: #6f7885;
+}
+
+.connector-meta {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.connector-actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.metric-tool-list article {
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.metric-tool-list article > span {
+  align-self: start;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: #f1f5f9;
+  color: #526071;
+  font-size: 12px;
+}
+
+.data-log-list article {
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: #9aa4b2;
+}
+
+.status-dot.success {
+  background: #2fa466;
+}
+
+.status-dot.blocked {
+  background: #e0a11b;
+}
+
+.status-dot.failed {
+  background: #d94d4d;
+}
+
+.data-log-list time {
+  color: #8a94a3;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .records-heading {
   margin-top: 8px;
   display: flex;
@@ -1975,6 +2185,14 @@ summary {
     grid-template-columns: 1fr;
   }
 
+  .data-layers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .data-section-grid {
+    grid-template-columns: 1fr;
+  }
+
   .model-panel {
     grid-column: auto;
   }
@@ -2008,6 +2226,23 @@ summary {
 
   .export-link {
     margin-left: 0;
+  }
+
+  .data-platform-hero,
+  .connector-card-head,
+  .connector-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .data-layers,
+  .metric-tool-list article,
+  .data-log-list article {
+    grid-template-columns: 1fr;
+  }
+
+  .data-log-list time {
+    white-space: normal;
   }
 
   .calendar-heading {

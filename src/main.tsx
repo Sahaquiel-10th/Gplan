@@ -142,6 +142,41 @@ type UsageStats = {
   modelUsage: Array<{ name: string; turns: number }>;
 };
 
+type DataConnector = {
+  id: "wanliniu" | "alipay";
+  name: string;
+  sourceType: "erp" | "payment";
+  enabled: boolean;
+  status: "waiting_credentials" | "ready" | "syncing" | "error";
+  requiredEnvVars: string[];
+  hasCredentials: boolean;
+  missingEnvVars: string[];
+  lastCheckedAt?: string;
+  lastSyncedAt?: string;
+  message?: string;
+};
+
+type DataPlatformState = {
+  layers: Array<{ id: string; name: string; description: string; status: string }>;
+  connectors: DataConnector[];
+  metrics: Array<{
+    id: string;
+    name: string;
+    connectorIds: DataConnector["id"][];
+    description: string;
+    status: "planned" | "available";
+  }>;
+  syncLogs: Array<{
+    id: string;
+    connectorId: DataConnector["id"];
+    action: "check_credentials" | "manual_sync" | "scheduled_sync";
+    status: "success" | "blocked" | "failed";
+    message: string;
+    startedAt: string;
+    finishedAt: string;
+  }>;
+};
+
 type MemoryItem = {
   id: string;
   text: string;
@@ -1265,7 +1300,7 @@ function SecureAdminTab({ users, refreshModels }: { users: User[]; refreshModels
   const [checking, setChecking] = useState(true);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [subtab, setSubtab] = useState<"models" | "records">("models");
+  const [subtab, setSubtab] = useState<"models" | "records" | "data">("models");
   const [models, setModels] = useState<Model[]>([]);
   const [records, setRecords] = useState<(Conversation & { user: User })[]>([]);
 
@@ -1323,11 +1358,14 @@ function SecureAdminTab({ users, refreshModels }: { users: User[]; refreshModels
       <nav className="subtabs">
         <button className={subtab === "models" ? "active" : ""} onClick={() => setSubtab("models")}><Bot size={16} />模型配置</button>
         <button className={subtab === "records" ? "active" : ""} onClick={() => setSubtab("records")}><BarChart3 size={16} />记录与用量</button>
+        <button className={subtab === "data" ? "active" : ""} onClick={() => setSubtab("data")}><FileSpreadsheet size={16} />数据接入</button>
       </nav>
       {subtab === "models" ? (
         <ModelsTab models={models} reload={async () => { await loadProtected(); await refreshModels(); }} />
-      ) : (
+      ) : subtab === "records" ? (
         <RecordsTab records={records} users={users} />
+      ) : (
+        <DataPlatformTab />
       )}
     </div>
   );
@@ -1713,6 +1751,154 @@ function dateDaysAgo(days: number) {
   date.setHours(12, 0, 0, 0);
   date.setDate(date.getDate() - days);
   return localDateKey(date);
+}
+
+function DataPlatformTab() {
+  const [state, setState] = useState<DataPlatformState | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState("");
+  const [busyConnector, setBusyConnector] = useState("");
+
+  async function load() {
+    setLoading(true);
+    try {
+      const result = await api<DataPlatformState>("/api/admin/data-platform");
+      setState(result);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load().catch((err) => setNotice(err instanceof Error ? err.message : "数据接入状态加载失败"));
+  }, []);
+
+  async function runConnectorAction(connector: DataConnector, action: "check" | "sync") {
+    setNotice("");
+    setBusyConnector(`${connector.id}:${action}`);
+    try {
+      const result = await api<{ result: { hasCredentials: boolean; missingEnvVars: string[]; log: { message: string } } }>(
+        `/api/admin/data-platform/connectors/${connector.id}/${action}`,
+        { method: "POST" }
+      );
+      setNotice(result.result.log.message);
+      await load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      setBusyConnector("");
+    }
+  }
+
+  const connectorName = (id: DataConnector["id"]) => state?.connectors.find((connector) => connector.id === id)?.name ?? id;
+
+  if (loading && !state) return <div className="secure-loading">正在加载数据接入状态...</div>;
+
+  return (
+    <div className="data-platform">
+      <section className="data-platform-hero">
+        <div>
+          <h3>AI 问数数据接入</h3>
+          <p>先把万里牛和企业支付宝接成受控数据能力：每个数据源、每次检测、每次同步都会留痕。</p>
+        </div>
+        <a className="secondary" href="/api/admin/data-platform/plan" target="_blank" rel="noreferrer">
+          <FileSpreadsheet size={15} />查看方案文档
+        </a>
+      </section>
+      {notice ? <div className="import-notice">{notice}</div> : null}
+      <section className="data-layers">
+        {state?.layers.map((layer, index) => (
+          <article key={layer.id}>
+            <span>{index + 1}</span>
+            <div>
+              <h4>{layer.name}</h4>
+              <p>{layer.description}</p>
+              <small>{layer.status}</small>
+            </div>
+          </article>
+        ))}
+      </section>
+      <section className="data-section-grid">
+        <div className="data-section">
+          <div className="records-heading">
+            <h3>数据源连接器</h3>
+            <span>{state?.connectors.length ?? 0} 个</span>
+          </div>
+          <div className="connector-list">
+            {state?.connectors.map((connector) => (
+              <article className="connector-card" key={connector.id}>
+                <div className="connector-card-head">
+                  <div>
+                    <h4>{connector.name}</h4>
+                    <p>{connector.sourceType === "erp" ? "ERP 经营数据" : "支付资金数据"}</p>
+                  </div>
+                  <span className={connector.hasCredentials ? "status-pill ready" : "status-pill waiting"}>
+                    {connector.hasCredentials ? "凭证已配置" : "等待凭证"}
+                  </span>
+                </div>
+                <div className="env-list">
+                  {connector.requiredEnvVars.map((envName) => (
+                    <code className={connector.missingEnvVars.includes(envName) ? "missing" : "ready"} key={envName}>
+                      {envName}
+                    </code>
+                  ))}
+                </div>
+                {connector.message ? <p className="hint no-margin">{connector.message}</p> : null}
+                <div className="connector-meta">
+                  <span>最后检测：{connector.lastCheckedAt ? dateTime(connector.lastCheckedAt) : "暂无"}</span>
+                  <span>最后同步：{connector.lastSyncedAt ? dateTime(connector.lastSyncedAt) : "暂无"}</span>
+                </div>
+                <div className="connector-actions">
+                  <button className="secondary" disabled={busyConnector === `${connector.id}:check`} onClick={() => runConnectorAction(connector, "check")}>
+                    <RotateCcw size={15} />检测凭证
+                  </button>
+                  <button className="primary" disabled={busyConnector === `${connector.id}:sync`} onClick={() => runConnectorAction(connector, "sync")}>
+                    <Upload size={15} />手动同步
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+        <div className="data-section">
+          <div className="records-heading">
+            <h3>指标工具</h3>
+            <span>{state?.metrics.length ?? 0} 个</span>
+          </div>
+          <div className="metric-tool-list">
+            {state?.metrics.map((metric) => (
+              <article key={metric.id}>
+                <div>
+                  <h4>{metric.name}</h4>
+                  <p>{metric.description}</p>
+                  <small>{metric.id}</small>
+                </div>
+                <span>{metric.connectorIds.map(connectorName).join(" + ")}</span>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+      <section className="data-section">
+        <div className="records-heading">
+          <h3>接入留痕</h3>
+          <span>{state?.syncLogs.length ?? 0} 条</span>
+        </div>
+        <div className="data-log-list">
+          {state?.syncLogs.length ? state.syncLogs.map((log) => (
+            <article key={log.id}>
+              <span className={`status-dot ${log.status}`} />
+              <div>
+                <strong>{connectorName(log.connectorId)} · {log.action === "check_credentials" ? "检测凭证" : log.action === "manual_sync" ? "手动同步" : "定时同步"}</strong>
+                <p>{log.message}</p>
+              </div>
+              <time>{dateTime(log.finishedAt)}</time>
+            </article>
+          )) : <p className="hint">暂无留痕。点击“检测凭证”或“手动同步”后会生成记录。</p>}
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function RecordsTab({ records, users }: { records: (Conversation & { user: User })[]; users: User[] }) {
