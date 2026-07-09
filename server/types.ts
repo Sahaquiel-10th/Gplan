@@ -30,6 +30,9 @@ export type Message = {
   role: "user" | "assistant" | "system";
   content: string;
   imageUrl?: string;
+  attachments?: AttachmentSummary[];
+  sources?: SearchSource[];
+  inputImageDataUrls?: string[];
   createdAt: string;
   modelId?: string;
 };
@@ -40,6 +43,8 @@ export type MessageRecord = Required<Pick<Message, "id" | "role" | "content" | "
   conversationId: string;
   modelId?: string;
   imageUrl?: string;
+  attachmentIds?: string[];
+  sources?: SearchSource[];
   tokenCount?: number;
 };
 
@@ -79,10 +84,38 @@ export type Agent = {
   name: string;
   description: string;
   prompt: string;
+  allowFileUpload: boolean;
+  allowImageInput: boolean;
+  allowWebSearch: boolean;
   published: boolean;
   publicSlug: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type AttachmentKind = "image" | "document" | "spreadsheet" | "presentation" | "text";
+
+export type Attachment = {
+  id: string;
+  companyId: string;
+  userId: string;
+  originalName: string;
+  mimeType: string;
+  kind: AttachmentKind;
+  size: number;
+  storagePath: string;
+  extractedText: string;
+  conversationId?: string;
+  messageId?: string;
+  createdAt: string;
+};
+
+export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size">;
+
+export type SearchSource = {
+  title: string;
+  url: string;
+  snippet: string;
 };
 
 export type SystemSettings = {
@@ -186,6 +219,7 @@ export type Database = {
   workspaces: Workspace[];
   integrationTokens: IntegrationToken[];
   agents: Agent[];
+  attachments: Attachment[];
   dataConnectors: DataConnector[];
   dataSyncLogs: DataSyncLog[];
   dataMetricDefinitions: DataMetricDefinition[];

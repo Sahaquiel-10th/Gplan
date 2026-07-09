@@ -154,6 +154,7 @@ function seed(): Database {
     workspaces: [],
     integrationTokens: [],
     agents: [],
+    attachments: [],
     dataConnectors: defaultDataConnectors(),
     dataSyncLogs: [],
     dataMetricDefinitions: defaultDataMetricDefinitions(),
@@ -271,6 +272,7 @@ function migrateDatabase(db: Database): boolean {
   let changed = false;
   db.integrationTokens ??= [];
   db.agents ??= [];
+  db.attachments ??= [];
   db.workspaces ??= [];
   db.messages ??= [];
   db.memorySyncStates ??= [];
@@ -315,6 +317,21 @@ function migrateDatabase(db: Database): boolean {
   for (const token of db.integrationTokens) {
     if (token.token) {
       delete token.token;
+      changed = true;
+    }
+  }
+
+  for (const agent of db.agents) {
+    if (typeof agent.allowFileUpload !== "boolean") {
+      agent.allowFileUpload = true;
+      changed = true;
+    }
+    if (typeof agent.allowImageInput !== "boolean") {
+      agent.allowImageInput = true;
+      changed = true;
+    }
+    if (typeof agent.allowWebSearch !== "boolean") {
+      agent.allowWebSearch = false;
       changed = true;
     }
   }
@@ -402,6 +419,8 @@ function migrateDatabase(db: Database): boolean {
           role: message.role,
           content: message.content,
           imageUrl: message.imageUrl,
+          attachmentIds: message.attachments?.map((attachment) => attachment.id),
+          sources: message.sources,
           modelId: message.modelId,
           createdAt: message.createdAt
         });

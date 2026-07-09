@@ -79,7 +79,12 @@ export async function callModel(
         model: model.model,
         messages: [...systemMessages, ...messages].map((message) => ({
           role: message.role,
-          content: message.content
+          content: message.inputImageDataUrls?.length
+            ? [
+                { type: "text", text: message.content },
+                ...message.inputImageDataUrls.map((url) => ({ type: "image_url", image_url: { url } }))
+              ]
+            : message.content
         })),
         temperature: 0.7,
         max_tokens: maxOutputTokens

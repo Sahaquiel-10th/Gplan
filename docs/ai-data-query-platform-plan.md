@@ -839,6 +839,30 @@ dataSyncLogs
 - 财务数据哪些角色可见。
 - 是否需要回单、对账单。
 
+## 文件、图片与联网工具
+
+平台聊天支持把附件和外部搜索作为受控工具接入模型，而不是把密钥或原始文件交给前端。
+
+- 图片：PNG、JPEG、WebP、GIF。仅在当前消息中以多模态格式发送给 OpenAI 协议聊天模型，历史轮次不重复发送原图。
+- 文档：PDF、DOCX、TXT、Markdown、JSON。服务器提取文字后，以不可信附件资料注入当前请求。
+- 表格：XLSX、CSV。保留工作表、行列结构并转换成制表文本；复杂问数仍应交给后续数据工具执行计算。
+- 演示文稿：PPTX。按幻灯片顺序提取文本；旧版 DOC、XLS、PPT 不做不可靠的兼容解析。
+- 联网搜索：服务端调用 Tavily，默认返回 5 条结果，模型回答下方保留来源链接。
+
+相关环境变量：
+
+```text
+SEARCH_PROVIDER=tavily
+TAVILY_API_KEY=
+WEB_SEARCH_MAX_RESULTS=5
+WEB_SEARCH_TIMEOUT_MS=15000
+ATTACHMENT_MAX_BYTES=10485760
+ATTACHMENT_MAX_EXTRACTED_CHARS=30000
+ATTACHMENT_CONTEXT_CHARS=24000
+```
+
+智能体分别配置“文件上传、图片理解、联网搜索”权限。提示词不能扩大权限，后端会在调用工具前再次校验。公开智能体首版支持联网搜索，不开放匿名文件上传，避免文件存储滥用和越权读取。
+
 ## 参考资料
 
 - 万里牛开放平台：`https://open.hupun.com/`

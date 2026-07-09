@@ -15,15 +15,19 @@ import {
   Edit3,
   Eye,
   EyeOff,
+  FileText,
   FileSpreadsheet,
   Folder,
   FolderInput,
+  Globe2,
+  Image,
   KeyRound,
   LockKeyhole,
   Lock,
   LogOut,
   Menu,
   MessageSquare,
+  Paperclip,
   Plus,
   RotateCcw,
   Save,
@@ -71,8 +75,29 @@ type Message = {
   role: "user" | "assistant" | "system";
   content: string;
   imageUrl?: string;
+  attachments?: AttachmentSummary[];
+  sources?: SearchSource[];
   createdAt: string;
   modelId?: string;
+};
+
+type AttachmentSummary = {
+  id: string;
+  originalName: string;
+  mimeType: string;
+  kind: "image" | "document" | "spreadsheet" | "presentation" | "text";
+  size: number;
+};
+
+type SearchSource = {
+  title: string;
+  url: string;
+  snippet: string;
+};
+
+type AppCapabilities = {
+  attachments: { enabled: boolean; maxFiles: number; maxBytes: number; extensions: string[] };
+  webSearch: { enabled: boolean; provider: string };
 };
 
 type Conversation = {
@@ -100,6 +125,9 @@ type Agent = {
   name: string;
   description: string;
   prompt: string;
+  allowFileUpload: boolean;
+  allowImageInput: boolean;
+  allowWebSearch: boolean;
   published: boolean;
   publicSlug: string;
   authorName: string;
@@ -238,6 +266,59 @@ function publicAgentUrl(slug: string) {
   return `${window.location.origin}/agents/${slug}`;
 }
 
+function readableFileSize(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function AttachmentIcon({ kind, size = 15 }: { kind: AttachmentSummary["kind"]; size?: number }) {
+  if (kind === "image") return <Image size={size} />;
+  if (kind === "spreadsheet") return <FileSpreadsheet size={size} />;
+  return <FileText size={size} />;
+}
+
+function AttachmentList({ attachments, removable, onRemove }: {
+  attachments: AttachmentSummary[];
+  removable?: boolean;
+  onRemove?: (attachment: AttachmentSummary) => void;
+}) {
+  if (!attachments.length) return null;
+  return (
+    <div className={`attachment-list ${removable ? "pending" : ""}`}>
+      {attachments.map((attachment) => (
+        <div className="attachment-chip" key={attachment.id}>
+          {attachment.kind === "image" ? (
+            <img src={`/api/attachments/${encodeURIComponent(attachment.id)}/content`} alt="" />
+          ) : <span className="attachment-file-icon"><AttachmentIcon kind={attachment.kind} /></span>}
+          <span className="attachment-meta">
+            <strong title={attachment.originalName}>{attachment.originalName}</strong>
+            <small>{readableFileSize(attachment.size)}</small>
+          </span>
+          {removable ? (
+            <button type="button" title="移除附件" onClick={() => onRemove?.(attachment)}><X size={13} /></button>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MessageSources({ sources }: { sources?: SearchSource[] }) {
+  if (!sources?.length) return null;
+  return (
+    <div className="message-sources">
+      <span><Globe2 size={13} />参考来源</span>
+      <div>
+        {sources.map((source, index) => (
+          <a key={`${source.url}-${index}`} href={source.url} target="_blank" rel="noreferrer" title={source.snippet}>
+            <strong>{index + 1}</strong>{source.title}
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Login({ onDone }: { onDone: (user: User) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -315,12 +396,19 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [view, setView] = useState<"chat" | "admin" | "memories" | "account" | "agents">("chat");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
+  const [webSearch, setWebSearch] = useState(false);
   const [waitIndex, setWaitIndex] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [failedMessage, setFailedMessage] = useState("");
   const [workspaceSectionOpen, setWorkspaceSectionOpen] = useState(true);
   const [conversationSectionOpen, setConversationSectionOpen] = useState(true);
   const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = useState<Set<string>>(() => new Set());
+  const [capabilities, setCapabilities] = useState<AppCapabilities>({
+    attachments: { enabled: true, maxFiles: 4, maxBytes: 10 * 1024 * 1024, extensions: [] },
+    webSearch: { enabled: false, provider: "tavily" }
+  });
+  const [pendingAttachments, setPendingAttachments] = useState<AttachmentSummary[]>([]);
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
 
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
   const activeModelId = active?.modelId || draftModelId;
@@ -329,6 +417,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const currentModel = models.find((model) => model.id === activeModelId);
   const activeAgentId = active?.agentId || draftAgentId;
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const canAttach = currentModel?.kind === "chat" && (!activeAgent || activeAgent.allowFileUpload);
+  const canSearch = currentModel?.kind === "chat" && capabilities.webSearch.enabled && (!activeAgent || activeAgent.allowWebSearch);
   const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived);
   const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.workspaceId);
   const waitMessages = [
@@ -347,17 +437,19 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   ];
 
   async function refresh() {
-    const [modelResult, conversationResult, workspaceResult, agentResult] = await Promise.all([
+    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult] = await Promise.all([
       api<{ models: Model[]; defaultModelId: string }>("/api/models"),
       api<{ conversations: Conversation[] }>("/api/conversations"),
       api<{ workspaces: Workspace[] }>("/api/workspaces"),
-      api<{ agents: Agent[] }>("/api/agents")
+      api<{ agents: Agent[] }>("/api/agents"),
+      api<AppCapabilities>("/api/capabilities")
     ]);
     setModels(modelResult.models);
     setDefaultModelId(modelResult.defaultModelId);
     setConversations(conversationResult.conversations);
     setWorkspaces(workspaceResult.workspaces);
     setAgents(agentResult.agents);
+    setCapabilities(capabilityResult);
     setDraftModelId((current) => (
       modelResult.models.some((model) => model.id === current)
         ? current
@@ -390,6 +482,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setDraftModelId(defaultModelId || models[0]?.id || "");
     setContent("");
     setError("");
+    setPendingAttachments([]);
+    setWebSearch(false);
     setView("chat");
     setSidebarOpen(false);
   }
@@ -400,14 +494,53 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setDraftModelId(defaultModelId || models.find((model) => model.kind === "chat")?.id || models[0]?.id || "");
     setContent("");
     setError("");
+    setPendingAttachments([]);
+    setWebSearch(false);
     setView("chat");
     setSidebarOpen(false);
+  }
+
+  async function uploadAttachments(files: FileList | null) {
+    if (!files?.length || uploadingAttachments) return;
+    const remaining = capabilities.attachments.maxFiles - pendingAttachments.length;
+    if (remaining <= 0) {
+      setError(`每次最多上传 ${capabilities.attachments.maxFiles} 个附件`);
+      return;
+    }
+    const selected = Array.from(files).slice(0, remaining);
+    if (activeAgent && !activeAgent.allowFileUpload) {
+      setError("这个智能体没有开启文件上传");
+      return;
+    }
+    if (activeAgent && !activeAgent.allowImageInput && selected.some((file) => file.type.startsWith("image/"))) {
+      setError("这个智能体没有开启图片理解");
+      return;
+    }
+    const form = new FormData();
+    selected.forEach((file) => form.append("files", file));
+    setUploadingAttachments(true);
+    setError("");
+    try {
+      const result = await api<{ attachments: AttachmentSummary[] }>("/api/attachments", { method: "POST", body: form });
+      setPendingAttachments((items) => [...items, ...result.attachments].slice(0, capabilities.attachments.maxFiles));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "附件上传失败");
+    } finally {
+      setUploadingAttachments(false);
+    }
+  }
+
+  async function removePendingAttachment(attachment: AttachmentSummary) {
+    setPendingAttachments((items) => items.filter((item) => item.id !== attachment.id));
+    await api(`/api/attachments/${encodeURIComponent(attachment.id)}`, { method: "DELETE" }).catch(() => undefined);
   }
 
   async function sendMessage(rawText: string) {
     const modelId = active?.modelId || draftModelId;
     const text = rawText.trim();
-    if (!text || !modelId) return;
+    const attachments = [...pendingAttachments];
+    const useWebSearch = webSearch;
+    if ((!text && !attachments.length) || !modelId) return;
     const isNewConversation = !active;
     const tempId = isNewConversation ? localId("tmp") : "";
     const loadingKey = active?.id || tempId;
@@ -418,7 +551,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const userMessage: Message = {
       id: localId("msg"),
       role: "user",
-      content: text,
+      content: text || "请分析上传的附件。",
+      attachments,
       modelId,
       createdAt: new Date().toISOString()
     };
@@ -431,7 +565,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         workspaceId: draftWorkspaceId || undefined,
         agentId: draftAgentId || undefined,
         archived: false,
-        title: activeAgent ? `${activeAgent.name} · ${titleFrom(text)}` : titleFrom(text),
+        title: activeAgent ? `${activeAgent.name} · ${titleFrom(text || attachments[0]?.originalName || "附件")}` : titleFrom(text || attachments[0]?.originalName || "附件"),
         messages: [userMessage],
         createdAt: userMessage.createdAt,
         updatedAt: userMessage.createdAt
@@ -450,19 +584,29 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     try {
       const result = await api<{ conversation: Conversation; memoryNotice?: string }>("/api/chat", {
         method: "POST",
-        body: JSON.stringify({ content: text, modelId, conversationId: isNewConversation ? "" : active.id, workspaceId: draftWorkspaceId, agentId: isNewConversation ? draftAgentId : active.agentId })
+        body: JSON.stringify({
+          content: text,
+          modelId,
+          conversationId: isNewConversation ? "" : active.id,
+          workspaceId: draftWorkspaceId,
+          agentId: isNewConversation ? draftAgentId : active.agentId,
+          attachmentIds: attachments.map((attachment) => attachment.id),
+          webSearch: useWebSearch
+        })
       });
       setConversations((items) => {
         const rest = items.filter((item) => item.id !== result.conversation.id && item.id !== tempId);
         return [result.conversation, ...rest];
       });
       setActiveId((current) => (current === tempId || current === active?.id ? result.conversation.id : current));
+      setPendingAttachments([]);
+      setWebSearch(false);
       if (result.memoryNotice) {
         setNotice(result.memoryNotice);
         window.setTimeout(() => setNotice(""), 2800);
       }
     } catch (err) {
-      setFailedMessage(text);
+      setFailedMessage(text || " ");
       setConversations((items) =>
         tempId
           ? items.filter((item) => item.id !== tempId)
@@ -482,14 +626,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function send(event: FormEvent) {
     event.preventDefault();
     const text = content;
-    if (!text.trim()) return;
+    if (!text.trim() && !pendingAttachments.length) return;
     setContent("");
     await sendMessage(text);
   }
 
   async function retryFailedMessage() {
     const text = failedMessage;
-    if (!text || activeLoading) return;
+    if ((!text && !pendingAttachments.length) || activeLoading) return;
     await sendMessage(text);
   }
 
@@ -760,6 +904,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                   <div className="avatar"><img src="/brand/xiaoxiang-mark.png" alt="小象 AI" /></div>
                 ) : null}
                 <div className="bubble">
+                  {message.attachments?.length ? <AttachmentList attachments={message.attachments} /> : null}
                   {message.role === "assistant" ? (
                     <>
                       <div className="markdown-body">
@@ -775,6 +920,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                           </button>
                         ) : null}
                       </div>
+                      <MessageSources sources={message.sources} />
                     </>
                   ) : (
                     <pre>{message.content}</pre>
@@ -807,7 +953,36 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               ) : null}
             </div>
           ) : null}
+          {pendingAttachments.length ? (
+            <div className="composer-attachments">
+              <AttachmentList attachments={pendingAttachments} removable onRemove={removePendingAttachment} />
+            </div>
+          ) : null}
           <div className="composer-row">
+            <div className="composer-tools">
+              <label className={`composer-tool ${!canAttach || activeLoading || uploadingAttachments ? "disabled" : ""}`} title={canAttach ? "上传图片或文件" : "当前模型或智能体不支持附件"}>
+                {uploadingAttachments ? <span className="tool-spinner" /> : <Paperclip size={18} />}
+                <input
+                  type="file"
+                  multiple
+                  accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.docx,.xlsx,.csv,.txt,.md,.json,.pptx"
+                  disabled={!canAttach || activeLoading || uploadingAttachments}
+                  onChange={(event) => {
+                    uploadAttachments(event.target.files);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              <button
+                className={`composer-tool ${webSearch ? "active" : ""}`}
+                type="button"
+                title={capabilities.webSearch.enabled ? (canSearch ? "联网搜索" : "当前智能体未开启联网搜索") : "联网搜索待管理员配置"}
+                disabled={!canSearch || activeLoading}
+                onClick={() => setWebSearch((value) => !value)}
+              >
+                <Globe2 size={18} />
+              </button>
+            </div>
             <textarea
               value={content}
               onChange={(event) => setContent(event.target.value)}
@@ -817,7 +992,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               placeholder="输入消息，Enter 发送，Shift+Enter 换行"
               rows={2}
             />
-            <button className="primary send" type="submit" disabled={!activeModelId || activeLoading}>
+            <button className="primary send" type="submit" disabled={!activeModelId || activeLoading || (!content.trim() && !pendingAttachments.length)}>
               <Send size={18} />
             </button>
           </div>
@@ -855,6 +1030,11 @@ function AgentCard({
         </div>
       </div>
       <p>{agent.description}</p>
+      <div className="agent-capabilities">
+        {agent.allowFileUpload ? <span><Paperclip size={12} />文件</span> : null}
+        {agent.allowImageInput ? <span><Image size={12} />图片</span> : null}
+        {agent.allowWebSearch ? <span><Globe2 size={12} />联网</span> : null}
+      </div>
       <div className="agent-card-actions">
         <button className="agent-action primary-action" onClick={() => onStartChat(agent)}><Send size={14} />使用</button>
         {agent.published ? <button className="agent-action" onClick={() => onCopyLink(agent)}><Copy size={14} />复制链接</button> : null}
@@ -879,7 +1059,15 @@ function AgentsPage({
   onOpenSidebar: () => void;
 }) {
   const [editingId, setEditingId] = useState<string | "new" | "">("");
-  const [draft, setDraft] = useState({ name: "", description: "", prompt: "", published: false });
+  const [draft, setDraft] = useState({
+    name: "",
+    description: "",
+    prompt: "",
+    published: false,
+    allowFileUpload: true,
+    allowImageInput: true,
+    allowWebSearch: false
+  });
   const [notice, setNotice] = useState("");
   const officialAgents = agents.filter((agent) => agent.published && agent.authorRole === "admin");
   const myAgents = user.role === "admin"
@@ -888,13 +1076,21 @@ function AgentsPage({
 
   function startCreate() {
     setEditingId("new");
-    setDraft({ name: "", description: "", prompt: "", published: true });
+    setDraft({ name: "", description: "", prompt: "", published: true, allowFileUpload: true, allowImageInput: true, allowWebSearch: false });
     setNotice("");
   }
 
   function startEdit(agent: Agent) {
     setEditingId(agent.id);
-    setDraft({ name: agent.name, description: agent.description, prompt: agent.prompt || "", published: agent.published });
+    setDraft({
+      name: agent.name,
+      description: agent.description,
+      prompt: agent.prompt || "",
+      published: agent.published,
+      allowFileUpload: agent.allowFileUpload,
+      allowImageInput: agent.allowImageInput,
+      allowWebSearch: agent.allowWebSearch
+    });
     setNotice("");
   }
 
@@ -906,7 +1102,10 @@ function AgentsPage({
       name: draft.name.trim(),
       description: draft.description.trim(),
       prompt: draft.prompt.trim(),
-      published: true
+      published: true,
+      allowFileUpload: draft.allowFileUpload,
+      allowImageInput: draft.allowImageInput,
+      allowWebSearch: draft.allowWebSearch
     });
     try {
       if (editingId === "new") {
@@ -971,6 +1170,12 @@ function AgentsPage({
           <label>智能体名字<input maxLength={40} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：详情页策划助手" /></label>
           <label>功能描述<textarea maxLength={220} rows={3} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="说明这个智能体适合处理什么任务" /></label>
           <label>提示词<textarea rows={7} value={draft.prompt} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} placeholder="可选。不填就是普通对话智能体。这里适合写角色、流程、边界和输出格式。" /></label>
+          <fieldset className="agent-tool-settings">
+            <legend>可用能力</legend>
+            <label><input type="checkbox" checked={draft.allowFileUpload} onChange={(event) => setDraft({ ...draft, allowFileUpload: event.target.checked, allowImageInput: event.target.checked ? draft.allowImageInput : false })} /><span><Paperclip size={16} />文件上传<small>读取 PDF、Word、表格和演示文稿</small></span></label>
+            <label><input type="checkbox" checked={draft.allowImageInput} disabled={!draft.allowFileUpload} onChange={(event) => setDraft({ ...draft, allowImageInput: event.target.checked })} /><span><Image size={16} />图片理解<small>使用支持视觉的聊天模型分析图片</small></span></label>
+            <label><input type="checkbox" checked={draft.allowWebSearch} onChange={(event) => setDraft({ ...draft, allowWebSearch: event.target.checked })} /><span><Globe2 size={16} />联网搜索<small>按需检索网页并在回答中附带来源</small></span></label>
+          </fieldset>
           <div className="agent-editor-actions">
             <button className="primary" type="submit" disabled={!draft.name.trim() || !draft.description.trim()}>
               <Save size={16} />
@@ -2076,8 +2281,10 @@ function RecordsTab({ records, users }: { records: (Conversation & { user: User 
           {record.messages.map((message, index) => (
             <article className={`audit-message ${message.role}`} key={`${record.id}-${index}`}>
               <strong>{message.role}</strong>
+              {message.attachments?.length ? <AttachmentList attachments={message.attachments} /> : null}
               <pre>{message.content}</pre>
               {message.imageUrl ? <img className="audit-image" src={message.imageUrl} alt={message.content} /> : null}
+              <MessageSources sources={message.sources} />
             </article>
           ))}
         </details>
@@ -2094,6 +2301,7 @@ function PublicAgentPage({ slug }: { slug: string }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [isComposing, setIsComposing] = useState(false);
+  const [webSearch, setWebSearch] = useState(false);
 
   useEffect(() => {
     api<{ agent: Omit<Agent, "prompt"> }>(`/api/public/agents/${encodeURIComponent(slug)}`)
@@ -2115,9 +2323,10 @@ function PublicAgentPage({ slug }: { slug: string }) {
     try {
       const result = await api<{ message: Message }>(`/api/public/agents/${encodeURIComponent(slug)}/chat`, {
         method: "POST",
-        body: JSON.stringify({ content: text, messages: history })
+        body: JSON.stringify({ content: text, messages: history, webSearch })
       });
       setMessages((items) => [...items, result.message]);
+      setWebSearch(false);
     } catch (err) {
       setMessages((items) => items.filter((message) => message.id !== userMessage.id));
       setError(err instanceof Error ? err.message : "发送失败");
@@ -2152,7 +2361,10 @@ function PublicAgentPage({ slug }: { slug: string }) {
             {message.role === "assistant" ? <div className="avatar"><img src="/brand/xiaoxiang-mark.png" alt="" /></div> : null}
             <div className="bubble">
               {message.role === "assistant" ? (
-                <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>
+                <>
+                  <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>
+                  <MessageSources sources={message.sources} />
+                </>
               ) : <pre>{message.content}</pre>}
               <small className="message-time">{dateTime(message.createdAt)}</small>
             </div>
@@ -2169,6 +2381,9 @@ function PublicAgentPage({ slug }: { slug: string }) {
       <form className="composer public-composer" onSubmit={send}>
         {error ? <div className="chat-error"><span>{error}</span></div> : null}
         <div className="composer-row">
+          {agent.allowWebSearch ? (
+            <button className={`composer-tool ${webSearch ? "active" : ""}`} type="button" title="联网搜索" disabled={sending} onClick={() => setWebSearch((value) => !value)}><Globe2 size={18} /></button>
+          ) : null}
           <textarea value={content} rows={2} placeholder="输入消息，Enter 发送" onChange={(event) => setContent(event.target.value)} onCompositionStart={() => setIsComposing(true)} onCompositionEnd={() => setIsComposing(false)} onKeyDown={handleKeyDown} />
           <button className="primary send" type="submit" disabled={!content.trim() || sending}><Send size={18} /></button>
         </div>

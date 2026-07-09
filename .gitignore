@@ -5,4 +5,5 @@ dist
 .env.local
 .env.*.local
 data/*.json
+data/uploads/
 *.log
