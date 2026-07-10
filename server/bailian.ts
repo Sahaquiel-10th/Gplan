@@ -1,4 +1,5 @@
 import { MessageRecord } from "./types.js";
+import crypto from "node:crypto";
 
 export type RetrievedItem = {
   text: string;
@@ -34,6 +35,11 @@ function booleanEnv(name: string, fallback: boolean) {
   return value.toLowerCase() === "true";
 }
 
+function timeoutMs(name: string, fallback: number) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 export const memoryConfig = {
   scanIntervalMinutes: numberEnv("MEMORY_SCAN_INTERVAL_MINUTES", 10),
   minNewMessages: numberEnv("MEMORY_MIN_NEW_MESSAGES", 6),
@@ -47,7 +53,8 @@ export const memoryConfig = {
 
 export const companyKnowledgeConfig = {
   topK: numberEnv("COMPANY_RAG_TOP_K", 5),
-  threshold: numberEnv("COMPANY_RAG_SCORE_THRESHOLD", 0.72)
+  threshold: numberEnv("COMPANY_RAG_SCORE_THRESHOLD", 0.72),
+  writeTimeoutMs: timeoutMs("BAILIAN_WRITE_TIMEOUT_MS", 45_000)
 };
 
 export function memoryUserId(companyId: string, userId: string) {
@@ -66,7 +73,17 @@ async function createKnowledgeClient() {
   const accessKeyId = process.env.ALIBABA_CLOUD_ACCESS_KEY_ID?.trim();
   const accessKeySecret = process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET?.trim();
   if (!accessKeyId || !accessKeySecret) return null;
-  const [{ default: BailianClient, RetrieveRequest }, { Config }] = await Promise.all([
+  const [
+    {
+      default: BailianClient,
+      RetrieveRequest,
+      ApplyFileUploadLeaseRequest,
+      AddFileRequest,
+      SubmitIndexAddDocumentsJobRequest,
+      SubmitIndexAddDocumentsJobRequestExtra
+    },
+    { Config }
+  ] = await Promise.all([
     import("@alicloud/bailian20231229"),
     import("@alicloud/openapi-client")
   ]);
@@ -80,7 +97,11 @@ async function createKnowledgeClient() {
   });
   return {
     client: new BailianClientConstructor(config),
-    RetrieveRequest
+    RetrieveRequest,
+    ApplyFileUploadLeaseRequest,
+    AddFileRequest,
+    SubmitIndexAddDocumentsJobRequest,
+    SubmitIndexAddDocumentsJobRequestExtra
   };
 }
 
@@ -172,6 +193,123 @@ export class BailianCompanyKnowledgeService {
       })
       .filter((item): item is RetrievedItem => Boolean(item))
       .slice(0, companyKnowledgeConfig.topK);
+  }
+
+  async addMarkdownDocument(params: {
+    title: string;
+    markdown: string;
+    uniqueId: string;
+    tags?: string[];
+  }) {
+    const indexId = process.env.BAILIAN_COMPANY_KB_ID?.trim();
+    const ws = workspaceId();
+    const categoryId = process.env.BAILIAN_DATA_CATEGORY_ID?.trim() || "default";
+    const knowledgeClient = await createKnowledgeClient();
+    if (!knowledgeClient || !indexId || !ws) {
+      throw new Error("缺少百炼知识库写入配置");
+    }
+
+    const filename = `${safeFileStem(params.title)}.md`;
+    const content = Buffer.from(params.markdown, "utf8");
+    const leaseResponse = await withTimeout(
+      knowledgeClient.client.applyFileUploadLease(
+        categoryId,
+        ws,
+        new knowledgeClient.ApplyFileUploadLeaseRequest({
+          categoryType: "UNSTRUCTURED",
+          fileName: filename,
+          md5: crypto.createHash("md5").update(content).digest("hex"),
+          sizeInBytes: String(content.byteLength)
+        })
+      ),
+      companyKnowledgeConfig.writeTimeoutMs,
+      "申请百炼文件上传租约超时"
+    );
+    assertBailianSuccess(leaseResponse.body, "申请百炼文件上传租约失败");
+
+    const lease = leaseResponse.body?.data;
+    const uploadUrl = lease?.param?.url;
+    if (!lease?.fileUploadLeaseId || !uploadUrl) throw new Error("百炼未返回有效上传租约");
+    const uploadController = new AbortController();
+    const uploadTimer = setTimeout(() => uploadController.abort(), companyKnowledgeConfig.writeTimeoutMs);
+    const uploadResponse = await fetch(uploadUrl, {
+      method: lease.param?.method || "PUT",
+      headers: lease.param?.headers && typeof lease.param.headers === "object" ? lease.param.headers : {},
+      body: content,
+      signal: uploadController.signal
+    }).finally(() => clearTimeout(uploadTimer));
+    if (!uploadResponse.ok) {
+      throw new Error(`上传百炼临时文件失败：${uploadResponse.status} ${uploadResponse.statusText}`);
+    }
+
+    const fileResponse = await withTimeout(
+      knowledgeClient.client.addFile(
+        ws,
+        new knowledgeClient.AddFileRequest({
+          categoryId,
+          categoryType: "UNSTRUCTURED",
+          leaseId: lease.fileUploadLeaseId,
+          parser: "DASHSCOPE_DOCMIND",
+          tags: params.tags?.slice(0, 10)
+        })
+      ),
+      companyKnowledgeConfig.writeTimeoutMs,
+      "登记百炼文件超时"
+    );
+    assertBailianSuccess(fileResponse.body, "登记百炼文件失败");
+    const fileId = fileResponse.body?.data?.fileId;
+    if (!fileId) throw new Error("百炼未返回文件 ID");
+
+    const jobResponse = await withTimeout(
+      knowledgeClient.client.submitIndexAddDocumentsJob(
+        ws,
+        new knowledgeClient.SubmitIndexAddDocumentsJobRequest({
+          indexId,
+          sourceType: "DATA_CENTER_FILE",
+          documentIds: [fileId],
+          extra: new knowledgeClient.SubmitIndexAddDocumentsJobRequestExtra({
+            uniqueId: params.uniqueId
+          })
+        })
+      ),
+      companyKnowledgeConfig.writeTimeoutMs,
+      "提交百炼知识库导入任务超时"
+    );
+    assertBailianSuccess(jobResponse.body, "提交百炼知识库导入任务失败");
+    return {
+      documentId: fileId,
+      jobId: jobResponse.body?.data?.id
+    };
+  }
+}
+
+function safeFileStem(value: string) {
+  const cleaned = value
+    .replace(/[\\/:*?"<>|#{}[\]^~`]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 110);
+  const stem = cleaned || "dingtalk-document";
+  return stem.length >= 3 ? stem : `${stem}_doc`;
+}
+
+function assertBailianSuccess(body: any, prefix: string) {
+  if (body?.success === false || (body?.code && body.code !== "Success")) {
+    throw new Error(`${prefix}：${body?.message || body?.code || "UnknownError"}`);
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

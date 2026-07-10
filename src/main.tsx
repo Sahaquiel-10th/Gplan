@@ -171,9 +171,9 @@ type UsageStats = {
 };
 
 type DataConnector = {
-  id: "wanliniu" | "alipay";
+  id: "wanliniu" | "alipay" | "dingtalk_knowledge";
   name: string;
-  sourceType: "erp" | "payment";
+  sourceType: "erp" | "payment" | "knowledge";
   enabled: boolean;
   status: "waiting_credentials" | "ready" | "syncing" | "error";
   requiredEnvVars: string[];
@@ -1996,6 +1996,11 @@ function DataPlatformTab() {
   }
 
   const connectorName = (id: DataConnector["id"]) => state?.connectors.find((connector) => connector.id === id)?.name ?? id;
+  const connectorKind = (connector: DataConnector) => {
+    if (connector.sourceType === "erp") return "ERP 经营数据";
+    if (connector.sourceType === "payment") return "支付资金数据";
+    return "企业知识库内容";
+  };
 
   if (loading && !state) return <div className="secure-loading">正在加载数据接入状态...</div>;
 
@@ -2035,7 +2040,7 @@ function DataPlatformTab() {
                 <div className="connector-card-head">
                   <div>
                     <h4>{connector.name}</h4>
-                    <p>{connector.sourceType === "erp" ? "ERP 经营数据" : "支付资金数据"}</p>
+                    <p>{connectorKind(connector)}</p>
                   </div>
                   <span className={connector.hasCredentials ? "status-pill ready" : "status-pill waiting"}>
                     {connector.hasCredentials ? "凭证已配置" : "等待凭证"}

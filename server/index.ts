@@ -15,7 +15,9 @@ import {
   memoryConfig,
   memoryUserId
 } from "./bailian.js";
+import { DingTalkKnowledgeService } from "./dingtalk.js";
 import { store } from "./db.js";
+import { KnowledgeSyncScheduler, KnowledgeSyncService } from "./knowledgeSync.js";
 import { asyncRoute, auth, requireRole } from "./middleware.js";
 import { MemorySyncScheduler } from "./memorySync.js";
 import { callModel } from "./modelGateway.js";
@@ -33,6 +35,9 @@ const port = Number(process.env.PORT ?? 3001);
 const jwtSecret = process.env.JWT_SECRET?.trim() || "dev-secret-change-me";
 const adminToolsPassword = process.env.ADMIN_TOOLS_PASSWORD?.trim() || "laozhu15658855442";
 const companyKnowledgeService = new BailianCompanyKnowledgeService();
+const dingtalkKnowledgeService = new DingTalkKnowledgeService();
+const knowledgeSyncService = new KnowledgeSyncService(store, dingtalkKnowledgeService, companyKnowledgeService);
+const knowledgeSyncScheduler = new KnowledgeSyncScheduler(knowledgeSyncService);
 const memoryService = new BailianMemoryService();
 const memorySyncScheduler = new MemorySyncScheduler(store, memoryService);
 const userMemoryMaxItems = 10;
@@ -1472,6 +1477,51 @@ app.get("/api/admin/data-platform/plan", ...protectedAdmin, (_req, res) => {
 
 app.post("/api/admin/data-platform/connectors/:id/check", ...protectedAdmin, asyncRoute(async (req, res) => {
   const connectorId = req.params.id as DataConnectorId;
+  if (connectorId === "dingtalk_knowledge") {
+    const startedAt = now();
+    const missing = [
+      "DINGTALK_CLIENT_ID",
+      "DINGTALK_CLIENT_SECRET",
+      "DINGTALK_WORKSPACE_ID",
+      "DINGTALK_OPERATOR_ID",
+      "BAILIAN_WORKSPACE_ID",
+      "BAILIAN_COMPANY_KB_ID",
+      "ALIBABA_CLOUD_ACCESS_KEY_ID",
+      "ALIBABA_CLOUD_ACCESS_KEY_SECRET"
+    ].filter((key) => !process.env[key]?.trim());
+    let status: DataSyncLog["status"] = "success";
+    let message = "钉钉和百炼凭证检测通过，可以手动同步知识库。";
+    if (missing.length) {
+      status = "blocked";
+      message = `缺少环境变量：${missing.join("、")}`;
+    } else {
+      try {
+        await dingtalkKnowledgeService.checkCredentials();
+      } catch (err) {
+        status = "failed";
+        message = err instanceof Error ? err.message : "钉钉凭证检测失败";
+      }
+    }
+    const result = await store.mutate((db) => {
+      const connector = db.dataConnectors.find((item) => item.id === connectorId);
+      if (!connector) throw new Error("数据源不存在");
+      connector.lastCheckedAt = now();
+      connector.status = status === "success" ? "ready" : status === "blocked" ? "waiting_credentials" : "error";
+      connector.message = message;
+      const log: DataSyncLog = {
+        id: uid("dsl"),
+        connectorId,
+        action: "check_credentials",
+        status,
+        message,
+        startedAt,
+        finishedAt: now()
+      };
+      db.dataSyncLogs.push(log);
+      return { connector, missingEnvVars: missing, hasCredentials: missing.length === 0, log };
+    });
+    return res.json({ result });
+  }
   const result = await store.mutate((db) => {
     const connector = db.dataConnectors.find((item) => item.id === connectorId);
     if (!connector) throw new Error("数据源不存在");
@@ -1496,6 +1546,72 @@ app.post("/api/admin/data-platform/connectors/:id/check", ...protectedAdmin, asy
 
 app.post("/api/admin/data-platform/connectors/:id/sync", ...protectedAdmin, asyncRoute(async (req, res) => {
   const connectorId = req.params.id as DataConnectorId;
+  if (connectorId === "dingtalk_knowledge") {
+    const startedAt = now();
+    const missing = [
+      "DINGTALK_CLIENT_ID",
+      "DINGTALK_CLIENT_SECRET",
+      "DINGTALK_WORKSPACE_ID",
+      "DINGTALK_OPERATOR_ID",
+      "BAILIAN_WORKSPACE_ID",
+      "BAILIAN_COMPANY_KB_ID",
+      "ALIBABA_CLOUD_ACCESS_KEY_ID",
+      "ALIBABA_CLOUD_ACCESS_KEY_SECRET"
+    ].filter((key) => !process.env[key]?.trim());
+    if (missing.length) {
+      const result = await store.mutate((db) => {
+        const connector = db.dataConnectors.find((item) => item.id === connectorId);
+        if (!connector) throw new Error("数据源不存在");
+        connector.status = "waiting_credentials";
+        connector.message = `暂不能同步，缺少环境变量：${missing.join("、")}`;
+        const log = syncLog(connector.id, "manual_sync", "blocked", connector.message);
+        db.dataSyncLogs.push(log);
+        return { connector, missingEnvVars: missing, hasCredentials: false, log };
+      });
+      return res.json({ result });
+    }
+
+    await store.mutate((db) => {
+      const connector = db.dataConnectors.find((item) => item.id === connectorId);
+      if (!connector) throw new Error("数据源不存在");
+      connector.status = "syncing";
+      connector.message = "正在从钉钉知识库同步到百炼。";
+    });
+
+    let status: DataSyncLog["status"] = "success";
+    let message = "";
+    try {
+      const summary = await knowledgeSyncService.runManualSync();
+      message = `同步完成：扫描 ${summary.scanned} 篇，新增/更新 ${summary.synced} 篇，跳过 ${summary.skipped} 篇，失败 ${summary.failed} 篇。`;
+      if (summary.failed > 0) {
+        status = summary.synced > 0 || summary.skipped > 0 ? "blocked" : "failed";
+        message += ` ${summary.errors.slice(0, 3).join("；")}`;
+      }
+    } catch (err) {
+      status = "failed";
+      message = err instanceof Error ? err.message : "知识库同步失败";
+    }
+
+    const result = await store.mutate((db) => {
+      const connector = db.dataConnectors.find((item) => item.id === connectorId);
+      if (!connector) throw new Error("数据源不存在");
+      connector.status = status === "success" ? "ready" : "error";
+      connector.lastSyncedAt = status === "success" ? now() : connector.lastSyncedAt;
+      connector.message = message;
+      const log: DataSyncLog = {
+        id: uid("dsl"),
+        connectorId,
+        action: "manual_sync",
+        status,
+        message,
+        startedAt,
+        finishedAt: now()
+      };
+      db.dataSyncLogs.push(log);
+      return { connector, missingEnvVars: [], hasCredentials: true, log };
+    });
+    return res.json({ result });
+  }
   const result = await store.mutate((db) => {
     const connector = db.dataConnectors.find((item) => item.id === connectorId);
     if (!connector) throw new Error("数据源不存在");
@@ -1618,3 +1734,4 @@ app.listen(port, () => {
 });
 
 memorySyncScheduler.start();
+knowledgeSyncScheduler.start();

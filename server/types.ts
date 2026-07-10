@@ -174,18 +174,36 @@ export type ModelUsageRecord = {
   createdAt: string;
 };
 
-export type DataConnectorId = "wanliniu" | "alipay";
+export type DataConnectorId = "wanliniu" | "alipay" | "dingtalk_knowledge";
 
 export type DataConnector = {
   id: DataConnectorId;
   name: string;
-  sourceType: "erp" | "payment";
+  sourceType: "erp" | "payment" | "knowledge";
   enabled: boolean;
   status: "waiting_credentials" | "ready" | "syncing" | "error";
   requiredEnvVars: string[];
   lastCheckedAt?: string;
   lastSyncedAt?: string;
   message?: string;
+};
+
+export type KnowledgeSyncDocument = {
+  id: string;
+  source: "dingtalk";
+  sourceWorkspaceId: string;
+  sourceNodeId: string;
+  title: string;
+  sourceUrl?: string;
+  contentHash: string;
+  sourceUpdatedAt?: string;
+  bailianDocumentId?: string;
+  bailianJobId?: string;
+  status: "synced" | "skipped" | "failed";
+  lastSyncedAt?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type DataSyncLog = {
@@ -223,6 +241,7 @@ export type Database = {
   dataConnectors: DataConnector[];
   dataSyncLogs: DataSyncLog[];
   dataMetricDefinitions: DataMetricDefinition[];
+  knowledgeSyncDocuments: KnowledgeSyncDocument[];
   settings: SystemSettings;
 };
 
