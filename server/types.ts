@@ -84,6 +84,12 @@ export type Agent = {
   name: string;
   description: string;
   prompt: string;
+  modelId: string;
+  group: string;
+  avatar: string;
+  color: string;
+  favoriteUserIds: string[];
+  useCount: number;
   allowFileUpload: boolean;
   allowImageInput: boolean;
   allowWebSearch: boolean;

@@ -30,9 +30,11 @@ import {
   Paperclip,
   Plus,
   RotateCcw,
+  Search,
   Save,
   Send,
   Settings,
+  Star,
   Shield,
   Trash2,
   Upload,
@@ -125,6 +127,13 @@ type Agent = {
   name: string;
   description: string;
   prompt: string;
+  modelId: string;
+  group: string;
+  avatar: string;
+  color: string;
+  favoriteCount: number;
+  favorited: boolean;
+  useCount: number;
   allowFileUpload: boolean;
   allowImageInput: boolean;
   allowWebSearch: boolean;
@@ -393,7 +402,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "memories" | "account" | "agents">("chat");
+  const [view, setView] = useState<"chat" | "admin" | "memories" | "account" | "agents" | "agentEditor">("chat");
+  const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
@@ -491,7 +501,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   function startAgentChat(agent: Agent) {
     setActiveId("");
     setDraftAgentId(agent.id);
-    setDraftModelId(defaultModelId || models.find((model) => model.kind === "chat")?.id || models[0]?.id || "");
+    setDraftModelId(agent.modelId);
     setContent("");
     setError("");
     setPendingAttachments([]);
@@ -557,6 +567,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       createdAt: new Date().toISOString()
     };
     setContent("");
+    setPendingAttachments([]);
     if (isNewConversation) {
       const optimistic: Conversation = {
         id: tempId,
@@ -606,6 +617,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         window.setTimeout(() => setNotice(""), 2800);
       }
     } catch (err) {
+      setPendingAttachments(attachments);
       setFailedMessage(text || " ");
       setConversations((items) =>
         tempId
@@ -863,7 +875,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : view === "memories" ? (
         <MemoriesPage onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "agents" ? (
-        <AgentsPage user={user} agents={agents} reload={refresh} onStartChat={startAgentChat} onOpenSidebar={() => setSidebarOpen(true)} />
+        <AgentsPage user={user} agents={agents} reload={refresh} onStartChat={startAgentChat} onEdit={(id) => { setEditingAgentId(id); setView("agentEditor"); }} onOpenSidebar={() => setSidebarOpen(true)} />
+      ) : view === "agentEditor" ? (
+        <AgentEditorPage agent={editingAgentId === "new" ? undefined : agents.find((item) => item.id === editingAgentId)} models={models} onCancel={() => setView("agents")} onSaved={async () => { await refresh(); setView("agents"); }} />
       ) : view === "account" ? (
         <AccountPage user={user} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : (
@@ -885,14 +899,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               ))}
             </select>
           ) : null}
-          <select value={activeModelId} onChange={(event) => setDraftModelId(event.target.value)} disabled={Boolean(active)}>
+          {!activeAgent ? <select value={activeModelId} onChange={(event) => setDraftModelId(event.target.value)} disabled={Boolean(active)}>
             {models.length ? null : <option>暂无可用模型</option>}
             {models.map((model) => (
               <option key={model.id} value={model.id}>
                 {model.kind === "image" ? "图片" : "聊天"} · {model.name} · {model.model}
               </option>
             ))}
-          </select>
+          </select> : <span className="locked-model"><Lock size={13} />{currentModel?.name || "固定模型"}</span>}
           </div>
         </header>
 
@@ -932,9 +946,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             ))
           ) : (
             <div className="empty-state">
-              <img src="/brand/xiaoxiang-mark.png" alt="" />
-              <h2>今天想一起解决什么？</h2>
-              <p>选择模型，开始新的对话</p>
+              <div className="empty-agent-avatar" style={{ background: activeAgent?.color }}>{activeAgent?.avatar || <img src="/brand/xiaoxiang-mark.png" alt="" />}</div>
+              <h2>{activeAgent?.name || "今天想一起解决什么？"}</h2>
+              <p>{activeAgent?.description || "选择模型，开始新的对话"}</p>
             </div>
           )}
           {activeLoading ? <div className="typing">{waitMessages[waitIndex % waitMessages.length]}</div> : null}
@@ -1011,6 +1025,7 @@ function AgentCard({
   onCopyLink,
   onEdit,
   onDelete
+  , onFavorite
 }: {
   agent: Agent;
   official?: boolean;
@@ -1019,17 +1034,18 @@ function AgentCard({
   onCopyLink: (agent: Agent) => void;
   onEdit: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
+  onFavorite: (agent: Agent) => void;
 }) {
   return (
     <article className={`agent-card ${official ? "official" : ""}`}>
       <div className="agent-card-top">
-        <span className="agent-mark"><Bot size={18} /></span>
+        <span className="agent-mark" style={{ background: agent.color }}>{agent.avatar || "🤖"}</span>
         <div>
           <h3>{agent.name}</h3>
           <small>{official ? "官方发布" : agent.published ? "已发布链接" : "仅自己可见"} · {agent.authorName}</small>
         </div>
       </div>
-      <p>{agent.description}</p>
+      <p className="agent-description">{agent.description}</p>
       <div className="agent-capabilities">
         {agent.allowFileUpload ? <span><Paperclip size={12} />文件</span> : null}
         {agent.allowImageInput ? <span><Image size={12} />图片</span> : null}
@@ -1040,7 +1056,9 @@ function AgentCard({
         {agent.published ? <button className="agent-action" onClick={() => onCopyLink(agent)}><Copy size={14} />复制链接</button> : null}
         {canEdit ? <button className="agent-icon-action" title="编辑" onClick={() => onEdit(agent)}><Edit3 size={14} /></button> : null}
         {canEdit ? <button className="agent-icon-action danger-icon-action" title="删除" onClick={() => onDelete(agent)}><Trash2 size={14} /></button> : null}
+        <button className={`agent-icon-action favorite-action ${agent.favorited ? "active" : ""}`} title={agent.favorited ? "取消收藏" : "收藏"} onClick={() => onFavorite(agent)}><Star size={14} fill={agent.favorited ? "currentColor" : "none"} /></button>
       </div>
+      <div className="agent-stats"><span><Star size={12} />{agent.favoriteCount}</span><span><MessageSquare size={12} />{agent.useCount} 次使用</span></div>
     </article>
   );
 }
@@ -1050,86 +1068,51 @@ function AgentsPage({
   agents,
   reload,
   onStartChat,
+  onEdit,
   onOpenSidebar
 }: {
   user: User;
   agents: Agent[];
   reload: () => Promise<void>;
   onStartChat: (agent: Agent) => void;
+  onEdit: (id: string | "new") => void;
   onOpenSidebar: () => void;
 }) {
-  const [editingId, setEditingId] = useState<string | "new" | "">("");
-  const [draft, setDraft] = useState({
-    name: "",
-    description: "",
-    prompt: "",
-    published: false,
-    allowFileUpload: true,
-    allowImageInput: true,
-    allowWebSearch: false
-  });
+  const [query, setQuery] = useState("");
+  const [activeGroup, setActiveGroup] = useState("全部");
   const [notice, setNotice] = useState("");
-  const officialAgents = agents.filter((agent) => agent.published && agent.authorRole === "admin");
+  const groups = ["全部", "收藏", ...Array.from(new Set(agents.map((agent) => agent.group || "未分组")))];
+  const filteredAgents = agents.filter((agent) => {
+    const matchesGroup = activeGroup === "全部" || (activeGroup === "收藏" ? agent.favorited : (agent.group || "未分组") === activeGroup);
+    const needle = query.trim().toLowerCase();
+    return matchesGroup && (!needle || `${agent.name} ${agent.description} ${agent.group}`.toLowerCase().includes(needle));
+  });
+  const officialAgents = filteredAgents.filter((agent) => agent.published && agent.authorRole === "admin");
   const myAgents = user.role === "admin"
     ? []
-    : agents.filter((agent) => agent.authorName === user.username && agent.authorRole !== "admin");
+    : filteredAgents.filter((agent) => agent.authorName === user.username && agent.authorRole !== "admin");
 
   function startCreate() {
-    setEditingId("new");
-    setDraft({ name: "", description: "", prompt: "", published: true, allowFileUpload: true, allowImageInput: true, allowWebSearch: false });
-    setNotice("");
+    onEdit("new");
   }
 
   function startEdit(agent: Agent) {
-    setEditingId(agent.id);
-    setDraft({
-      name: agent.name,
-      description: agent.description,
-      prompt: agent.prompt || "",
-      published: agent.published,
-      allowFileUpload: agent.allowFileUpload,
-      allowImageInput: agent.allowImageInput,
-      allowWebSearch: agent.allowWebSearch
-    });
-    setNotice("");
-  }
-
-  async function saveAgent(event: FormEvent) {
-    event.preventDefault();
-    setNotice("");
-    if (!draft.name.trim() || !draft.description.trim()) return;
-    const body = JSON.stringify({
-      name: draft.name.trim(),
-      description: draft.description.trim(),
-      prompt: draft.prompt.trim(),
-      published: true,
-      allowFileUpload: draft.allowFileUpload,
-      allowImageInput: draft.allowImageInput,
-      allowWebSearch: draft.allowWebSearch
-    });
-    try {
-      if (editingId === "new") {
-        await api("/api/agents", { method: "POST", body });
-      } else if (editingId) {
-        await api(`/api/agents/${editingId}`, { method: "PATCH", body });
-      }
-      setEditingId("");
-      setNotice(editingId === "new" ? "智能体已发布" : "智能体已更新");
-      await reload();
-    } catch (err) {
-      setNotice(err instanceof Error ? err.message : "保存失败");
-    }
+    onEdit(agent.id);
   }
 
   async function makePrivate(agent: Agent) {
     try {
       await api(`/api/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ published: false }) });
-      setEditingId("");
       setNotice("已转为私有，旧分享链接已作废");
       await reload();
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "操作失败");
     }
+  }
+
+  async function toggleFavorite(agent: Agent) {
+    try { await api(`/api/agents/${agent.id}/favorite`, { method: "POST" }); await reload(); }
+    catch (err) { setNotice(err instanceof Error ? err.message : "收藏失败"); }
   }
 
   async function deleteAgent(agent: Agent) {
@@ -1160,38 +1143,12 @@ function AgentsPage({
           <p>把常用任务封装成固定角色、流程和输出风格</p>
         </div>
       </header>
+      <div className="agent-toolbar">
+        <label className="agent-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索智能体、描述或分组" /></label>
+        <button className="primary" onClick={startCreate}><Plus size={16} />创建智能体</button>
+      </div>
+      <div className="agent-group-tabs">{groups.map((group) => <button key={group} className={activeGroup === group ? "active" : ""} onClick={() => setActiveGroup(group)}>{group}</button>)}</div>
       {notice ? <div className={notice.includes("失败") || notice.includes("不存在") ? "error agent-notice" : "notice agent-notice"}>{notice}</div> : null}
-      {editingId ? (
-        <form className="agent-editor" onSubmit={saveAgent}>
-          <div className="agent-editor-heading">
-            <h3>{editingId === "new" ? "创建智能体" : "编辑智能体"}</h3>
-            <button className="secondary" type="button" onClick={() => setEditingId("")}>取消</button>
-          </div>
-          <label>智能体名字<input maxLength={40} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如：详情页策划助手" /></label>
-          <label>功能描述<textarea maxLength={220} rows={3} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="说明这个智能体适合处理什么任务" /></label>
-          <label>提示词<textarea rows={7} value={draft.prompt} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} placeholder="可选。不填就是普通对话智能体。这里适合写角色、流程、边界和输出格式。" /></label>
-          <fieldset className="agent-tool-settings">
-            <legend>可用能力</legend>
-            <label><input type="checkbox" checked={draft.allowFileUpload} onChange={(event) => setDraft({ ...draft, allowFileUpload: event.target.checked, allowImageInput: event.target.checked ? draft.allowImageInput : false })} /><span><Paperclip size={16} />文件上传<small>读取 PDF、Word、表格和演示文稿</small></span></label>
-            <label><input type="checkbox" checked={draft.allowImageInput} disabled={!draft.allowFileUpload} onChange={(event) => setDraft({ ...draft, allowImageInput: event.target.checked })} /><span><Image size={16} />图片理解<small>使用支持视觉的聊天模型分析图片</small></span></label>
-            <label><input type="checkbox" checked={draft.allowWebSearch} onChange={(event) => setDraft({ ...draft, allowWebSearch: event.target.checked })} /><span><Globe2 size={16} />联网搜索<small>按需检索网页并在回答中附带来源</small></span></label>
-          </fieldset>
-          <div className="agent-editor-actions">
-            <button className="primary" type="submit" disabled={!draft.name.trim() || !draft.description.trim()}>
-              <Save size={16} />
-              {editingId === "new" ? "发布智能体" : "保存修改"}
-            </button>
-            {editingId !== "new" && draft.published ? (
-              <button className="secondary" type="button" onClick={() => {
-                const agent = agents.find((item) => item.id === editingId);
-                if (agent) makePrivate(agent);
-              }}>
-                转为私有智能体
-              </button>
-            ) : null}
-          </div>
-        </form>
-      ) : null}
       <div className="agents-board">
         <section className="agent-section">
           <div className="agent-section-title"><h3>官方发布</h3><span>{officialAgents.length} 个</span></div>
@@ -1206,6 +1163,7 @@ function AgentsPage({
                 onCopyLink={copyAgentLink}
                 onEdit={startEdit}
                 onDelete={deleteAgent}
+                onFavorite={toggleFavorite}
               />
             )) : null}
             {user.role === "admin" ? (
@@ -1230,6 +1188,7 @@ function AgentsPage({
                 onCopyLink={copyAgentLink}
                 onEdit={startEdit}
                 onDelete={deleteAgent}
+                onFavorite={toggleFavorite}
               />
             ))}
             <button className="agent-card create-card" onClick={startCreate}>
@@ -1242,6 +1201,84 @@ function AgentsPage({
       </div>
     </section>
   );
+}
+
+function AgentEditorPage({ agent, models, onCancel, onSaved }: {
+  agent?: Agent;
+  models: Model[];
+  onCancel: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const chatModels = models.filter((model) => model.kind === "chat" && model.enabled);
+  const [draft, setDraft] = useState({
+    name: agent?.name || "",
+    description: agent?.description || "",
+    prompt: agent?.prompt || "",
+    modelId: agent?.modelId || chatModels.find((model) => model.isDefault)?.id || chatModels[0]?.id || "",
+    group: agent?.group || "未分组",
+    avatar: agent?.avatar || "🤖",
+    color: agent?.color || "#E8F1FB",
+    allowFileUpload: agent?.allowFileUpload ?? true,
+    allowImageInput: agent?.allowImageInput ?? true,
+    allowWebSearch: agent?.allowWebSearch ?? false
+  });
+  const [debugInput, setDebugInput] = useState("");
+  const [debugMessages, setDebugMessages] = useState<Message[]>([]);
+  const [debugging, setDebugging] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const emojis = ["🤖", "✍️", "📊", "🧠", "🔍", "🎨", "💼", "🚀"];
+  const colors = ["#E8F1FB", "#F1EAFE", "#E5F5EC", "#FFF1D8", "#FDE9EC", "#E6F4F4"];
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (!draft.name.trim() || !draft.description.trim() || !draft.modelId) return;
+    setSaving(true); setError("");
+    try {
+      await api(agent ? `/api/agents/${agent.id}` : "/api/agents", {
+        method: agent ? "PATCH" : "POST",
+        body: JSON.stringify({ ...draft, name: draft.name.trim(), description: draft.description.trim(), prompt: draft.prompt.trim(), published: true })
+      });
+      await onSaved();
+    } catch (err) { setError(err instanceof Error ? err.message : "保存失败"); }
+    finally { setSaving(false); }
+  }
+
+  async function debug(event: FormEvent) {
+    event.preventDefault();
+    const content = debugInput.trim();
+    if (!content || !draft.modelId || debugging) return;
+    const userMessage: Message = { role: "user", content, modelId: draft.modelId, createdAt: new Date().toISOString() };
+    setDebugMessages((items) => [...items, userMessage]); setDebugInput(""); setDebugging(true); setError("");
+    try {
+      const result = await api<{ message: Message }>("/api/agents/debug", { method: "POST", body: JSON.stringify({ content, prompt: draft.prompt, modelId: draft.modelId }) });
+      setDebugMessages((items) => [...items, result.message]);
+    } catch (err) { setError(err instanceof Error ? err.message : "调试失败"); }
+    finally { setDebugging(false); }
+  }
+
+  return <section className="agent-workbench">
+    <header className="agent-workbench-header">
+      <button className="secondary" type="button" onClick={onCancel}><ChevronLeft size={16} />返回</button>
+      <div><h2>{agent ? "编辑智能体" : "创建智能体"}</h2><p>配置和调试同步进行，保存后模型将对使用者锁定</p></div>
+      <div className="workbench-actions"><button className="secondary" type="button" onClick={onCancel}>取消</button><button className="primary" type="submit" form="agent-config" disabled={saving || !draft.name.trim() || !draft.description.trim() || !draft.modelId}><Save size={16} />{saving ? "保存中" : "保存智能体"}</button></div>
+    </header>
+    <div className="agent-workbench-body">
+      <form id="agent-config" className="agent-config" onSubmit={save}>
+        <section><h3>基本信息</h3><div className="agent-identity-preview"><span style={{ background: draft.color }}>{draft.avatar}</span><div><strong>{draft.name || "未命名智能体"}</strong><small>{draft.group || "未分组"}</small></div></div>
+          <label>名称<input maxLength={40} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="例如：详情页策划助手" /></label>
+          <label>描述<textarea maxLength={220} rows={3} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} placeholder="告诉使用者它擅长什么、该怎么用" /></label>
+          <label>分组<input maxLength={24} value={draft.group} onChange={(e) => setDraft({ ...draft, group: e.target.value })} placeholder="例如：内容营销" /></label>
+          <label>固定模型<select value={draft.modelId} onChange={(e) => setDraft({ ...draft, modelId: e.target.value })}><option value="">请选择聊天模型</option>{chatModels.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}</select><small>保存后，使用者无法更改此智能体的模型</small></label>
+        </section>
+        <section><h3>外观</h3><div className="appearance-options"><div>{emojis.map((emoji) => <button type="button" key={emoji} className={draft.avatar === emoji ? "active" : ""} onClick={() => setDraft({ ...draft, avatar: emoji })}>{emoji}</button>)}</div><div>{colors.map((color) => <button type="button" aria-label={color} key={color} className={draft.color === color ? "active" : ""} style={{ background: color }} onClick={() => setDraft({ ...draft, color })} />)}</div></div></section>
+        <section><h3>指令</h3><label>系统提示词<textarea rows={10} value={draft.prompt} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} placeholder="定义角色、工作流程、边界和输出格式。右侧可随时调试。" /></label></section>
+        <fieldset className="agent-tool-settings"><legend>可用能力</legend><label><input type="checkbox" checked={draft.allowFileUpload} onChange={(e) => setDraft({ ...draft, allowFileUpload: e.target.checked, allowImageInput: e.target.checked ? draft.allowImageInput : false })} /><span><Paperclip size={16} />文件上传</span></label><label><input type="checkbox" checked={draft.allowImageInput} disabled={!draft.allowFileUpload} onChange={(e) => setDraft({ ...draft, allowImageInput: e.target.checked })} /><span><Image size={16} />图片理解</span></label><label><input type="checkbox" checked={draft.allowWebSearch} onChange={(e) => setDraft({ ...draft, allowWebSearch: e.target.checked })} /><span><Globe2 size={16} />联网搜索</span></label></fieldset>
+        {error ? <div className="error">{error}</div> : null}
+      </form>
+      <section className="agent-debug"><header><div><strong>预览与调试</strong><small>{chatModels.find((model) => model.id === draft.modelId)?.name || "尚未选择模型"}</small></div><button className="secondary" onClick={() => setDebugMessages([])}>清空</button></header><div className="debug-messages">{debugMessages.length ? debugMessages.map((message, index) => <div key={index} className={`debug-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>) : <div className="debug-empty"><span style={{ background: draft.color }}>{draft.avatar}</span><h3>{draft.name || "你的智能体"}</h3><p>{draft.description || "在左侧填写描述，然后发一条消息测试提示词和模型效果。"}</p></div>}{debugging ? <div className="typing">正在生成测试回答…</div> : null}</div><form className="debug-composer" onSubmit={debug}><textarea rows={2} value={debugInput} onChange={(e) => setDebugInput(e.target.value)} placeholder="输入一条测试消息" /><button className="primary send" disabled={!debugInput.trim() || !draft.modelId || debugging}><Send size={17} /></button></form></section>
+    </div>
+  </section>;
 }
 
 function AccountPage({ user, onOpenSidebar }: { user: User; onOpenSidebar: () => void }) {

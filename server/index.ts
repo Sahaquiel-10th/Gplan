@@ -165,13 +165,20 @@ function uniqueAgentSlug(agents: Agent[]) {
   return slug;
 }
 
-function publicAgent(agent: Agent, users: User[]) {
+function publicAgent(agent: Agent, users: User[], viewerId = "") {
   const owner = users.find((user) => user.id === agent.ownerId);
   return {
     id: agent.id,
     name: agent.name,
     description: agent.description,
     prompt: agent.prompt,
+    modelId: agent.modelId,
+    group: agent.group,
+    avatar: agent.avatar,
+    color: agent.color,
+    favoriteCount: agent.favoriteUserIds.length,
+    favorited: agent.favoriteUserIds.includes(viewerId),
+    useCount: agent.useCount,
     allowFileUpload: agent.allowFileUpload,
     allowImageInput: agent.allowImageInput,
     allowWebSearch: agent.allowWebSearch,
@@ -576,7 +583,7 @@ app.get("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
       )
     )
     .sort((a, b) => Number(b.published) - Number(a.published) || b.updatedAt.localeCompare(a.updatedAt))
-    .map((agent) => publicAgent(agent, db.users));
+    .map((agent) => publicAgent(agent, db.users, req.user!.id));
   res.json({ agents });
 }));
 
@@ -584,9 +591,12 @@ app.post("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
   const name = requiredString(req.body.name, "智能体名字");
   const description = requiredString(req.body.description, "功能描述");
   const prompt = typeof req.body.prompt === "string" ? req.body.prompt.trim() : "";
+  const modelId = requiredString(req.body.modelId, "模型");
   const createdAt = now();
   const agent = await store.mutate((db) => {
     const slug = uniqueAgentSlug(db.agents);
+    const model = db.models.find((item) => item.id === modelId && item.enabled && item.kind === "chat");
+    if (!model) throw new Error("请选择可用的聊天模型");
     const created: Agent = {
       id: uid("agt"),
       companyId: req.user!.companyId,
@@ -594,6 +604,12 @@ app.post("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
       name: name.slice(0, 40),
       description: description.slice(0, 220),
       prompt: prompt.slice(0, 4000),
+      modelId,
+      group: (typeof req.body.group === "string" && req.body.group.trim() ? req.body.group.trim() : "未分组").slice(0, 24),
+      avatar: (typeof req.body.avatar === "string" && req.body.avatar.trim() ? req.body.avatar.trim() : "🤖").slice(0, 8),
+      color: typeof req.body.color === "string" && /^#[0-9a-f]{6}$/i.test(req.body.color) ? req.body.color : "#E8F1FB",
+      favoriteUserIds: [],
+      useCount: 0,
       allowFileUpload: req.body.allowFileUpload !== false,
       allowImageInput: req.body.allowImageInput !== false,
       allowWebSearch: Boolean(req.body.allowWebSearch),
@@ -606,7 +622,7 @@ app.post("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
     return created;
   });
   const db = await store.read();
-  res.json({ agent: publicAgent(agent, db.users) });
+  res.json({ agent: publicAgent(agent, db.users, req.user!.id) });
 }));
 
 app.patch("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
@@ -617,6 +633,14 @@ app.patch("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
     if (typeof req.body.name === "string" && req.body.name.trim()) target.name = req.body.name.trim().slice(0, 40);
     if (typeof req.body.description === "string" && req.body.description.trim()) target.description = req.body.description.trim().slice(0, 220);
     if (typeof req.body.prompt === "string") target.prompt = req.body.prompt.trim().slice(0, 4000);
+    if (typeof req.body.modelId === "string") {
+      const model = db.models.find((item) => item.id === req.body.modelId && item.enabled && item.kind === "chat");
+      if (!model) throw new Error("请选择可用的聊天模型");
+      target.modelId = model.id;
+    }
+    if (typeof req.body.group === "string") target.group = (req.body.group.trim() || "未分组").slice(0, 24);
+    if (typeof req.body.avatar === "string" && req.body.avatar.trim()) target.avatar = req.body.avatar.trim().slice(0, 8);
+    if (typeof req.body.color === "string" && /^#[0-9a-f]{6}$/i.test(req.body.color)) target.color = req.body.color;
     if (typeof req.body.allowFileUpload === "boolean") target.allowFileUpload = req.body.allowFileUpload;
     if (typeof req.body.allowImageInput === "boolean") target.allowImageInput = req.body.allowImageInput;
     if (typeof req.body.allowWebSearch === "boolean") target.allowWebSearch = req.body.allowWebSearch;
@@ -630,7 +654,38 @@ app.patch("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
     return target;
   });
   const db = await store.read();
-  res.json({ agent: publicAgent(agent, db.users) });
+  res.json({ agent: publicAgent(agent, db.users, req.user!.id) });
+}));
+
+app.post("/api/agents/:id/favorite", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const agent = await store.mutate((db) => {
+    const target = db.agents.find((item) =>
+      item.id === req.params.id && item.companyId === req.user!.companyId &&
+      (item.ownerId === req.user!.id || (item.published && db.users.find((user) => user.id === item.ownerId)?.role === "admin"))
+    );
+    if (!target) throw new Error("智能体不存在");
+    const index = target.favoriteUserIds.indexOf(req.user!.id);
+    if (index >= 0) target.favoriteUserIds.splice(index, 1);
+    else target.favoriteUserIds.push(req.user!.id);
+    return target;
+  });
+  const db = await store.read();
+  res.json({ agent: publicAgent(agent, db.users, req.user!.id) });
+}));
+
+app.post("/api/agents/debug", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const modelId = requiredString(req.body.modelId, "模型");
+  const content = requiredString(req.body.content, "调试消息");
+  const db = await store.read();
+  const model = db.models.find((item) => item.id === modelId && item.enabled && item.kind === "chat");
+  if (!model) throw new Error("模型不存在或未启用");
+  const prompt = typeof req.body.prompt === "string" ? req.body.prompt.trim().slice(0, 4000) : "";
+  const messages: Message[] = [
+    ...(prompt ? [{ role: "assistant" as const, content: prompt, modelId, createdAt: now() }] : []),
+    { role: "user", content, modelId, createdAt: now() }
+  ];
+  const result = await callModel(model, messages, db.settings.safetyRules, res.locals.requestId);
+  res.json({ message: { role: "assistant", content: result.content, imageUrl: result.imageUrl, modelId, createdAt: now() } });
 }));
 
 app.delete("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
@@ -671,10 +726,12 @@ app.post("/api/public/agents/:slug/chat", asyncRoute(async (req, res) => {
   const db = await store.read();
   const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published);
   if (!agent) return res.status(404).json({ error: "智能体不存在或未发布" });
-  const model =
-    db.models.find((item) => item.enabled && item.apiKey && item.isDefault && item.kind === "chat") ??
-    db.models.find((item) => item.enabled && item.apiKey && item.kind === "chat");
+  const model = db.models.find((item) => item.id === agent.modelId && item.enabled && item.apiKey && item.kind === "chat");
   if (!model) return res.status(404).json({ error: "没有可用聊天模型" });
+  await store.mutate((mutableDb) => {
+    const usedAgent = mutableDb.agents.find((item) => item.id === agent.id);
+    if (usedAgent) usedAgent.useCount += 1;
+  });
   const wantsWebSearch = req.body.webSearch === true;
   if (wantsWebSearch && !agent.allowWebSearch) throw new Error("这个智能体没有开启联网搜索");
   const searchSources = wantsWebSearch ? await searchWeb(content) : [];
@@ -735,7 +792,7 @@ app.post(
         )
       : undefined;
     if (lockedAgentId && !agent) return res.status(404).json({ error: "智能体不存在或无权使用" });
-    const lockedModelId = existing?.modelId || modelId;
+    const lockedModelId = existing?.modelId || agent?.modelId || modelId;
     const model = db.models.find((item) => item.id === lockedModelId && item.enabled);
     if (!model) return res.status(404).json({ error: "模型不存在或未启用" });
     const attachments = attachmentIds.map((id) => db.attachments.find((item) => item.id === id && item.userId === req.user!.id));
@@ -763,6 +820,10 @@ app.post(
       createdAt: now()
     };
     const conversation = await store.mutate((mutableDb) => {
+      if (agent && !existing) {
+        const usedAgent = mutableDb.agents.find((item) => item.id === agent.id);
+        if (usedAgent) usedAgent.useCount += 1;
+      }
       if (existing) {
         const target = mutableDb.conversations.find((item) => item.id === existing.id && item.userId === req.user!.id)!;
         const staleMessageIds: string[] = [];

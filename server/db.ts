@@ -342,6 +342,18 @@ function migrateDatabase(db: Database): boolean {
   }
 
   for (const agent of db.agents) {
+    if (!agent.modelId) {
+      agent.modelId = db.models.find((model) => model.enabled && model.isDefault && model.kind === "chat")?.id
+        || db.models.find((model) => model.kind === "chat")?.id
+        || db.models[0]?.id
+        || "";
+      changed = true;
+    }
+    if (typeof agent.group !== "string") { agent.group = "未分组"; changed = true; }
+    if (typeof agent.avatar !== "string") { agent.avatar = "🤖"; changed = true; }
+    if (typeof agent.color !== "string") { agent.color = "#E8F1FB"; changed = true; }
+    if (!Array.isArray(agent.favoriteUserIds)) { agent.favoriteUserIds = []; changed = true; }
+    if (typeof agent.useCount !== "number") { agent.useCount = 0; changed = true; }
     if (typeof agent.allowFileUpload !== "boolean") {
       agent.allowFileUpload = true;
       changed = true;
