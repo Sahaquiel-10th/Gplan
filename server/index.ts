@@ -89,6 +89,10 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true });
+});
+
 function now() {
   return new Date().toISOString();
 }
