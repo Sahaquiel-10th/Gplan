@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { readSheet } from "read-excel-file/node";
+import * as XLSX from "xlsx";
 import { parse as parseCsv } from "csv-parse/sync";
 import {
   BailianCompanyKnowledgeService,
@@ -474,7 +475,7 @@ app.get("/api/capabilities", auth(jwtSecret), (_req, res) => {
       enabled: true,
       maxFiles: attachmentMaxFiles,
       maxBytes: attachmentMaxBytes,
-      extensions: ["png", "jpg", "jpeg", "webp", "gif", "pdf", "docx", "xlsx", "csv", "txt", "md", "json", "pptx"]
+      extensions: ["png", "jpg", "jpeg", "webp", "gif", "pdf", "docx", "xls", "xlsx", "csv", "txt", "md", "json", "pptx"]
     },
     webSearch: { enabled: webSearchEnabled(), provider: "tavily" }
   });
@@ -1271,13 +1272,17 @@ app.post(
   ...admin,
   userImportUpload.single("file"),
   asyncRoute(async (req, res) => {
-    if (!req.file) throw new Error("请选择 CSV 或 XLSX 文件");
+    if (!req.file) throw new Error("请选择 CSV、XLS 或 XLSX 文件");
     const password = requiredString(req.body.password, "统一初始密码");
     if (password.length < 8) throw new Error("统一初始密码至少需要 8 个字符");
     const extension = path.extname(req.file.originalname).toLowerCase();
     let rows: unknown[][];
     if (extension === ".xlsx") {
       rows = await readSheet(req.file.buffer);
+    } else if (extension === ".xls") {
+      const workbook = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      rows = firstSheet ? XLSX.utils.sheet_to_json<unknown[]>(firstSheet, { header: 1, raw: true, defval: "" }) : [];
     } else if (extension === ".csv") {
       rows = parseCsv(req.file.buffer, {
         bom: true,
@@ -1285,7 +1290,7 @@ app.post(
         relax_column_count: true
       }) as unknown[][];
     } else {
-      throw new Error("仅支持 .csv 和 .xlsx 文件");
+      throw new Error("仅支持 .csv、.xls 和 .xlsx 文件");
     }
     if (!rows.length) throw new Error("文件中没有可导入的账号");
     if (rows.length > 1001) throw new Error("单次最多导入 1000 个账号");

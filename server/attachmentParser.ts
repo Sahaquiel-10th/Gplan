@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import JSZip from "jszip";
 import mammoth from "mammoth";
 import readXlsxFile from "read-excel-file/node";
+import * as XLSX from "xlsx";
 import { parse as parseCsv } from "csv-parse/sync";
 import { AttachmentKind } from "./types.js";
 
@@ -13,7 +14,7 @@ const maxExtractedChars = Math.max(1000, Number(process.env.ATTACHMENT_MAX_EXTRA
 
 const supportedExtensions = new Set([
   ".png", ".jpg", ".jpeg", ".webp", ".gif",
-  ".pdf", ".docx", ".xlsx", ".csv", ".txt", ".md", ".json", ".pptx"
+  ".pdf", ".docx", ".xls", ".xlsx", ".csv", ".txt", ".md", ".json", ".pptx"
 ]);
 
 export function isSupportedAttachment(filename: string) {
@@ -47,6 +48,9 @@ export async function parseAttachment(buffer: Buffer, filename: string, mimeType
       const rows = data.map((row) => row.map(formatCell).join("\t")).join("\n");
       return `[工作表：${sheet}]\n${rows}`;
     }).join("\n\n");
+  } else if (extension === ".xls") {
+    kind = "spreadsheet";
+    extractedText = extractLegacyExcelText(buffer);
   } else if (extension === ".csv") {
     kind = "spreadsheet";
     const rows = parseCsv(buffer, { bom: true, relax_column_count: true, skip_empty_lines: true }) as unknown[][];
@@ -75,8 +79,26 @@ function assertFileSignature(buffer: Buffer, extension: string) {
     extension === ".webp" ? buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP" :
     extension === ".pdf" ? buffer.subarray(0, 5).toString("ascii") === "%PDF-" :
     [".docx", ".xlsx", ".pptx"].includes(extension) ? matches(0x50, 0x4b) :
+    extension === ".xls" ? isLegacyExcelFile(buffer) :
     true;
   if (!valid) throw new Error("文件内容与扩展名不一致");
+}
+
+function isLegacyExcelFile(buffer: Buffer) {
+  const compoundFileHeader = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+  const isCompoundFile = compoundFileHeader.every((byte, index) => buffer[index] === byte);
+  const isEarlyBiffWorkbook = buffer[0] === 0x09 && [0x00, 0x02, 0x04, 0x08].includes(buffer[1]);
+  return isCompoundFile || isEarlyBiffWorkbook;
+}
+
+function extractLegacyExcelText(buffer: Buffer) {
+  const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
+  return workbook.SheetNames.map((sheetName) => {
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true, defval: "" });
+    const text = rows.map((row) => row.map(formatCell).join("\t")).join("\n");
+    return `[工作表：${sheetName}]\n${text}`;
+  }).join("\n\n");
 }
 
 async function validateOfficeArchive(buffer: Buffer) {
@@ -144,6 +166,7 @@ function normalizedMimeType(extension: string, mimeType: string) {
     ".gif": "image/gif",
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".csv": "text/csv",

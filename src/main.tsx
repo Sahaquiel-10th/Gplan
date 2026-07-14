@@ -877,7 +877,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : view === "agents" ? (
         <AgentsPage user={user} agents={agents} reload={refresh} onStartChat={startAgentChat} onEdit={(id) => { setEditingAgentId(id); setView("agentEditor"); }} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "agentEditor" ? (
-        <AgentEditorPage agent={editingAgentId === "new" ? undefined : agents.find((item) => item.id === editingAgentId)} models={models} onCancel={() => setView("agents")} onSaved={async () => { await refresh(); setView("agents"); }} />
+        <AgentEditorPage agent={editingAgentId === "new" ? undefined : agents.find((item) => item.id === editingAgentId)} agents={agents} models={models} onCancel={() => setView("agents")} onSaved={async () => { await refresh(); setView("agents"); }} />
       ) : view === "account" ? (
         <AccountPage user={user} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : (
@@ -979,7 +979,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 <input
                   type="file"
                   multiple
-                  accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.docx,.xlsx,.csv,.txt,.md,.json,.pptx"
+                  accept={capabilities.attachments.extensions.map((extension) => `.${extension}`).join(",")}
                   disabled={!canAttach || activeLoading || uploadingAttachments}
                   onChange={(event) => {
                     uploadAttachments(event.target.files);
@@ -1203,8 +1203,9 @@ function AgentsPage({
   );
 }
 
-function AgentEditorPage({ agent, models, onCancel, onSaved }: {
+function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
   agent?: Agent;
+  agents: Agent[];
   models: Model[];
   onCancel: () => void;
   onSaved: () => Promise<void>;
@@ -1227,8 +1228,15 @@ function AgentEditorPage({ agent, models, onCancel, onSaved }: {
   const [debugging, setDebugging] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [groupOptionsOpen, setGroupOptionsOpen] = useState(false);
+  const [groupQuery, setGroupQuery] = useState("");
   const emojis = ["🤖", "✍️", "📊", "🧠", "🔍", "🎨", "💼", "🚀"];
   const colors = ["#E8F1FB", "#F1EAFE", "#E5F5EC", "#FFF1D8", "#FDE9EC", "#E6F4F4"];
+  const groupOptions = useMemo(() => Array.from(new Set(
+    agents.map((item) => item.group.trim()).filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b, "zh-CN")), [agents]);
+  const filteredGroupOptions = groupOptions.filter((group) => group.toLocaleLowerCase().includes(groupQuery.trim().toLocaleLowerCase()));
+  const hasExactGroup = groupOptions.some((group) => group.toLocaleLowerCase() === draft.group.trim().toLocaleLowerCase());
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -1268,7 +1276,37 @@ function AgentEditorPage({ agent, models, onCancel, onSaved }: {
         <section><h3>基本信息</h3><div className="agent-identity-preview"><span style={{ background: draft.color }}>{draft.avatar}</span><div><strong>{draft.name || "未命名智能体"}</strong><small>{draft.group || "未分组"}</small></div></div>
           <label>名称<input maxLength={40} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="例如：详情页策划助手" /></label>
           <label>描述<textarea maxLength={220} rows={3} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} placeholder="告诉使用者它擅长什么、该怎么用" /></label>
-          <label>分组<input maxLength={24} value={draft.group} onChange={(e) => setDraft({ ...draft, group: e.target.value })} placeholder="例如：内容营销" /></label>
+          <div className="agent-group-field">
+            <label htmlFor="agent-group">分组</label>
+            <div className="agent-group-combobox" onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setGroupOptionsOpen(false);
+            }}>
+              <input
+                id="agent-group"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={groupOptionsOpen}
+                aria-controls="agent-group-options"
+                autoComplete="off"
+                maxLength={24}
+                value={draft.group}
+                onFocus={() => { setGroupQuery(""); setGroupOptionsOpen(true); }}
+                onChange={(event) => { setDraft({ ...draft, group: event.target.value }); setGroupQuery(event.target.value); setGroupOptionsOpen(true); }}
+                placeholder="搜索现有分组或输入新分组"
+              />
+              <button type="button" className="agent-group-toggle" aria-label="展开分组选项" onClick={() => { setGroupQuery(""); setGroupOptionsOpen((open) => !open); }}><ChevronDown size={16} /></button>
+              {groupOptionsOpen ? (
+                <div className="agent-group-options" id="agent-group-options" role="listbox">
+                  {filteredGroupOptions.map((group) => (
+                    <button type="button" role="option" aria-selected={draft.group === group} key={group} onClick={() => { setDraft({ ...draft, group }); setGroupOptionsOpen(false); }}>{group}</button>
+                  ))}
+                  {groupQuery.trim() && !hasExactGroup ? <button type="button" className="create-group-option" onClick={() => setGroupOptionsOpen(false)}><Plus size={14} />使用新分组“{draft.group.trim()}”</button> : null}
+                  {!filteredGroupOptions.length && (!groupQuery.trim() || hasExactGroup) ? <span>暂无匹配的分组</span> : null}
+                </div>
+              ) : null}
+            </div>
+            <small>可选择已有分组，也可直接输入新分组</small>
+          </div>
           <label>固定模型<select value={draft.modelId} onChange={(e) => setDraft({ ...draft, modelId: e.target.value })}><option value="">请选择聊天模型</option>{chatModels.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}</select><small>保存后，使用者无法更改此智能体的模型</small></label>
         </section>
         <section><h3>外观</h3><div className="appearance-options"><div>{emojis.map((emoji) => <button type="button" key={emoji} className={draft.avatar === emoji ? "active" : ""} onClick={() => setDraft({ ...draft, avatar: emoji })}>{emoji}</button>)}</div><div>{colors.map((color) => <button type="button" aria-label={color} key={color} className={draft.color === color ? "active" : ""} style={{ background: color }} onClick={() => setDraft({ ...draft, color })} />)}</div></div></section>
@@ -1757,7 +1795,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
         </form>
         <form className="admin-form import-form" onSubmit={importUsers}>
           <h3><FileSpreadsheet size={17} />批量开通</h3>
-          <p className="hint no-margin">支持 CSV、XLSX。账号放在第一列，统一密码在这里填写。</p>
+          <p className="hint no-margin">支持 CSV、XLS、XLSX。账号放在第一列，统一密码在这里填写。</p>
           <a className="template-download" href="/api/admin/users/import-template">
             <Download size={15} />
             下载 CSV 模板
@@ -1765,7 +1803,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
           <label className="file-picker">
             <Upload size={16} />
             <span>{importFile?.name || "选择账号文件"}</span>
-            <input type="file" accept=".csv,.xlsx" onChange={(event) => setImportFile(event.target.files?.[0] || null)} />
+            <input type="file" accept=".csv,.xls,.xlsx" onChange={(event) => setImportFile(event.target.files?.[0] || null)} />
           </label>
           <input type="password" autoComplete="new-password" placeholder="统一初始密码（至少 8 位）" value={importPassword} onChange={(event) => setImportPassword(event.target.value)} />
           {importNotice ? <div className="notice import-notice">{importNotice}</div> : null}
