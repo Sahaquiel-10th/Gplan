@@ -27,6 +27,7 @@ import { isSupportedAttachment, parseAttachment, safeAttachmentExtension } from 
 import { createPlainToken, hashPassword, hashToken, signToken, uid, verifyPassword, verifyToken } from "./security.js";
 import { adminModel, publicModel, publicUser } from "./serializers.js";
 import { Agent, Attachment, AttachmentSummary, Conversation, DataConnector, DataConnectorId, DataSyncLog, Message, MessageRecord, ModelConfig, RagRetrievalLog, User, UserSavedMemory, Workspace } from "./types.js";
+import { normalizeUploadFilename } from "./uploadFilename.js";
 import { buildSearchContext, searchWeb, webSearchEnabled } from "./webSearch.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -51,15 +52,24 @@ const publicAgentAttempts = new Map<string, { count: number; resetAt: number }>(
 const attachmentMaxFiles = 4;
 const attachmentMaxBytes = Math.max(1024 * 1024, Number(process.env.ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024));
 const attachmentContextChars = Math.max(2000, Number(process.env.ATTACHMENT_CONTEXT_CHARS ?? 24000));
+const agentPromptMaxChars = 6000;
 const uploadDir = path.join(root, "data", "uploads");
 fs.mkdirSync(uploadDir, { recursive: true });
 const userImportUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 }
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    file.originalname = normalizeUploadFilename(file.originalname);
+    callback(null, true);
+  }
 });
 const attachmentUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: attachmentMaxBytes, files: attachmentMaxFiles }
+  limits: { fileSize: attachmentMaxBytes, files: attachmentMaxFiles },
+  fileFilter: (_req, file, callback) => {
+    file.originalname = normalizeUploadFilename(file.originalname);
+    callback(null, true);
+  }
 });
 
 if (process.env.NODE_ENV === "production" && jwtSecret === "dev-secret-change-me") {
@@ -608,7 +618,7 @@ app.post("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
       ownerId: req.user!.id,
       name: name.slice(0, 40),
       description: description.slice(0, 220),
-      prompt: prompt.slice(0, 4000),
+      prompt: prompt.slice(0, agentPromptMaxChars),
       modelId,
       group: (typeof req.body.group === "string" && req.body.group.trim() ? req.body.group.trim() : "未分组").slice(0, 24),
       avatar: (typeof req.body.avatar === "string" && req.body.avatar.trim() ? req.body.avatar.trim() : "🤖").slice(0, 8),
@@ -637,7 +647,7 @@ app.patch("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
     if (target.ownerId !== req.user!.id && req.user!.role !== "admin") throw new Error("没有权限修改这个智能体");
     if (typeof req.body.name === "string" && req.body.name.trim()) target.name = req.body.name.trim().slice(0, 40);
     if (typeof req.body.description === "string" && req.body.description.trim()) target.description = req.body.description.trim().slice(0, 220);
-    if (typeof req.body.prompt === "string") target.prompt = req.body.prompt.trim().slice(0, 4000);
+    if (typeof req.body.prompt === "string") target.prompt = req.body.prompt.trim().slice(0, agentPromptMaxChars);
     if (typeof req.body.modelId === "string") {
       const model = db.models.find((item) => item.id === req.body.modelId && item.enabled && item.kind === "chat");
       if (!model) throw new Error("请选择可用的聊天模型");
@@ -684,7 +694,7 @@ app.post("/api/agents/debug", auth(jwtSecret), asyncRoute(async (req, res) => {
   const db = await store.read();
   const model = db.models.find((item) => item.id === modelId && item.enabled && item.kind === "chat");
   if (!model) throw new Error("模型不存在或未启用");
-  const prompt = typeof req.body.prompt === "string" ? req.body.prompt.trim().slice(0, 4000) : "";
+  const prompt = typeof req.body.prompt === "string" ? req.body.prompt.trim().slice(0, agentPromptMaxChars) : "";
   const messages: Message[] = [
     ...(prompt ? [{ role: "assistant" as const, content: prompt, modelId, createdAt: now() }] : []),
     { role: "user", content, modelId, createdAt: now() }
