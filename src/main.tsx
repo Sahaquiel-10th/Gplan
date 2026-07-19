@@ -2187,7 +2187,7 @@ function DataPlatformTab() {
 }
 
 function RecordsTab({ records, users }: { records: (Conversation & { user: User })[]; users: User[] }) {
-  const [userId, setUserId] = useState(users[0]?.id || "");
+  const [userId, setUserId] = useState("all");
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [statsError, setStatsError] = useState("");
   const [period, setPeriod] = useState<"all" | "7" | "30" | "90" | "custom">("all");
@@ -2204,7 +2204,7 @@ function RecordsTab({ records, users }: { records: (Conversation & { user: User 
     range.to ? `to=${encodeURIComponent(range.to)}` : ""
   ].filter(Boolean).join("&");
   const filtered = records
-    .filter((record) => record.userId === userId)
+    .filter((record) => userId === "all" || record.userId === userId)
     .map((record) => ({
       ...record,
       messages: record.messages.filter((message) => {
@@ -2215,7 +2215,7 @@ function RecordsTab({ records, users }: { records: (Conversation & { user: User 
     .filter((record) => record.messages.length);
 
   useEffect(() => {
-    if (!userId && users[0]) setUserId(users[0].id);
+    if (userId !== "all" && !users.some((user) => user.id === userId)) setUserId("all");
   }, [userId, users]);
 
   useEffect(() => {
@@ -2224,6 +2224,7 @@ function RecordsTab({ records, users }: { records: (Conversation & { user: User 
       return;
     }
     setStatsError("");
+    setStats(null);
     const query = `userId=${encodeURIComponent(userId)}${rangeQuery ? `&${rangeQuery}` : ""}`;
     api<{ stats: UsageStats }>(`/api/admin/usage-stats?${query}`)
       .then((result) => setStats(result.stats))
@@ -2262,6 +2263,7 @@ function RecordsTab({ records, users }: { records: (Conversation & { user: User 
       <div className="records-toolbar">
         <label>员工
           <select value={userId} onChange={(event) => setUserId(event.target.value)}>
+            <option value="all">全部员工</option>
             {users.map((user) => (
               <option key={user.id} value={user.id}>{user.username}</option>
             ))}

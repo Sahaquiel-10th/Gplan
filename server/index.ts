@@ -230,19 +230,22 @@ function dateKey(value: string) {
 function userUsageStats(
   db: Awaited<ReturnType<typeof store.read>>,
   userId: string,
+  companyId: string,
   range: { from?: string; to?: string } = {}
 ) {
-  const user = db.users.find((item) => item.id === userId);
-  if (!user) throw new Error("用户不存在");
+  const allUsers = userId === "all";
+  const users = db.users.filter((item) => item.companyId === companyId && (allUsers || item.id === userId));
+  if (!allUsers && !users.length) throw new Error("用户不存在");
+  const userIds = new Set(users.map((item) => item.id));
   const inRange = (value: string) => {
     const key = dateKey(value);
     return (!range.from || key >= range.from) && (!range.to || key <= range.to);
   };
-  const messages = db.messages.filter((item) => item.userId === userId && inRange(item.createdAt));
+  const messages = db.messages.filter((item) => userIds.has(item.userId) && inRange(item.createdAt));
   const conversationIds = new Set(messages.map((item) => item.conversationId));
-  const conversations = db.conversations.filter((item) => item.userId === userId && conversationIds.has(item.id));
+  const conversations = db.conversations.filter((item) => userIds.has(item.userId) && conversationIds.has(item.id));
   const usageRecords = db.modelUsageRecords.filter(
-    (item) => item.userId === userId && item.source === "provider" && inRange(item.createdAt)
+    (item) => userIds.has(item.userId) && item.source === "provider" && inRange(item.createdAt)
   );
 
   const dailyMap = new Map<string, { date: string; turns: number; inputTokens: number; outputTokens: number; totalTokens: number }>();
@@ -274,7 +277,14 @@ function userUsageStats(
     .sort((a, b) => b.turns - a.turns);
   const totalTurns = messages.filter((item) => item.role === "user").length;
   return {
-    user: publicUser(user),
+    user: allUsers ? {
+      id: "all",
+      companyId,
+      username: "全部员工",
+      role: "admin" as const,
+      enabled: true,
+      createdAt: ""
+    } : publicUser(users[0]),
     summary: {
       conversations: conversations.length,
       totalTurns,
@@ -1243,9 +1253,9 @@ app.patch("/api/admin/settings", ...admin, asyncRoute(async (req, res) => {
   res.json({ settings });
 }));
 
-app.get("/api/admin/users", ...admin, asyncRoute(async (_req, res) => {
+app.get("/api/admin/users", ...admin, asyncRoute(async (req, res) => {
   const db = await store.read();
-  res.json({ users: db.users.map(publicUser) });
+  res.json({ users: db.users.filter((user) => user.companyId === req.user!.companyId).map(publicUser) });
 }));
 
 app.post("/api/admin/users", ...admin, asyncRoute(async (req, res) => {
@@ -1475,11 +1485,14 @@ app.delete("/api/admin/models/:id", ...protectedAdmin, asyncRoute(async (req, re
 app.get("/api/admin/conversations", ...protectedAdmin, asyncRoute(async (req, res) => {
   const db = await store.read();
   const userId = typeof req.query.userId === "string" ? req.query.userId : "";
+  const companyUsers = new Map(
+    db.users.filter((user) => user.companyId === req.user!.companyId).map((user) => [user.id, user])
+  );
   const conversations = db.conversations
-    .filter((conversation) => (userId ? conversation.userId === userId : true))
+    .filter((conversation) => companyUsers.has(conversation.userId) && (userId ? conversation.userId === userId : true))
     .map((conversation) => ({
       ...conversation,
-      user: publicUser(db.users.find((user) => user.id === conversation.userId)!)
+      user: publicUser(companyUsers.get(conversation.userId)!)
     }))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   res.json({ conversations });
@@ -1490,7 +1503,7 @@ app.get("/api/admin/usage-stats", ...protectedAdmin, asyncRoute(async (req, res)
   const from = typeof req.query.from === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : undefined;
   const to = typeof req.query.to === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : undefined;
   const db = await store.read();
-  res.json({ stats: userUsageStats(db, userId, { from, to }) });
+  res.json({ stats: userUsageStats(db, userId, req.user!.companyId, { from, to }) });
 }));
 
 app.get("/api/admin/usage-stats/export", ...protectedAdmin, asyncRoute(async (req, res) => {
@@ -1498,7 +1511,7 @@ app.get("/api/admin/usage-stats/export", ...protectedAdmin, asyncRoute(async (re
   const from = typeof req.query.from === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : undefined;
   const to = typeof req.query.to === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : undefined;
   const db = await store.read();
-  const stats = userUsageStats(db, userId, { from, to });
+  const stats = userUsageStats(db, userId, req.user!.companyId, { from, to });
   const summaryRows = [
     ["账号", stats.user.username],
     ["统计开始日期", from || "全部"],
