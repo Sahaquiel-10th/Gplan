@@ -20,6 +20,7 @@ import { DingTalkKnowledgeService } from "./dingtalk.js";
 import { store } from "./db.js";
 import { KnowledgeSyncScheduler, KnowledgeSyncService } from "./knowledgeSync.js";
 import { hasImageGenerationIntent } from "./imageIntent.js";
+import { decodeGeneratedImageDataUrl } from "./generatedImage.js";
 import { asyncRoute, auth, requireRole } from "./middleware.js";
 import { MemorySyncScheduler } from "./memorySync.js";
 import { callModel } from "./modelGateway.js";
@@ -52,6 +53,7 @@ const adminToolsAttempts = new Map<string, { count: number; resetAt: number }>()
 const publicAgentAttempts = new Map<string, { count: number; resetAt: number }>();
 const attachmentMaxFiles = 4;
 const attachmentMaxBytes = Math.max(1024 * 1024, Number(process.env.ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024));
+const generatedImageMaxBytes = Math.max(attachmentMaxBytes, Number(process.env.GENERATED_IMAGE_MAX_BYTES ?? 25 * 1024 * 1024));
 const attachmentContextChars = Math.max(2000, Number(process.env.ATTACHMENT_CONTEXT_CHARS ?? 24000));
 const agentPromptMaxChars = 6000;
 const uploadDir = path.join(root, "data", "uploads");
@@ -332,6 +334,38 @@ function attachmentSummary(attachment: Attachment): AttachmentSummary {
     mimeType: attachment.mimeType,
     kind: attachment.kind,
     size: attachment.size
+  };
+}
+
+async function persistGeneratedImage(params: {
+  imageUrl?: string;
+  companyId: string;
+  userId: string;
+  conversationId: string;
+  messageId: string;
+}): Promise<{ attachment: Attachment; imageUrl: string } | undefined> {
+  if (!params.imageUrl?.startsWith("data:")) return undefined;
+  const { data, extension, mimeType } = decodeGeneratedImageDataUrl(params.imageUrl, generatedImageMaxBytes);
+
+  const id = uid("att");
+  const attachment: Attachment = {
+    id,
+    companyId: params.companyId,
+    userId: params.userId,
+    originalName: `AI生成图片-${new Date().toISOString().replace(/[:.]/g, "-")}${extension}`,
+    mimeType,
+    kind: "image",
+    size: data.length,
+    storagePath: path.join(uploadDir, `${id}${extension}`),
+    extractedText: "",
+    conversationId: params.conversationId,
+    messageId: params.messageId,
+    createdAt: now()
+  };
+  await fs.promises.writeFile(attachment.storagePath, data, { flag: "wx" });
+  return {
+    attachment,
+    imageUrl: `/api/attachments/${encodeURIComponent(id)}/content`
   };
 }
 
@@ -992,8 +1026,17 @@ app.post(
           }
         ];
     let result;
+    const assistantMessageId = uid("msg");
+    let generatedImage: Awaited<ReturnType<typeof persistGeneratedImage>>;
     try {
       result = await callModel(executionModel, modelMessages, db.settings.safetyRules, res.locals.requestId);
+      generatedImage = await persistGeneratedImage({
+        imageUrl: result.imageUrl,
+        companyId: req.user!.companyId,
+        userId: req.user!.id,
+        conversationId: conversation.id,
+        messageId: assistantMessageId
+      });
     } catch (error) {
       await store.mutate((mutableDb) => {
         const target = mutableDb.conversations.find((item) => item.id === conversation.id && item.userId === req.user!.id);
@@ -1009,46 +1052,53 @@ app.post(
       throw error;
     }
     const assistantMessage: Message = {
-      id: uid("msg"),
+      id: assistantMessageId,
       role: "assistant",
       content: autoRouteToImage ? `已调用 ${executionModel.name} 生成图片` : result.content,
-      imageUrl: result.imageUrl,
+      imageUrl: generatedImage?.imageUrl ?? result.imageUrl,
       sources: searchSources,
       modelId: executionModel.id,
       createdAt: now()
     };
 
-    const savedConversation = await store.mutate((mutableDb) => {
-      const target = mutableDb.conversations.find((item) => item.id === conversation.id && item.userId === req.user!.id);
-      if (!target) throw new Error("对话不存在");
-      target.messages.push(assistantMessage);
-      target.updatedAt = assistantMessage.createdAt;
-      mutableDb.messages.push(messageRecord(assistantMessage, {
-        companyId: req.user!.companyId,
-        userId: req.user!.id,
-        conversationId: target.id
-      }));
-      for (const attachment of mutableDb.attachments) {
-        if (!attachmentIds.includes(attachment.id) || attachment.userId !== req.user!.id) continue;
-        attachment.conversationId = target.id;
-        attachment.messageId = userMessage.id;
-      }
-      if (result.usage) {
-        mutableDb.modelUsageRecords.push({
-          id: uid("use"),
+    let savedConversation: Conversation;
+    try {
+      savedConversation = await store.mutate((mutableDb) => {
+        const target = mutableDb.conversations.find((item) => item.id === conversation.id && item.userId === req.user!.id);
+        if (!target) throw new Error("对话不存在");
+        target.messages.push(assistantMessage);
+        target.updatedAt = assistantMessage.createdAt;
+        mutableDb.messages.push(messageRecord(assistantMessage, {
           companyId: req.user!.companyId,
           userId: req.user!.id,
-          conversationId: target.id,
-          modelId: executionModel.id,
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          totalTokens: result.usage.totalTokens,
-          source: result.usage.source,
-          createdAt: assistantMessage.createdAt
-        });
-      }
-      return target;
-    });
+          conversationId: target.id
+        }));
+        if (generatedImage) mutableDb.attachments.push(generatedImage.attachment);
+        for (const attachment of mutableDb.attachments) {
+          if (!attachmentIds.includes(attachment.id) || attachment.userId !== req.user!.id) continue;
+          attachment.conversationId = target.id;
+          attachment.messageId = userMessage.id;
+        }
+        if (result.usage) {
+          mutableDb.modelUsageRecords.push({
+            id: uid("use"),
+            companyId: req.user!.companyId,
+            userId: req.user!.id,
+            conversationId: target.id,
+            modelId: executionModel.id,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            totalTokens: result.usage.totalTokens,
+            source: result.usage.source,
+            createdAt: assistantMessage.createdAt
+          });
+        }
+        return target;
+      });
+    } catch (error) {
+      if (generatedImage) await fs.promises.rm(generatedImage.attachment.storagePath, { force: true }).catch(() => undefined);
+      throw error;
+    }
 
     let memoryNotice = "";
     if (executionModel.kind === "chat" && hasExplicitMemoryIntent(content)) {
@@ -1082,13 +1132,19 @@ app.patch("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res)
 }));
 
 app.delete("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
+  let storagePaths: string[] = [];
   await store.mutate((db) => {
     const index = db.conversations.findIndex((item) => item.id === req.params.id && item.userId === req.user!.id);
     if (index === -1) throw new Error("对话不存在");
+    storagePaths = db.attachments
+      .filter((attachment) => attachment.conversationId === req.params.id && attachment.userId === req.user!.id)
+      .map((attachment) => attachment.storagePath);
+    db.attachments = db.attachments.filter((attachment) => attachment.conversationId !== req.params.id || attachment.userId !== req.user!.id);
     db.conversations.splice(index, 1);
     db.messages = db.messages.filter((message) => message.conversationId !== req.params.id || message.userId !== req.user!.id);
     db.memorySyncStates = db.memorySyncStates.filter((state) => state.conversationId !== req.params.id || state.userId !== req.user!.id);
   });
+  await Promise.all(storagePaths.map((storagePath) => fs.promises.rm(storagePath, { force: true }).catch(() => undefined)));
   res.json({ ok: true });
 }));
 

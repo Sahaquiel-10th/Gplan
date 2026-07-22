@@ -284,6 +284,9 @@ function stripLargeImageData(db: Database): Database {
       if (message.imageUrl?.startsWith("data:")) delete message.imageUrl;
     }
   }
+  for (const message of cloned.messages) {
+    if (message.imageUrl?.startsWith("data:")) delete message.imageUrl;
+  }
   return cloned;
 }
 
