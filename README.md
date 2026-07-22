@@ -81,6 +81,16 @@ POST https://app.yylx.io/v1/images/generations
 Authorization: Bearer {API Key}
 ```
 
+上传参考图片时会改用兼容 OpenAI 的图片编辑接口：
+
+```text
+POST https://app.yylx.io/v1/images/edits
+Content-Type: multipart/form-data
+Authorization: Bearer {API Key}
+```
+
+在普通 GPT 聊天中明确提出“生成图片”“画一张图”“把这张图改成……”等请求时，服务端会自动转调同供应商已启用的图片模型；普通图片分析仍由当前聊天模型处理。聊天输入框支持直接粘贴剪贴板图片。
+
 ## 机器人 API
 
 进入“管理后台 -> API Token”生成 Token。

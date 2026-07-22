@@ -427,7 +427,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const currentModel = models.find((model) => model.id === activeModelId);
   const activeAgentId = active?.agentId || draftAgentId;
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
-  const canAttach = currentModel?.kind === "chat" && (!activeAgent || activeAgent.allowFileUpload);
+  const canAttach = Boolean(currentModel) && (!activeAgent || activeAgent.allowFileUpload);
+  const attachmentAccept = currentModel?.kind === "image"
+    ? ".png,.jpg,.jpeg,.webp"
+    : capabilities.attachments.extensions.map((extension) => `.${extension}`).join(",");
   const canSearch = currentModel?.kind === "chat" && capabilities.webSearch.enabled && (!activeAgent || activeAgent.allowWebSearch);
   const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived);
   const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.workspaceId);
@@ -510,7 +513,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setSidebarOpen(false);
   }
 
-  async function uploadAttachments(files: FileList | null) {
+  async function uploadAttachments(files: FileList | File[] | null) {
     if (!files?.length || uploadingAttachments) return;
     const remaining = capabilities.attachments.maxFiles - pendingAttachments.length;
     if (remaining <= 0) {
@@ -518,6 +521,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       return;
     }
     const selected = Array.from(files).slice(0, remaining);
+    if (currentModel?.kind === "image" && selected.some((file) => !["image/png", "image/jpeg", "image/webp"].includes(file.type))) {
+      setError("图生图仅支持 PNG、JPG、JPEG 或 WebP 图片");
+      return;
+    }
     if (activeAgent && !activeAgent.allowFileUpload) {
       setError("这个智能体没有开启文件上传");
       return;
@@ -561,7 +568,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const userMessage: Message = {
       id: localId("msg"),
       role: "user",
-      content: text || "请分析上传的附件。",
+      content: text || (currentModel?.kind === "image" ? "请基于上传的图片进行编辑。" : "请分析上传的附件。"),
       attachments,
       modelId,
       createdAt: new Date().toISOString()
@@ -654,6 +661,26 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       event.preventDefault();
       event.currentTarget.form?.requestSubmit();
     }
+  }
+
+  function handleComposerPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const clipboardFiles = Array.from(event.clipboardData.files);
+    const pastedFiles = clipboardFiles.length
+      ? clipboardFiles
+      : Array.from(event.clipboardData.items)
+          .filter((item) => item.kind === "file")
+          .map((item) => item.getAsFile())
+          .filter((file): file is File => Boolean(file));
+    if (!pastedFiles.length) return;
+
+    event.preventDefault();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const normalizedFiles = pastedFiles.map((file, index) => {
+      if (file.name && file.name !== "image.png") return file;
+      const extension = file.type === "image/jpeg" ? "jpg" : file.type === "image/webp" ? "webp" : "png";
+      return new File([file], `剪贴板图片-${timestamp}-${index + 1}.${extension}`, { type: file.type || `image/${extension}` });
+    });
+    void uploadAttachments(normalizedFiles);
   }
 
   async function archiveConversation(conversation: Conversation) {
@@ -974,12 +1001,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           ) : null}
           <div className="composer-row">
             <div className="composer-tools">
-              <label className={`composer-tool ${!canAttach || activeLoading || uploadingAttachments ? "disabled" : ""}`} title={canAttach ? "上传图片或文件" : "当前模型或智能体不支持附件"}>
+              <label className={`composer-tool ${!canAttach || activeLoading || uploadingAttachments ? "disabled" : ""}`} title={canAttach ? (currentModel?.kind === "image" ? "上传参考图片进行图生图" : "上传图片或文件") : "当前模型或智能体不支持附件"}>
                 {uploadingAttachments ? <span className="tool-spinner" /> : <Paperclip size={18} />}
                 <input
                   type="file"
                   multiple
-                  accept={capabilities.attachments.extensions.map((extension) => `.${extension}`).join(",")}
+                  accept={attachmentAccept}
                   disabled={!canAttach || activeLoading || uploadingAttachments}
                   onChange={(event) => {
                     uploadAttachments(event.target.files);
@@ -1003,7 +1030,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               onCompositionStart={() => setIsComposing(true)}
               onCompositionEnd={() => setIsComposing(false)}
               onKeyDown={handleComposerKeyDown}
-              placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+              onPaste={handleComposerPaste}
+              placeholder={currentModel?.kind === "image" ? "输入修改要求，也可直接粘贴剪贴板图片" : "输入消息，Enter 发送，Shift+Enter 换行；支持粘贴附件"}
               rows={2}
             />
             <button className="primary send" type="submit" disabled={!activeModelId || activeLoading || (!content.trim() && !pendingAttachments.length)}>

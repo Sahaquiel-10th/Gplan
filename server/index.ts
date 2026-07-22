@@ -19,6 +19,7 @@ import {
 import { DingTalkKnowledgeService } from "./dingtalk.js";
 import { store } from "./db.js";
 import { KnowledgeSyncScheduler, KnowledgeSyncService } from "./knowledgeSync.js";
+import { hasImageGenerationIntent } from "./imageIntent.js";
 import { asyncRoute, auth, requireRole } from "./middleware.js";
 import { MemorySyncScheduler } from "./memorySync.js";
 import { callModel } from "./modelGateway.js";
@@ -798,7 +799,6 @@ app.post(
       : [];
     const rawContent = typeof req.body.content === "string" ? req.body.content.trim() : "";
     if (!rawContent && !attachmentIds.length) throw new Error("消息或附件不能为空");
-    const content = rawContent || "请分析上传的附件。";
     const modelId = requiredString(req.body.modelId, "模型");
     const conversationId = typeof req.body.conversationId === "string" ? req.body.conversationId : "";
     const wantsWebSearch = req.body.webSearch === true;
@@ -823,17 +823,32 @@ app.post(
     const attachments = attachmentIds.map((id) => db.attachments.find((item) => item.id === id && item.userId === req.user!.id));
     if (attachments.some((attachment) => !attachment)) throw new Error("附件不存在或无权访问");
     const selectedAttachments = attachments as Attachment[];
+    const hasInputImage = selectedAttachments.some((attachment) => attachment.kind === "image");
+    const content = rawContent || (model.kind === "image" ? "请基于上传的图片进行编辑。" : "请分析上传的附件。");
+    const autoRouteToImage = model.kind === "chat" && hasImageGenerationIntent(content, hasInputImage);
+    const imageModel = autoRouteToImage
+      ? db.models.find((item) => item.kind === "image" && item.enabled && item.apiKey && item.provider === model.provider)
+        ?? db.models.find((item) => item.kind === "image" && item.enabled && item.apiKey && item.model === "gpt-image-2")
+        ?? db.models.find((item) => item.kind === "image" && item.enabled && item.apiKey)
+      : undefined;
+    if (autoRouteToImage && !imageModel) throw new Error("没有可用的图片模型，请联系管理员启用 Image 2");
+    const executionModel = imageModel ?? model;
     if (selectedAttachments.some((attachment) => attachment.messageId)) throw new Error("附件已经发送，不能重复提交");
     if (agent && selectedAttachments.length && !agent.allowFileUpload) throw new Error("这个智能体没有开启文件上传");
     if (agent && selectedAttachments.some((attachment) => attachment.kind === "image") && !agent.allowImageInput) {
       throw new Error("这个智能体没有开启图片理解");
     }
-    if (selectedAttachments.length && model.kind !== "chat") throw new Error("图片生成模型暂不支持附加文件");
-    if (selectedAttachments.some((attachment) => attachment.kind === "image") && model.protocol !== "openai") {
+    if (executionModel.kind === "image" && selectedAttachments.some((attachment) => attachment.kind !== "image")) {
+      throw new Error("图片生成模型只能上传 PNG、JPG、JPEG 或 WebP 图片");
+    }
+    if (executionModel.kind === "image" && selectedAttachments.some((attachment) => !["image/png", "image/jpeg", "image/webp"].includes(attachment.mimeType))) {
+      throw new Error("图生图仅支持 PNG、JPG、JPEG 或 WebP 图片");
+    }
+    if (hasInputImage && executionModel.kind === "chat" && executionModel.protocol !== "openai") {
       throw new Error("当前模型暂未接入图片理解，请切换到 GPT 聊天模型");
     }
     if (wantsWebSearch && agent && !agent.allowWebSearch) throw new Error("这个智能体没有开启联网搜索");
-    if (wantsWebSearch && model.kind !== "chat") throw new Error("图片生成模型不能使用联网搜索");
+    if (wantsWebSearch && executionModel.kind !== "chat") throw new Error("生成图片时不能同时使用联网搜索");
     const searchSources = wantsWebSearch ? await searchWeb(content) : [];
 
     const userMessage: Message = {
@@ -889,7 +904,7 @@ app.post(
       return created;
     });
 
-    const [implicitMemories, companyKnowledge]: [RetrievedMemory[], RetrievedItem[]] = model.kind === "chat"
+    const [implicitMemories, companyKnowledge]: [RetrievedMemory[], RetrievedItem[]] = executionModel.kind === "chat"
       ? await Promise.all([
           memoryService.searchMemory({ companyId: req.user!.companyId, userId: req.user!.id, query: content }).catch(() => []),
           companyKnowledgeService.retrieveCompanyKnowledge({ companyId: req.user!.companyId, userId: req.user!.id, query: content }).catch(() => [])
@@ -925,12 +940,12 @@ app.post(
         modelId: message.modelId,
         createdAt: message.createdAt
       }));
-    const injectedContext = model.kind === "chat"
+    const injectedContext = executionModel.kind === "chat"
       ? buildPromptContext({ memories, companyKnowledge })
       : "";
     const attachmentContext = buildAttachmentContext(selectedAttachments);
     const searchContext = buildSearchContext(searchSources);
-    if (model.kind === "chat") {
+    if (executionModel.kind === "chat") {
       await Promise.all([
         logRetrieval({
           companyId: req.user!.companyId,
@@ -957,7 +972,7 @@ app.post(
       ]);
     }
 
-    const modelMessages: Message[] = model.kind === "chat"
+    const modelMessages: Message[] = executionModel.kind === "chat"
       ? [
           ...(injectedContext ? [{ role: "system" as const, content: injectedContext, modelId: model.id, createdAt: now() }] : []),
           ...(attachmentContext ? [{ role: "system" as const, content: attachmentContext, modelId: model.id, createdAt: now() }] : []),
@@ -969,10 +984,16 @@ app.post(
             inputImageDataUrls: await attachmentImageDataUrls(selectedAttachments)
           }
         ]
-      : conversation.messages;
+      : [
+          ...conversation.messages.slice(0, -1),
+          {
+            ...userMessage,
+            inputImageDataUrls: await attachmentImageDataUrls(selectedAttachments)
+          }
+        ];
     let result;
     try {
-      result = await callModel(model, modelMessages, db.settings.safetyRules, res.locals.requestId);
+      result = await callModel(executionModel, modelMessages, db.settings.safetyRules, res.locals.requestId);
     } catch (error) {
       await store.mutate((mutableDb) => {
         const target = mutableDb.conversations.find((item) => item.id === conversation.id && item.userId === req.user!.id);
@@ -990,10 +1011,10 @@ app.post(
     const assistantMessage: Message = {
       id: uid("msg"),
       role: "assistant",
-      content: result.content,
+      content: autoRouteToImage ? `已调用 ${executionModel.name} 生成图片` : result.content,
       imageUrl: result.imageUrl,
       sources: searchSources,
-      modelId: model.id,
+      modelId: executionModel.id,
       createdAt: now()
     };
 
@@ -1018,7 +1039,7 @@ app.post(
           companyId: req.user!.companyId,
           userId: req.user!.id,
           conversationId: target.id,
-          modelId: model.id,
+          modelId: executionModel.id,
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
           totalTokens: result.usage.totalTokens,
@@ -1030,7 +1051,7 @@ app.post(
     });
 
     let memoryNotice = "";
-    if (model.kind === "chat" && hasExplicitMemoryIntent(content)) {
+    if (executionModel.kind === "chat" && hasExplicitMemoryIntent(content)) {
       try {
         await createUserMemory({
           user: req.user!,

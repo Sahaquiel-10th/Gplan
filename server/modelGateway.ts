@@ -248,20 +248,26 @@ async function callImageModel(
   const prompt = [safetyRules, model.systemPrompt, userPrompt].map((item) => item?.trim()).filter(Boolean).join("\n\n");
   if (!prompt) throw new Error("图片提示词不能为空");
 
-  const endpoint = `${model.baseUrl.replace(/\/$/, "")}/images/generations`;
+  const inputImages = [...messages].reverse().find((message) => message.role === "user")?.inputImageDataUrls ?? [];
+  const endpoint = `${model.baseUrl.replace(/\/$/, "")}/images/${inputImages.length ? "edits" : "generations"}`;
   const startedAt = Date.now();
+  const request = inputImages.length
+    ? imageEditRequest(model, prompt, inputImages)
+    : {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${model.apiKey}`
+        },
+        body: JSON.stringify({
+          model: model.model,
+          prompt,
+          n: 1,
+          size: "1024x1024"
+        })
+      };
   const response = await fetchWithTimeout(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${model.apiKey}`
-    },
-    body: JSON.stringify({
-      model: model.model,
-      prompt,
-      n: 1,
-      size: "1024x1024"
-    })
+    ...request
   }, imageRequestTimeoutMs);
 
   const payload = await response.json().catch(() => ({}));
@@ -269,6 +275,8 @@ async function callImageModel(
     const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
     const hint = /requires an image model/i.test(detail)
       ? `当前模型 ID "${model.model}" 不是供应商认可的图片模型。请在后台确认模型 ID，yylx 的内置图片模型已改为 gpt-image-2。`
+      : inputImages.length && response.status === 404
+        ? `当前供应商没有提供 /images/edits 图生图接口，请确认模型和中转站支持图片编辑`
       : detail;
     throw new Error(`图片模型调用失败：${hint}`);
   }
@@ -306,5 +314,26 @@ async function callImageModel(
       source: "provider"
     } : undefined,
     raw: payload
+  };
+}
+
+function imageEditRequest(model: ModelConfig, prompt: string, inputImages: string[]): RequestInit {
+  const form = new FormData();
+  form.append("model", model.model);
+  form.append("prompt", prompt);
+  form.append("n", "1");
+  form.append("size", "1024x1024");
+  inputImages.forEach((dataUrl, index) => {
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,([\s\S]+)$/i.exec(dataUrl);
+    if (!match) throw new Error("图生图输入图片格式不受支持");
+    const mimeType = match[1].toLowerCase();
+    const extension = mimeType === "image/jpeg" ? "jpg" : mimeType.slice("image/".length);
+    const bytes = Uint8Array.from(Buffer.from(match[2], "base64"));
+    form.append("image[]", new Blob([bytes], { type: mimeType }), `input-${index + 1}.${extension}`);
+  });
+  return {
+    method: "POST",
+    headers: { Authorization: `Bearer ${model.apiKey}` },
+    body: form
   };
 }
