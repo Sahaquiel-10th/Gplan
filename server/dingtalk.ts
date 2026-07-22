@@ -87,15 +87,27 @@ export class DingTalkKnowledgeService {
 
   async listDocuments(limit = 200): Promise<DingTalkKnowledgeDocument[]> {
     const workspaceId = requiredEnv("DINGTALK_WORKSPACE_ID");
-    const nodes = await this.listNodes(workspaceId, Math.max(limit * 20, 200));
+    const nodes = await this.listDocumentNodes(Math.max(limit * 20, 200));
     const documents: DingTalkKnowledgeDocument[] = [];
-    for (const node of nodes.filter(isDocumentNode)) {
-      const markdown = await this.getNodeMarkdown(workspaceId, node);
-      if (!markdown.trim()) continue;
-      documents.push({ ...node, markdown });
+    for (const node of nodes) {
+      const document = await this.getDocument(node);
+      if (!document.markdown.trim()) continue;
+      documents.push(document);
       if (documents.length >= limit) break;
     }
     return documents;
+  }
+
+  async listDocumentNodes(limit = 5000): Promise<DingTalkKnowledgeNode[]> {
+    const workspaceId = requiredEnv("DINGTALK_WORKSPACE_ID");
+    const nodes = await this.listNodes(workspaceId, limit);
+    return nodes.filter(isDocumentNode);
+  }
+
+  async getDocument(node: DingTalkKnowledgeNode): Promise<DingTalkKnowledgeDocument> {
+    const workspaceId = requiredEnv("DINGTALK_WORKSPACE_ID");
+    const markdown = await this.getNodeMarkdown(workspaceId, node);
+    return { ...node, markdown };
   }
 
   private async getAccessToken() {

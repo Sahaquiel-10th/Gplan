@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { BailianCompanyKnowledgeService } from "./bailian.js";
-import { DingTalkKnowledgeDocument, DingTalkKnowledgeService } from "./dingtalk.js";
+import { DingTalkKnowledgeDocument, DingTalkKnowledgeNode, DingTalkKnowledgeService } from "./dingtalk.js";
 import { Store } from "./db.js";
 import { KnowledgeSyncDocument } from "./types.js";
 import { uid } from "./security.js";
@@ -18,7 +18,8 @@ export const knowledgeSyncConfig = {
   intervalMinutes: envNumber("KNOWLEDGE_SYNC_INTERVAL_MINUTES", 30),
   activeStartHour: envNumber("KNOWLEDGE_SYNC_ACTIVE_START_HOUR", 8),
   activeEndHour: envNumber("KNOWLEDGE_SYNC_ACTIVE_END_HOUR", 20),
-  timezone: process.env.KNOWLEDGE_SYNC_TIMEZONE?.trim() || "Asia/Shanghai"
+  timezone: process.env.KNOWLEDGE_SYNC_TIMEZONE?.trim() || "Asia/Shanghai",
+  scanMaxNodes: envNumber("KNOWLEDGE_SYNC_SCAN_MAX_NODES", 5000)
 };
 
 function now() {
@@ -48,6 +49,16 @@ function isAlreadySynced(existing: KnowledgeSyncDocument | undefined, contentHas
   return Boolean(existing?.contentHash === contentHash && existing.bailianDocumentId);
 }
 
+function unchangedByModifiedTime(existing: KnowledgeSyncDocument | undefined, node: DingTalkKnowledgeNode) {
+  return Boolean(
+    existing?.bailianDocumentId &&
+    existing.contentHash &&
+    existing.sourceUpdatedAt &&
+    node.updatedAt &&
+    existing.sourceUpdatedAt === node.updatedAt
+  );
+}
+
 export class KnowledgeSyncService {
   constructor(
     private store: Store,
@@ -55,27 +66,47 @@ export class KnowledgeSyncService {
     private bailian: BailianCompanyKnowledgeService
   ) {}
 
-  async runManualSync(limit = Number(process.env.KNOWLEDGE_SYNC_MAX_DOCUMENTS ?? 50)): Promise<KnowledgeSyncSummary> {
-    const documents = await this.dingtalk.listDocuments(limit);
+  async runManualSync(limit = Number(process.env.KNOWLEDGE_SYNC_MAX_DOCUMENTS ?? 200)): Promise<KnowledgeSyncSummary> {
+    const workspaceId = process.env.DINGTALK_WORKSPACE_ID?.trim() || "";
+    const maxUploads = Math.max(1, limit);
+    const nodes = await this.dingtalk.listDocumentNodes(knowledgeSyncConfig.scanMaxNodes);
     const summary: KnowledgeSyncSummary = {
-      scanned: documents.length,
+      scanned: nodes.length,
       synced: 0,
       skipped: 0,
       failed: 0,
       errors: []
     };
 
-    for (const document of documents) {
-      const contentHash = sha256(document.markdown);
-      const workspaceId = process.env.DINGTALK_WORKSPACE_ID?.trim() || "";
+    for (const node of nodes) {
       const existing = (await this.store.read()).knowledgeSyncDocuments.find(
-        (item) => item.source === "dingtalk" && item.sourceWorkspaceId === workspaceId && item.sourceNodeId === syncKey(document)
+        (item) => item.source === "dingtalk" && item.sourceWorkspaceId === workspaceId && item.sourceNodeId === node.nodeId
       );
-      if (isAlreadySynced(existing, contentHash)) {
+      if (unchangedByModifiedTime(existing, node)) {
         summary.skipped += 1;
-        await this.markSkipped(existing!.id);
+        await this.markUnchanged(existing!.id, node);
         continue;
       }
+
+      let document: DingTalkKnowledgeDocument;
+      let contentHash = "";
+      try {
+        document = await this.dingtalk.getDocument(node);
+        contentHash = sha256(document.markdown);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        summary.failed += 1;
+        summary.errors.push(`${node.title}: ${message}`);
+        continue;
+      }
+
+      if (isAlreadySynced(existing, contentHash)) {
+        summary.skipped += 1;
+        await this.markUnchanged(existing!.id, node);
+        continue;
+      }
+
+      if (summary.synced >= maxUploads) break;
 
       try {
         const result = await this.bailian.addMarkdownDocument({
@@ -111,10 +142,13 @@ export class KnowledgeSyncService {
     return summary;
   }
 
-  private async markSkipped(id: string) {
+  private async markUnchanged(id: string, node: DingTalkKnowledgeNode) {
     await this.store.mutate((db) => {
       const item = db.knowledgeSyncDocuments.find((doc) => doc.id === id);
       if (!item) return;
+      item.title = node.title;
+      item.sourceUrl = node.url;
+      item.sourceUpdatedAt = node.updatedAt;
       if (item.status !== "synced") item.status = "synced";
       item.updatedAt = now();
     });
