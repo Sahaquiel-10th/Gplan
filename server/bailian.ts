@@ -79,6 +79,7 @@ async function createKnowledgeClient() {
       RetrieveRequest,
       ApplyFileUploadLeaseRequest,
       AddFileRequest,
+      DeleteIndexDocumentRequest,
       SubmitIndexAddDocumentsJobRequest,
       SubmitIndexAddDocumentsJobRequestExtra
     },
@@ -100,6 +101,7 @@ async function createKnowledgeClient() {
     RetrieveRequest,
     ApplyFileUploadLeaseRequest,
     AddFileRequest,
+    DeleteIndexDocumentRequest,
     SubmitIndexAddDocumentsJobRequest,
     SubmitIndexAddDocumentsJobRequestExtra
   };
@@ -280,6 +282,27 @@ export class BailianCompanyKnowledgeService {
       documentId: fileId,
       jobId: jobResponse.body?.data?.id
     };
+  }
+
+  async deleteIndexDocuments(documentIds: string[]) {
+    const indexId = process.env.BAILIAN_COMPANY_KB_ID?.trim();
+    const ws = workspaceId();
+    const knowledgeClient = await createKnowledgeClient();
+    const ids = documentIds.map((item) => item.trim()).filter(Boolean);
+    if (!ids.length) return;
+    if (!knowledgeClient || !indexId || !ws) throw new Error("缺少百炼知识库删除配置");
+    const response = await withTimeout(
+      knowledgeClient.client.deleteIndexDocument(
+        ws,
+        new knowledgeClient.DeleteIndexDocumentRequest({
+          indexId,
+          documentIds: ids
+        })
+      ),
+      companyKnowledgeConfig.writeTimeoutMs,
+      "删除百炼旧索引文档超时"
+    );
+    assertBailianSuccess(response.body, "删除百炼旧索引文档失败");
   }
 }
 

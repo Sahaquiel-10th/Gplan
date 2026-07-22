@@ -44,6 +44,10 @@ function syncKey(doc: DingTalkKnowledgeDocument) {
   return `${doc.nodeId}`;
 }
 
+function isAlreadySynced(existing: KnowledgeSyncDocument | undefined, contentHash: string) {
+  return Boolean(existing?.contentHash === contentHash && existing.bailianDocumentId);
+}
+
 export class KnowledgeSyncService {
   constructor(
     private store: Store,
@@ -67,9 +71,9 @@ export class KnowledgeSyncService {
       const existing = (await this.store.read()).knowledgeSyncDocuments.find(
         (item) => item.source === "dingtalk" && item.sourceWorkspaceId === workspaceId && item.sourceNodeId === syncKey(document)
       );
-      if (existing?.contentHash === contentHash && existing.status === "synced") {
+      if (isAlreadySynced(existing, contentHash)) {
         summary.skipped += 1;
-        await this.markSkipped(existing.id);
+        await this.markSkipped(existing!.id);
         continue;
       }
 
@@ -86,6 +90,11 @@ export class KnowledgeSyncService {
           bailianJobId: result.jobId,
           status: "synced"
         });
+        if (existing?.bailianDocumentId && existing.bailianDocumentId !== result.documentId) {
+          await this.bailian.deleteIndexDocuments([existing.bailianDocumentId]).catch((err) => {
+            summary.errors.push(`${document.title}: 旧百炼索引文档删除失败：${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
         summary.synced += 1;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -106,7 +115,7 @@ export class KnowledgeSyncService {
     await this.store.mutate((db) => {
       const item = db.knowledgeSyncDocuments.find((doc) => doc.id === id);
       if (!item) return;
-      item.status = "skipped";
+      if (item.status !== "synced") item.status = "synced";
       item.updatedAt = now();
     });
   }
