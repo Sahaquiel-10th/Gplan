@@ -80,6 +80,7 @@ async function createKnowledgeClient() {
       ApplyFileUploadLeaseRequest,
       AddFileRequest,
       DeleteIndexDocumentRequest,
+      DeleteFileRequest,
       SubmitIndexAddDocumentsJobRequest,
       SubmitIndexAddDocumentsJobRequestExtra
     },
@@ -102,6 +103,7 @@ async function createKnowledgeClient() {
     ApplyFileUploadLeaseRequest,
     AddFileRequest,
     DeleteIndexDocumentRequest,
+    DeleteFileRequest,
     SubmitIndexAddDocumentsJobRequest,
     SubmitIndexAddDocumentsJobRequestExtra
   };
@@ -303,6 +305,26 @@ export class BailianCompanyKnowledgeService {
       "删除百炼旧索引文档超时"
     );
     assertBailianSuccess(response.body, "删除百炼旧索引文档失败");
+  }
+
+  async deleteDataCenterFiles(fileIds: string[]) {
+    const ws = workspaceId();
+    const knowledgeClient = await createKnowledgeClient();
+    const ids = fileIds.map((item) => item.trim()).filter(Boolean);
+    if (!ids.length) return;
+    if (!knowledgeClient || !ws) throw new Error("缺少百炼数据中心文件删除配置");
+    for (const fileId of ids) {
+      const response = await withTimeout(
+        knowledgeClient.client.deleteFile(
+          fileId,
+          ws,
+          new knowledgeClient.DeleteFileRequest({})
+        ),
+        companyKnowledgeConfig.writeTimeoutMs,
+        "删除百炼旧源文件超时"
+      );
+      assertBailianSuccess(response.body, "删除百炼旧源文件失败");
+    }
   }
 }
 

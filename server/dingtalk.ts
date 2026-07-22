@@ -185,12 +185,14 @@ export class DingTalkKnowledgeService {
 
   private async getNodeMarkdown(workspaceId: string, node: DingTalkKnowledgeNode) {
     const operatorId = requiredEnv("DINGTALK_OPERATOR_ID");
-    const query = new URLSearchParams({ operatorId });
-    const paths = [
-      `/v1.0/doc/suites/documents/${encodeURIComponent(node.nodeId)}/blocks?${new URLSearchParams({ operatorId, maxResults: "200" })}`,
-      `/v2.0/wiki/nodes/content?${new URLSearchParams({ operatorId, workspaceId, nodeId: node.nodeId })}`
-    ];
+    const paths = [`/v2.0/wiki/nodes/content?${new URLSearchParams({ operatorId, workspaceId, nodeId: node.nodeId })}`];
     let lastError: Error | undefined;
+    try {
+      const blocksContent = await this.getDocumentBlocksContent(node.nodeId, operatorId);
+      if (blocksContent) return formatMarkdown(node, blocksContent);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+    }
     for (const path of paths) {
       try {
         const payload = await this.request(path);
@@ -202,6 +204,22 @@ export class DingTalkKnowledgeService {
     }
     if (lastError) throw lastError;
     return formatMarkdown(node, node.title);
+  }
+
+  private async getDocumentBlocksContent(nodeId: string, operatorId: string) {
+    const lines: string[] = [];
+    let nextToken = "";
+    let page = 0;
+    do {
+      const query = new URLSearchParams({ operatorId, maxResults: "200" });
+      if (nextToken) query.set("nextToken", nextToken);
+      const payload = await this.request(`/v1.0/doc/suites/documents/${encodeURIComponent(nodeId)}/blocks?${query}`);
+      const blocks = payload?.blocks ?? payload?.data?.blocks ?? payload?.result?.blocks ?? payload?.result?.data;
+      if (Array.isArray(blocks)) lines.push(...blocks.map(blockText).filter(Boolean));
+      nextToken = pickNextToken(payload);
+      page += 1;
+    } while (nextToken && page < 200);
+    return lines.join("\n").trim();
   }
 }
 

@@ -122,9 +122,7 @@ export class KnowledgeSyncService {
           status: "synced"
         });
         if (existing?.bailianDocumentId && existing.bailianDocumentId !== result.documentId) {
-          await this.bailian.deleteIndexDocuments([existing.bailianDocumentId]).catch((err) => {
-            summary.errors.push(`${document.title}: 旧百炼索引文档删除失败：${err instanceof Error ? err.message : String(err)}`);
-          });
+          await this.deleteOldBailianDocument(document, existing.bailianDocumentId, summary);
         }
         summary.synced += 1;
       } catch (err) {
@@ -140,6 +138,15 @@ export class KnowledgeSyncService {
     }
 
     return summary;
+  }
+
+  private async deleteOldBailianDocument(document: DingTalkKnowledgeDocument, documentId: string, summary: KnowledgeSyncSummary) {
+    await this.bailian.deleteIndexDocuments([documentId]).catch((err) => {
+      summary.errors.push(`${document.title}: 旧百炼索引文档删除失败：${err instanceof Error ? err.message : String(err)}`);
+    });
+    await this.bailian.deleteDataCenterFiles([documentId]).catch((err) => {
+      summary.errors.push(`${document.title}: 旧百炼源文件删除失败：${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   private async markUnchanged(id: string, node: DingTalkKnowledgeNode) {
