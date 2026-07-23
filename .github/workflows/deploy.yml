@@ -30,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
       - name: Configure restricted SSH access
         shell: bash
         env:
@@ -42,7 +44,25 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Deploy exact main commit
+      - name: Package source
+        run: |
+          git archive --format=tar --output=/tmp/gplan-${GITHUB_SHA}.tar HEAD
+
+      - name: Upload source package
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: >-
+          scp -i ~/.ssh/deploy_key
+          -P "$DEPLOY_PORT"
+          -o BatchMode=yes
+          -o IdentitiesOnly=yes
+          -o StrictHostKeyChecking=yes
+          "/tmp/gplan-${GITHUB_SHA}.tar"
+          "$DEPLOY_USER@$DEPLOY_HOST:/tmp/gplan-${GITHUB_SHA}.tar"
+
+      - name: Deploy uploaded package
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -54,4 +74,18 @@ jobs:
           -o IdentitiesOnly=yes
           -o StrictHostKeyChecking=yes
           "$DEPLOY_USER@$DEPLOY_HOST"
-          "deploy $GITHUB_SHA"
+          "set -e;
+          cd /opt/gplan;
+          sudo mkdir -p /tmp/gplan-deploy-${GITHUB_SHA};
+          sudo tar -xf /tmp/gplan-${GITHUB_SHA}.tar -C /tmp/gplan-deploy-${GITHUB_SHA};
+          sudo rsync -a --delete
+          --exclude .env
+          --exclude data/
+          --exclude node_modules/
+          /tmp/gplan-deploy-${GITHUB_SHA}/ /opt/gplan/;
+          printf '%s\n' '${GITHUB_SHA}' | sudo tee /opt/gplan/REVISION >/dev/null;
+          sudo npm ci;
+          sudo npm run build;
+          sudo pm2 restart gplan-ai --update-env || sudo pm2 start deploy/ecosystem.config.cjs --update-env;
+          sudo pm2 save;
+          sudo rm -rf /tmp/gplan-deploy-${GITHUB_SHA} /tmp/gplan-${GITHUB_SHA}.tar"
