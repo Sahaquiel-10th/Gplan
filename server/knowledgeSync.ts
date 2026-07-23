@@ -19,7 +19,8 @@ export const knowledgeSyncConfig = {
   activeStartHour: envNumber("KNOWLEDGE_SYNC_ACTIVE_START_HOUR", 8),
   activeEndHour: envNumber("KNOWLEDGE_SYNC_ACTIVE_END_HOUR", 20),
   timezone: process.env.KNOWLEDGE_SYNC_TIMEZONE?.trim() || "Asia/Shanghai",
-  scanMaxNodes: envNumber("KNOWLEDGE_SYNC_SCAN_MAX_NODES", 5000)
+  scanMaxNodes: envNumber("KNOWLEDGE_SYNC_SCAN_MAX_NODES", 5000),
+  progressLogEvery: envNumber("KNOWLEDGE_SYNC_PROGRESS_LOG_EVERY", 100)
 };
 
 function now() {
@@ -69,6 +70,7 @@ export class KnowledgeSyncService {
   async runManualSync(limit = Number(process.env.KNOWLEDGE_SYNC_MAX_DOCUMENTS ?? 200)): Promise<KnowledgeSyncSummary> {
     const workspaceId = process.env.DINGTALK_WORKSPACE_ID?.trim() || "";
     const maxUploads = Math.max(1, limit);
+    const startedAt = now();
     const nodes = await this.dingtalk.listDocumentNodes(knowledgeSyncConfig.scanMaxNodes);
     const summary: KnowledgeSyncSummary = {
       scanned: nodes.length,
@@ -77,14 +79,23 @@ export class KnowledgeSyncService {
       failed: 0,
       errors: []
     };
+    console.log(JSON.stringify({
+      event: "knowledge_sync_run_started",
+      startedAt,
+      scanned: nodes.length,
+      maxUploads,
+      scanMaxNodes: knowledgeSyncConfig.scanMaxNodes
+    }));
 
-    for (const node of nodes) {
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index];
       const existing = (await this.store.read()).knowledgeSyncDocuments.find(
         (item) => item.source === "dingtalk" && item.sourceWorkspaceId === workspaceId && item.sourceNodeId === node.nodeId
       );
       if (unchangedByModifiedTime(existing, node)) {
         summary.skipped += 1;
         await this.markUnchanged(existing!.id, node);
+        this.logProgress(index + 1, nodes.length, summary);
         continue;
       }
 
@@ -97,16 +108,26 @@ export class KnowledgeSyncService {
         const message = err instanceof Error ? err.message : String(err);
         summary.failed += 1;
         summary.errors.push(`${node.title}: ${message}`);
+        this.logProgress(index + 1, nodes.length, summary);
         continue;
       }
 
       if (isAlreadySynced(existing, contentHash)) {
         summary.skipped += 1;
         await this.markUnchanged(existing!.id, node);
+        this.logProgress(index + 1, nodes.length, summary);
         continue;
       }
 
-      if (summary.synced >= maxUploads) break;
+      if (summary.synced >= maxUploads) {
+        console.log(JSON.stringify({
+          event: "knowledge_sync_upload_limit_reached",
+          processed: index,
+          total: nodes.length,
+          summary
+        }));
+        break;
+      }
 
       try {
         const result = await this.bailian.addMarkdownDocument({
@@ -135,9 +156,27 @@ export class KnowledgeSyncService {
         summary.failed += 1;
         summary.errors.push(`${document.title}: ${message}`);
       }
+      this.logProgress(index + 1, nodes.length, summary);
     }
 
+    console.log(JSON.stringify({
+      event: "knowledge_sync_run_completed",
+      startedAt,
+      finishedAt: now(),
+      summary
+    }));
     return summary;
+  }
+
+  private logProgress(processed: number, total: number, summary: KnowledgeSyncSummary) {
+    const every = Math.max(1, knowledgeSyncConfig.progressLogEvery);
+    if (processed !== total && processed % every !== 0) return;
+    console.log(JSON.stringify({
+      event: "knowledge_sync_progress",
+      processed,
+      total,
+      summary
+    }));
   }
 
   private async deleteOldBailianDocument(document: DingTalkKnowledgeDocument, documentId: string, summary: KnowledgeSyncSummary) {
@@ -223,6 +262,10 @@ export class KnowledgeSyncScheduler {
     this.running = true;
     const startedAt = now();
     try {
+      console.log(JSON.stringify({
+        event: "knowledge_sync_scheduled_started",
+        startedAt
+      }));
       const summary = await this.service.runManualSync();
       console.log(JSON.stringify({
         event: "knowledge_sync_scheduled",

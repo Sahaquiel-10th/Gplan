@@ -13,20 +13,54 @@ export type DingTalkKnowledgeDocument = DingTalkKnowledgeNode & {
 
 const dingtalkBaseUrl = "https://api.dingtalk.com";
 
+class DingTalkApiError extends Error {
+  constructor(
+    message: string,
+    readonly retryable = false
+  ) {
+    super(message);
+  }
+}
+
 function requiredEnv(name: string) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`缺少环境变量：${name}`);
   return value;
 }
 
-function optionalEnv(name: string) {
-  return process.env[name]?.trim() || "";
-}
-
 function asString(value: unknown) {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return "";
+}
+
+function envNumber(name: string, fallback: number) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableDingTalkMessage(message: string) {
+  return /fetch failed|timeout|temporary failure|rate.?limit|限流|次数过多|temporarily restricted|Invoke remote method timeout/i.test(message);
+}
+
+async function fetchJsonWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    const payload = await response.json().catch(() => ({}));
+    return { response, payload };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    throw new DingTalkApiError(isAbort ? `钉钉接口请求超时：${timeoutMs}ms` : message, true);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function pickArray(payload: any): any[] {
@@ -112,15 +146,14 @@ export class DingTalkKnowledgeService {
 
   private async getAccessToken() {
     if (this.token && this.token.expiresAt > Date.now() + 60_000) return this.token.value;
-    const response = await fetch(`${dingtalkBaseUrl}/v1.0/oauth2/accessToken`, {
+    const { response, payload } = await this.requestWithRetry("/v1.0/oauth2/accessToken", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         appKey: requiredEnv("DINGTALK_CLIENT_ID"),
         appSecret: requiredEnv("DINGTALK_CLIENT_SECRET")
       })
-    });
-    const payload = await response.json().catch(() => ({}));
+    }, false);
     if (!response.ok || !payload?.accessToken) {
       throw new Error(`获取钉钉 accessToken 失败：${payload?.message || payload?.errmsg || response.statusText}`);
     }
@@ -133,7 +166,7 @@ export class DingTalkKnowledgeService {
 
   private async request(path: string, init: RequestInit = {}) {
     const token = await this.getAccessToken();
-    const response = await fetch(`${dingtalkBaseUrl}${path}`, {
+    const { response, payload } = await this.requestWithRetry(path, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -141,11 +174,39 @@ export class DingTalkKnowledgeService {
         ...(init.headers || {})
       }
     });
-    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(`钉钉接口调用失败：${payload?.message || payload?.errmsg || payload?.errorMessage || response.statusText}`);
     }
     return payload;
+  }
+
+  private async requestWithRetry(path: string, init: RequestInit = {}, withToken = true) {
+    const timeoutMs = envNumber("DINGTALK_API_TIMEOUT_MS", 30_000);
+    const retries = Math.max(0, Math.floor(envNumber("DINGTALK_API_RETRIES", 2)));
+    const retryDelayMs = envNumber("DINGTALK_API_RETRY_DELAY_MS", 1_000);
+    const url = `${dingtalkBaseUrl}${path}`;
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const result = await fetchJsonWithTimeout(url, init, timeoutMs);
+        if (result.response.ok) return result;
+
+        const message = result.payload?.message || result.payload?.errmsg || result.payload?.errorMessage || result.response.statusText;
+        const retryable = result.response.status >= 500 || result.response.status === 429 || isRetryableDingTalkMessage(String(message));
+        if (!retryable || attempt >= retries) return result;
+        lastError = new DingTalkApiError(`${withToken ? "钉钉接口调用失败" : "获取钉钉 accessToken 失败"}：${message}`, true);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const retryable = err instanceof DingTalkApiError ? err.retryable : isRetryableDingTalkMessage(message);
+        lastError = err instanceof Error ? err : new Error(message);
+        if (!retryable || attempt >= retries) throw lastError;
+      }
+
+      await sleep(retryDelayMs * (attempt + 1));
+    }
+
+    throw lastError ?? new Error("钉钉接口调用失败");
   }
 
   private async listNodes(workspaceId: string, limit: number) {
