@@ -20,7 +20,8 @@ export const knowledgeSyncConfig = {
   activeEndHour: envNumber("KNOWLEDGE_SYNC_ACTIVE_END_HOUR", 20),
   timezone: process.env.KNOWLEDGE_SYNC_TIMEZONE?.trim() || "Asia/Shanghai",
   scanMaxNodes: envNumber("KNOWLEDGE_SYNC_SCAN_MAX_NODES", 5000),
-  progressLogEvery: envNumber("KNOWLEDGE_SYNC_PROGRESS_LOG_EVERY", 100)
+  progressLogEvery: envNumber("KNOWLEDGE_SYNC_PROGRESS_LOG_EVERY", 100),
+  maxLoggedErrors: envNumber("KNOWLEDGE_SYNC_MAX_LOGGED_ERRORS", 20)
 };
 
 function now() {
@@ -58,6 +59,12 @@ function unchangedByModifiedTime(existing: KnowledgeSyncDocument | undefined, no
     node.updatedAt &&
     existing.sourceUpdatedAt === node.updatedAt
   );
+}
+
+function addSyncError(summary: KnowledgeSyncSummary, message: string) {
+  if (summary.errors.length < Math.max(0, knowledgeSyncConfig.maxLoggedErrors)) {
+    summary.errors.push(message);
+  }
 }
 
 export class KnowledgeSyncService {
@@ -107,7 +114,7 @@ export class KnowledgeSyncService {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         summary.failed += 1;
-        summary.errors.push(`${node.title}: ${message}`);
+        addSyncError(summary, `${node.title}: ${message}`);
         this.logProgress(index + 1, nodes.length, summary);
         continue;
       }
@@ -154,7 +161,7 @@ export class KnowledgeSyncService {
           lastError: message
         });
         summary.failed += 1;
-        summary.errors.push(`${document.title}: ${message}`);
+        addSyncError(summary, `${document.title}: ${message}`);
       }
       this.logProgress(index + 1, nodes.length, summary);
     }
@@ -181,10 +188,10 @@ export class KnowledgeSyncService {
 
   private async deleteOldBailianDocument(document: DingTalkKnowledgeDocument, documentId: string, summary: KnowledgeSyncSummary) {
     await this.bailian.deleteIndexDocuments([documentId]).catch((err) => {
-      summary.errors.push(`${document.title}: 旧百炼索引文档删除失败：${err instanceof Error ? err.message : String(err)}`);
+      addSyncError(summary, `${document.title}: 旧百炼索引文档删除失败：${err instanceof Error ? err.message : String(err)}`);
     });
     await this.bailian.deleteDataCenterFiles([documentId]).catch((err) => {
-      summary.errors.push(`${document.title}: 旧百炼源文件删除失败：${err instanceof Error ? err.message : String(err)}`);
+      addSyncError(summary, `${document.title}: 旧百炼源文件删除失败：${err instanceof Error ? err.message : String(err)}`);
     });
   }
 

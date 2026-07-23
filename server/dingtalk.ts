@@ -83,6 +83,11 @@ function pickNextToken(payload: any) {
   return asString(payload?.nextToken ?? payload?.result?.nextToken ?? payload?.data?.nextToken);
 }
 
+function fileExtension(title: string) {
+  const match = title.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match?.[1] ?? "";
+}
+
 function normalizeNode(item: any): DingTalkKnowledgeNode | null {
   const nodeId = asString(item?.nodeId ?? item?.id ?? item?.node_id ?? item?.resourceId ?? item?.docKey);
   const title = asString(item?.title ?? item?.name ?? item?.nodeName ?? item?.docName);
@@ -99,6 +104,8 @@ function normalizeNode(item: any): DingTalkKnowledgeNode | null {
 
 function isDocumentNode(node: DingTalkKnowledgeNode) {
   const type = node.type?.toLowerCase() ?? "";
+  const extension = fileExtension(node.title);
+  if (extension && !["adoc", "md", "markdown", "txt"].includes(extension)) return false;
   return !type || /doc|file|wiki|sheet|page|document/.test(type);
 }
 
