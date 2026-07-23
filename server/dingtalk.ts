@@ -5,13 +5,22 @@ export type DingTalkKnowledgeNode = {
   url?: string;
   updatedAt?: string;
   parentNodeId?: string;
+  size?: number;
 };
 
 export type DingTalkKnowledgeDocument = DingTalkKnowledgeNode & {
   markdown: string;
 };
 
+export type DingTalkKnowledgeFile = DingTalkKnowledgeNode & {
+  filename: string;
+  content: Buffer;
+};
+
 const dingtalkBaseUrl = "https://api.dingtalk.com";
+
+const textExtensions = new Set(["adoc", "md", "markdown", "txt"]);
+const downloadableExtensions = new Set(["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "png", "jpg", "jpeg", "bmp", "gif"]);
 
 class DingTalkApiError extends Error {
   constructor(
@@ -83,9 +92,20 @@ function pickNextToken(payload: any) {
   return asString(payload?.nextToken ?? payload?.result?.nextToken ?? payload?.data?.nextToken);
 }
 
-function fileExtension(title: string) {
+export function dingtalkFileExtension(title: string) {
   const match = title.toLowerCase().match(/\.([a-z0-9]+)$/);
   return match?.[1] ?? "";
+}
+
+export function isDingTalkTextDocument(node: DingTalkKnowledgeNode) {
+  const extension = dingtalkFileExtension(node.title);
+  if (extension) return textExtensions.has(extension);
+  const type = node.type?.toLowerCase() ?? "";
+  return !type || /doc|wiki|sheet|page|document/.test(type);
+}
+
+export function isDingTalkDownloadableFile(node: DingTalkKnowledgeNode) {
+  return downloadableExtensions.has(dingtalkFileExtension(node.title));
 }
 
 function normalizeNode(item: any): DingTalkKnowledgeNode | null {
@@ -98,15 +118,13 @@ function normalizeNode(item: any): DingTalkKnowledgeNode | null {
     type: asString(item?.type ?? item?.nodeType ?? item?.resourceType) || undefined,
     url: asString(item?.url ?? item?.link ?? item?.webUrl) || undefined,
     updatedAt: asString(item?.updatedAt ?? item?.modifiedTime ?? item?.updateTime ?? item?.gmtModified) || undefined,
-    parentNodeId: asString(item?.parentNodeId ?? item?.parentId) || undefined
+    parentNodeId: asString(item?.parentNodeId ?? item?.parentId) || undefined,
+    size: Number.isFinite(Number(item?.size ?? item?.fileSize)) ? Number(item?.size ?? item?.fileSize) : undefined
   };
 }
 
-function isDocumentNode(node: DingTalkKnowledgeNode) {
-  const type = node.type?.toLowerCase() ?? "";
-  const extension = fileExtension(node.title);
-  if (extension && !["adoc", "md", "markdown", "txt"].includes(extension)) return false;
-  return !type || /doc|file|wiki|sheet|page|document/.test(type);
+function isSyncableNode(node: DingTalkKnowledgeNode) {
+  return isDingTalkTextDocument(node) || isDingTalkDownloadableFile(node);
 }
 
 export function dingtalkKnowledgeReady() {
@@ -142,13 +160,45 @@ export class DingTalkKnowledgeService {
   async listDocumentNodes(limit = 5000): Promise<DingTalkKnowledgeNode[]> {
     const workspaceId = requiredEnv("DINGTALK_WORKSPACE_ID");
     const nodes = await this.listNodes(workspaceId, limit);
-    return nodes.filter(isDocumentNode);
+    return nodes.filter(isSyncableNode);
   }
 
   async getDocument(node: DingTalkKnowledgeNode): Promise<DingTalkKnowledgeDocument> {
     const workspaceId = requiredEnv("DINGTALK_WORKSPACE_ID");
     const markdown = await this.getNodeMarkdown(workspaceId, node);
     return { ...node, markdown };
+  }
+
+  async getFile(node: DingTalkKnowledgeNode): Promise<DingTalkKnowledgeFile> {
+    const operatorId = requiredEnv("DINGTALK_OPERATOR_ID");
+    const maxBytes = envNumber("DINGTALK_DOWNLOAD_MAX_BYTES", 150 * 1024 * 1024);
+    if (node.size && node.size > maxBytes) {
+      throw new Error(`钉钉文件超过下载上限：${node.size} > ${maxBytes}`);
+    }
+    const { spaceId, dentryId } = await this.getDentryStorageId(node.nodeId, operatorId);
+    const downloadInfo = await this.getFileDownloadInfo(spaceId, dentryId, operatorId);
+    const url = downloadInfo.resourceUrls[0];
+    if (!url) throw new Error("钉钉未返回文件下载地址");
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), envNumber("DINGTALK_DOWNLOAD_TIMEOUT_MS", 120_000));
+    try {
+      const response = await fetch(url, {
+        headers: downloadInfo.headers,
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`钉钉文件下载失败：${response.status} ${response.statusText}`);
+      const length = Number(response.headers.get("content-length") ?? 0);
+      if (length && length > maxBytes) throw new Error(`钉钉文件超过下载上限：${length} > ${maxBytes}`);
+      const content = Buffer.from(await response.arrayBuffer());
+      if (content.byteLength > maxBytes) throw new Error(`钉钉文件超过下载上限：${content.byteLength} > ${maxBytes}`);
+      return { ...node, filename: node.title, content };
+    } catch (err) {
+      const isAbort = err instanceof Error && err.name === "AbortError";
+      throw new Error(isAbort ? "钉钉文件下载超时" : err instanceof Error ? err.message : String(err));
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async getAccessToken() {
@@ -214,6 +264,34 @@ export class DingTalkKnowledgeService {
     }
 
     throw lastError ?? new Error("钉钉接口调用失败");
+  }
+
+  private async getDentryStorageId(dentryUuid: string, operatorId: string) {
+    const payload = await this.request(`/v2.0/doc/dentries/${encodeURIComponent(dentryUuid)}/queryDentryId?${new URLSearchParams({ operatorId })}`);
+    const data = payload?.data ?? payload?.result ?? payload;
+    const spaceId = asString(data?.spaceId);
+    const dentryId = asString(data?.dentryId);
+    if (!spaceId || !dentryId) throw new Error("钉钉未返回有效的 spaceId/dentryId");
+    return { spaceId, dentryId };
+  }
+
+  private async getFileDownloadInfo(spaceId: string, dentryId: string, unionId: string) {
+    const payload = await this.request(
+      `/v1.0/storage/spaces/${encodeURIComponent(spaceId)}/dentries/${encodeURIComponent(dentryId)}/downloadInfos/query?${new URLSearchParams({ unionId })}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          option: {
+            version: 1,
+            preferIntranet: false
+          }
+        })
+      }
+    );
+    const info = payload?.headerSignatureInfo ?? payload?.data?.headerSignatureInfo ?? payload?.result?.headerSignatureInfo ?? payload;
+    const resourceUrls = Array.isArray(info?.resourceUrls) ? info.resourceUrls.map(asString).filter(Boolean) : [];
+    const headers = info?.headers && typeof info.headers === "object" ? info.headers as Record<string, string> : {};
+    return { resourceUrls, headers };
   }
 
   private async listNodes(workspaceId: string, limit: number) {

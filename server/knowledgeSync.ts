@@ -1,6 +1,13 @@
 import crypto from "node:crypto";
 import { BailianCompanyKnowledgeService } from "./bailian.js";
-import { DingTalkKnowledgeDocument, DingTalkKnowledgeNode, DingTalkKnowledgeService } from "./dingtalk.js";
+import {
+  DingTalkKnowledgeDocument,
+  DingTalkKnowledgeFile,
+  DingTalkKnowledgeNode,
+  DingTalkKnowledgeService,
+  isDingTalkDownloadableFile,
+  isDingTalkTextDocument
+} from "./dingtalk.js";
 import { Store } from "./db.js";
 import { KnowledgeSyncDocument } from "./types.js";
 import { uid } from "./security.js";
@@ -43,8 +50,8 @@ function sha256(value: string) {
   return crypto.createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-function syncKey(doc: DingTalkKnowledgeDocument) {
-  return `${doc.nodeId}`;
+function sha256Buffer(value: Buffer) {
+  return crypto.createHash("sha256").update(value).digest("hex");
 }
 
 function isAlreadySynced(existing: KnowledgeSyncDocument | undefined, contentHash: string) {
@@ -101,16 +108,15 @@ export class KnowledgeSyncService {
       );
       if (unchangedByModifiedTime(existing, node)) {
         summary.skipped += 1;
-        await this.markUnchanged(existing!.id, node);
         this.logProgress(index + 1, nodes.length, summary);
         continue;
       }
 
-      let document: DingTalkKnowledgeDocument;
+      let document: DingTalkKnowledgeDocument | DingTalkKnowledgeFile;
       let contentHash = "";
       try {
-        document = await this.dingtalk.getDocument(node);
-        contentHash = sha256(document.markdown);
+        document = await this.getSyncContent(node);
+        contentHash = "markdown" in document ? sha256(document.markdown) : sha256Buffer(document.content);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         summary.failed += 1;
@@ -137,12 +143,20 @@ export class KnowledgeSyncService {
       }
 
       try {
-        const result = await this.bailian.addMarkdownDocument({
-          title: document.title,
-          markdown: document.markdown,
-          uniqueId: `dingtalk:${workspaceId}:${document.nodeId}`,
-          tags: ["dingtalk", "knowledge"]
-        });
+        const uniqueId = `dingtalk:${workspaceId}:${document.nodeId}`;
+        const result = "markdown" in document
+          ? await this.bailian.addMarkdownDocument({
+            title: document.title,
+            markdown: document.markdown,
+            uniqueId,
+            tags: ["dingtalk", "knowledge", "text"]
+          })
+          : await this.bailian.addFileDocument({
+            filename: document.filename,
+            content: document.content,
+            uniqueId,
+            tags: ["dingtalk", "knowledge", "file"]
+          });
         await this.upsertDocument(document, {
           contentHash,
           bailianDocumentId: result.documentId,
@@ -175,6 +189,12 @@ export class KnowledgeSyncService {
     return summary;
   }
 
+  private async getSyncContent(node: DingTalkKnowledgeNode) {
+    if (isDingTalkDownloadableFile(node)) return this.dingtalk.getFile(node);
+    if (isDingTalkTextDocument(node)) return this.dingtalk.getDocument(node);
+    throw new Error("暂不支持该钉钉文件类型");
+  }
+
   private logProgress(processed: number, total: number, summary: KnowledgeSyncSummary) {
     const every = Math.max(1, knowledgeSyncConfig.progressLogEvery);
     if (processed !== total && processed % every !== 0) return;
@@ -186,7 +206,7 @@ export class KnowledgeSyncService {
     }));
   }
 
-  private async deleteOldBailianDocument(document: DingTalkKnowledgeDocument, documentId: string, summary: KnowledgeSyncSummary) {
+  private async deleteOldBailianDocument(document: DingTalkKnowledgeDocument | DingTalkKnowledgeFile, documentId: string, summary: KnowledgeSyncSummary) {
     await this.bailian.deleteIndexDocuments([documentId]).catch((err) => {
       addSyncError(summary, `${document.title}: 旧百炼索引文档删除失败：${err instanceof Error ? err.message : String(err)}`);
     });
@@ -208,7 +228,7 @@ export class KnowledgeSyncService {
   }
 
   private async upsertDocument(
-    document: DingTalkKnowledgeDocument,
+    document: DingTalkKnowledgeDocument | DingTalkKnowledgeFile,
     update: {
       contentHash: string;
       status: KnowledgeSyncDocument["status"];

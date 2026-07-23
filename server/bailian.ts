@@ -205,6 +205,20 @@ export class BailianCompanyKnowledgeService {
     uniqueId: string;
     tags?: string[];
   }) {
+    return this.addFileDocument({
+      filename: `${safeFileStem(params.title)}.md`,
+      content: Buffer.from(params.markdown, "utf8"),
+      uniqueId: params.uniqueId,
+      tags: params.tags
+    });
+  }
+
+  async addFileDocument(params: {
+    filename: string;
+    content: Buffer;
+    uniqueId: string;
+    tags?: string[];
+  }) {
     const indexId = process.env.BAILIAN_COMPANY_KB_ID?.trim();
     const ws = workspaceId();
     const categoryId = process.env.BAILIAN_DATA_CATEGORY_ID?.trim() || "default";
@@ -213,8 +227,8 @@ export class BailianCompanyKnowledgeService {
       throw new Error("缺少百炼知识库写入配置");
     }
 
-    const filename = `${safeFileStem(params.title)}.md`;
-    const content = Buffer.from(params.markdown, "utf8");
+    const filename = safeFilename(params.filename);
+    const content = params.content;
     const leaseResponse = await withTimeout(
       knowledgeClient.client.applyFileUploadLease(
         categoryId,
@@ -239,7 +253,7 @@ export class BailianCompanyKnowledgeService {
     const uploadResponse = await fetch(uploadUrl, {
       method: lease.param?.method || "PUT",
       headers: lease.param?.headers && typeof lease.param.headers === "object" ? lease.param.headers : {},
-      body: content,
+      body: new Uint8Array(content),
       signal: uploadController.signal
     }).finally(() => clearTimeout(uploadTimer));
     if (!uploadResponse.ok) {
@@ -336,6 +350,12 @@ function safeFileStem(value: string) {
     .slice(0, 110);
   const stem = cleaned || "dingtalk-document";
   return stem.length >= 3 ? stem : `${stem}_doc`;
+}
+
+function safeFilename(value: string) {
+  const extension = value.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  const stem = safeFileStem(extension ? value.slice(0, -(extension.length + 1)) : value);
+  return extension ? `${stem}.${extension}` : stem;
 }
 
 function assertBailianSuccess(body: any, prefix: string) {
