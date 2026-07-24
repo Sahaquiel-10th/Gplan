@@ -195,6 +195,13 @@ type DataConnector = {
 
 type DataPlatformState = {
   layers: Array<{ id: string; name: string; description: string; status: string }>;
+  database: {
+    configured: boolean;
+    ready: boolean;
+    provider: "mysql" | "disabled";
+    database?: string;
+    message: string;
+  };
   connectors: DataConnector[];
   metrics: Array<{
     id: string;
@@ -2112,7 +2119,7 @@ function DataPlatformTab() {
       <section className="data-platform-hero">
         <div>
           <h3>AI 问数数据接入</h3>
-          <p>先把万里牛和企业支付宝接成受控数据能力：每个数据源、每次检测、每次同步都会留痕。</p>
+          <p>当前先打通万里牛：定时同步到独立经营数据库，员工问数时读取本地数据，不反复请求 ERP。</p>
         </div>
         <a className="secondary" href="/api/admin/data-platform/plan" target="_blank" rel="noreferrer">
           <FileSpreadsheet size={15} />查看方案文档

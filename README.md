@@ -135,4 +135,4 @@ curl -X POST http://localhost:3001/api/integrations/chat \
 
 默认使用 `data/db.json` 做本地持久化。上线设置 `DB_PROVIDER=mysql` 后会使用 MySQL 的 `app_state` 表保存业务数据。
 
-当前 MySQL 版本采用单表 JSON 状态，适合快速上线和从本地 JSON 平滑迁移。后续用户量稳定后，建议再拆成 `users`、`models`、`conversations`、`messages`、`workspaces`、`settings` 等标准表。
+当前应用状态采用单表 JSON，适合从本地 JSON 平滑迁移。经营数据不写入这张表：配置 `DATA_DB_PROVIDER=mysql` 和 `DATA_MYSQL_DATABASE=gplan_data` 后，万里牛等数据源会同步到独立经营数据库，供后续指标工具和智能体查询。

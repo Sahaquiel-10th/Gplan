@@ -1,5 +1,7 @@
 # AI 问数平台数据接入方案
 
+> 本文聚焦问数平台的数据接入与指标能力。平台整体七层架构和分阶段建设计划见 [《企业大脑演进路线图》](./enterprise-brain-evolution-roadmap.md)。
+
 ## 目标
 
 后续平台会接入公司经营数据，包括店铺经营数据、订单、库存、仓库、银行日记账、账户余额等，让员工可以用自然语言问数，并让特定智能体完成经营分析、活动复盘、库存预警、现金流分析等任务。
@@ -49,7 +51,7 @@ MAX_CONTEXT_CHARS=8000
 - `MAX_CONTEXT_CHARS` 只控制记忆和知识库召回组成的 system 上下文，不再重复塞当前对话历史。
 - 跨窗口不要塞完整聊天记录，靠明记忆/暗记忆召回。
 
-## 四层架构怎么放
+## 五层问数架构怎么放
 
 ### 1. 数据源层
 
@@ -200,7 +202,7 @@ AI 的职责是：
 https://open.hupun.com/api-doc/erp/base/distr/com/page/get
 ```
 
-从路径看，`base/distr/com/page/get` 更像是基础资料里的店铺/渠道/经销商类分页查询接口。具体字段需要登录开放平台后查看完整接口文档。
+该接口实际是“查询快递公司”，不是店铺、渠道或分销商接口。店铺应使用 `base/shop/page/get` 等对应接口；具体接入清单以开放平台当前文档和已授权权限为准。
 
 建议接入方式：
 
@@ -231,7 +233,7 @@ https://open.hupun.com/api-doc/erp/base/distr/com/page/get
 
 不要在用户每次提问时都直接查万里牛。订单、库存、店铺经营这种数据非常适合先同步进本平台数据库，再让 AI 查询本地指标。
 
-### 万里牛接入落到四层里
+### 万里牛接入落到五层里
 
 数据源层：
 
@@ -396,7 +398,7 @@ AI 问数层：
 | 浙江余杭农商银行 | 企业网银/银企直联/本地银行接口 | 余额、明细、回单，具体看开户行能力 | 高 | 先找客户经理确认，不建议第一批开发；如果实际归属杭州联合银行体系，可参考其银企直联开通方式 |
 | 泰隆银行 | 企业网银/银企直联/本地银行接口 | 余额、明细、回单，具体看开户行能力 | 高 | 先找客户经理确认，不建议第一批开发 |
 
-### 银行接入落到四层里
+### 银行接入落到五层里
 
 数据源层：
 
@@ -740,15 +742,13 @@ ttl
 ```text
 WANLINIU_APP_KEY
 WANLINIU_APP_SECRET
-WANLINIU_ACCESS_TOKEN
 ```
 
-后续如果万里牛实际还需要租户 ID、授权店铺 ID、刷新 token、环境标识等，再追加：
+当前开放平台调用使用 AppKey、Secret、时间戳和签名。后续如果具体授权模式还需要租户 ID、授权店铺 ID或环境标识，再按实际授权信息追加：
 
 ```text
 WANLINIU_SHOP_IDS
 WANLINIU_TENANT_ID
-WANLINIU_REFRESH_TOKEN
 ```
 
 企业支付宝需要先准备：
@@ -804,9 +804,9 @@ dataSyncLogs
 
 万里牛真实同步下一步：
 
-1. 用 `WANLINIU_APP_KEY`、`WANLINIU_APP_SECRET`、`WANLINIU_ACCESS_TOKEN` 实现签名请求。
+1. 用 `WANLINIU_APP_KEY`、`WANLINIU_APP_SECRET` 实现 `_app`、`_t`、`_sign` 签名请求。
 2. 先调用店铺分页接口，验证授权和分页。
-3. 落表 `raw_wanliniu_stores`。
+3. 落表 `gplan_data.ods_wln_shops`。
 4. 再接订单、售后和库存接口。
 5. 生成 `dm_store_daily_summary`。
 

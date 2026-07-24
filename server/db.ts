@@ -22,8 +22,8 @@ function defaultDataConnectors(): DataConnector[] {
       sourceType: "erp",
       enabled: true,
       status: "waiting_credentials",
-      requiredEnvVars: ["WANLINIU_APP_KEY", "WANLINIU_APP_SECRET", "WANLINIU_ACCESS_TOKEN"],
-      message: "等待开放平台应用凭证和授权店铺。"
+      requiredEnvVars: ["WANLINIU_APP_KEY", "WANLINIU_APP_SECRET"],
+      message: "等待开放平台 AppKey、Secret 和已授权接口。"
     },
     {
       id: "alipay",
