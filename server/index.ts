@@ -18,6 +18,9 @@ import {
 } from "./bailian.js";
 import { DingTalkKnowledgeService } from "./dingtalk.js";
 import { store } from "./db.js";
+import { dataPlatformStore, DataPlatformStatus } from "./dataPlatformDb.js";
+import { missingWanliniuCredentials, wanliniuClient } from "./data-connectors/wanliniu/client.js";
+import { WanliniuSyncScheduler, wanliniuSyncService } from "./data-connectors/wanliniu/sync.js";
 import { KnowledgeSyncScheduler, KnowledgeSyncService } from "./knowledgeSync.js";
 import { hasImageGenerationIntent } from "./imageIntent.js";
 import { decodeGeneratedImageDataUrl } from "./generatedImage.js";
@@ -42,6 +45,26 @@ const companyKnowledgeService = new BailianCompanyKnowledgeService();
 const dingtalkKnowledgeService = new DingTalkKnowledgeService();
 const knowledgeSyncService = new KnowledgeSyncService(store, dingtalkKnowledgeService, companyKnowledgeService);
 const knowledgeSyncScheduler = new KnowledgeSyncScheduler(knowledgeSyncService);
+const wanliniuSyncScheduler = new WanliniuSyncScheduler(wanliniuSyncService, async (event) => {
+  await store.mutate((db) => {
+    const connector = db.dataConnectors.find((item) => item.id === "wanliniu");
+    if (connector) {
+      connector.status = event.status === "success" ? "ready" : "error";
+      connector.lastSyncedAt = event.status === "success" ? event.finishedAt : connector.lastSyncedAt;
+      connector.message = event.message;
+    }
+    db.dataSyncLogs.push({
+      id: uid("dsl"),
+      connectorId: "wanliniu",
+      action: "scheduled_sync",
+      status: event.status,
+      message: event.message,
+      startedAt: event.startedAt,
+      finishedAt: event.finishedAt
+    });
+    if (db.dataSyncLogs.length > 1000) db.dataSyncLogs.splice(0, db.dataSyncLogs.length - 1000);
+  });
+});
 const memoryService = new BailianMemoryService();
 const memorySyncScheduler = new MemorySyncScheduler(store, memoryService);
 const userMemoryMaxItems = 10;
@@ -128,14 +151,14 @@ function connectorHasCredentials(connector: DataConnector) {
   return connector.requiredEnvVars.every((key) => Boolean(process.env[key]?.trim()));
 }
 
-function dataLayerOverview(connectors: DataConnector[]) {
+function dataLayerOverview(connectors: DataConnector[], databaseStatus: DataPlatformStatus) {
   const readyCount = connectors.filter((connector) => connectorHasCredentials(connector)).length;
   return [
     {
       id: "source",
       name: "数据源层",
-      description: "万里牛 ERP、企业支付宝以及后续银行账户仍保留在原系统。",
-      status: `${connectors.length} 个数据源已登记`
+      description: "业务数据仍保留在原系统，当前先以万里牛 ERP 作为首个经营数据源。",
+      status: "当前实施范围：万里牛 ERP"
     },
     {
       id: "ingestion",
@@ -147,7 +170,7 @@ function dataLayerOverview(connectors: DataConnector[]) {
       id: "warehouse",
       name: "业务数据库层",
       description: "先落原始镜像表，再生成店铺日汇总、库存快照、现金流汇总等指标表。",
-      status: "表结构规划完成，等待真实同步任务落表"
+      status: databaseStatus.message
     },
     {
       id: "semantic",
@@ -1627,13 +1650,15 @@ app.get("/api/admin/usage-stats/export", ...protectedAdmin, asyncRoute(async (re
 
 app.get("/api/admin/data-platform", ...protectedAdmin, asyncRoute(async (_req, res) => {
   const db = await store.read();
+  const database = dataPlatformStore.status();
   const connectors = db.dataConnectors.map((connector) => ({
     ...connector,
     hasCredentials: connectorHasCredentials(connector),
     missingEnvVars: connector.requiredEnvVars.filter((key) => !process.env[key]?.trim())
   }));
   res.json({
-    layers: dataLayerOverview(db.dataConnectors),
+    layers: dataLayerOverview(db.dataConnectors, database),
+    database,
     connectors,
     metrics: db.dataMetricDefinitions,
     syncLogs: db.dataSyncLogs.slice().sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 80)
@@ -1647,6 +1672,43 @@ app.get("/api/admin/data-platform/plan", ...protectedAdmin, (_req, res) => {
 
 app.post("/api/admin/data-platform/connectors/:id/check", ...protectedAdmin, asyncRoute(async (req, res) => {
   const connectorId = req.params.id as DataConnectorId;
+  if (connectorId === "wanliniu") {
+    const startedAt = now();
+    const missing = missingWanliniuCredentials();
+    let status: DataSyncLog["status"] = "success";
+    let message = "万里牛凭证检测通过，可以同步店铺列表。";
+    if (missing.length) {
+      status = "blocked";
+      message = `缺少环境变量：${missing.join("、")}`;
+    } else {
+      try {
+        const checked = await wanliniuClient.checkCredentials();
+        message = `万里牛凭证检测通过，店铺接口可访问（本次返回 ${checked.sampleCount} 条样本）。`;
+      } catch (error) {
+        status = "failed";
+        message = error instanceof Error ? error.message : "万里牛凭证检测失败";
+      }
+    }
+    const result = await store.mutate((db) => {
+      const connector = db.dataConnectors.find((item) => item.id === connectorId);
+      if (!connector) throw new Error("数据源不存在");
+      connector.lastCheckedAt = now();
+      connector.status = status === "success" ? "ready" : status === "blocked" ? "waiting_credentials" : "error";
+      connector.message = message;
+      const log: DataSyncLog = {
+        id: uid("dsl"),
+        connectorId,
+        action: "check_credentials",
+        status,
+        message,
+        startedAt,
+        finishedAt: now()
+      };
+      db.dataSyncLogs.push(log);
+      return { connector, missingEnvVars: missing, hasCredentials: missing.length === 0, log };
+    });
+    return res.json({ result });
+  }
   if (connectorId === "dingtalk_knowledge") {
     const startedAt = now();
     const missing = [
@@ -1716,6 +1778,61 @@ app.post("/api/admin/data-platform/connectors/:id/check", ...protectedAdmin, asy
 
 app.post("/api/admin/data-platform/connectors/:id/sync", ...protectedAdmin, asyncRoute(async (req, res) => {
   const connectorId = req.params.id as DataConnectorId;
+  if (connectorId === "wanliniu") {
+    const missing = missingWanliniuCredentials();
+    const databaseStatus = dataPlatformStore.status();
+    if (missing.length || !databaseStatus.ready) {
+      const result = await store.mutate((db) => {
+        const connector = db.dataConnectors.find((item) => item.id === connectorId);
+        if (!connector) throw new Error("数据源不存在");
+        connector.status = missing.length ? "waiting_credentials" : "error";
+        connector.message = missing.length
+          ? `暂不能同步，缺少环境变量：${missing.join("、")}`
+          : `暂不能同步：${databaseStatus.message}`;
+        const log = syncLog(connector.id, "manual_sync", "blocked", connector.message);
+        db.dataSyncLogs.push(log);
+        return { connector, missingEnvVars: missing, hasCredentials: missing.length === 0, log };
+      });
+      return res.json({ result });
+    }
+
+    const startedAt = now();
+    await store.mutate((db) => {
+      const connector = db.dataConnectors.find((item) => item.id === connectorId);
+      if (!connector) throw new Error("数据源不存在");
+      connector.status = "syncing";
+      connector.message = "正在将万里牛店铺列表同步到经营数据库。";
+    });
+    let status: DataSyncLog["status"] = "success";
+    let message = "";
+    try {
+      const summary = await wanliniuSyncService.syncShops(req.user!.companyId);
+      message = `万里牛店铺同步完成：读取 ${summary.recordsRead} 条，写入 ${summary.recordsWritten} 条，当前共 ${summary.totalStored} 个店铺。`;
+    } catch (error) {
+      status = "failed";
+      message = error instanceof Error ? error.message : "万里牛店铺同步失败";
+    }
+    const result = await store.mutate((db) => {
+      const connector = db.dataConnectors.find((item) => item.id === connectorId);
+      if (!connector) throw new Error("数据源不存在");
+      connector.status = status === "success" ? "ready" : "error";
+      connector.lastCheckedAt = now();
+      connector.lastSyncedAt = status === "success" ? now() : connector.lastSyncedAt;
+      connector.message = message;
+      const log: DataSyncLog = {
+        id: uid("dsl"),
+        connectorId,
+        action: "manual_sync",
+        status,
+        message,
+        startedAt,
+        finishedAt: now()
+      };
+      db.dataSyncLogs.push(log);
+      return { connector, missingEnvVars: [], hasCredentials: true, log };
+    });
+    return res.json({ result });
+  }
   if (connectorId === "dingtalk_knowledge") {
     const startedAt = now();
     const missing = [
@@ -1905,3 +2022,4 @@ app.listen(port, () => {
 
 memorySyncScheduler.start();
 knowledgeSyncScheduler.start();
+wanliniuSyncScheduler.start();
