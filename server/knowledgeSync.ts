@@ -14,6 +14,7 @@ import { uid } from "./security.js";
 
 export type KnowledgeSyncSummary = {
   scanned: number;
+  attempted: number;
   synced: number;
   skipped: number;
   failed: number;
@@ -74,6 +75,17 @@ function addSyncError(summary: KnowledgeSyncSummary, message: string) {
   }
 }
 
+function summaryForLog(summary: KnowledgeSyncSummary, includeErrors = false) {
+  return {
+    scanned: summary.scanned,
+    attempted: summary.attempted,
+    synced: summary.synced,
+    skipped: summary.skipped,
+    failed: summary.failed,
+    errors: includeErrors ? summary.errors : summary.errors.length
+  };
+}
+
 export class KnowledgeSyncService {
   constructor(
     private store: Store,
@@ -88,6 +100,7 @@ export class KnowledgeSyncService {
     const nodes = await this.dingtalk.listDocumentNodes(knowledgeSyncConfig.scanMaxNodes);
     const summary: KnowledgeSyncSummary = {
       scanned: nodes.length,
+      attempted: 0,
       synced: 0,
       skipped: 0,
       failed: 0,
@@ -112,6 +125,17 @@ export class KnowledgeSyncService {
         continue;
       }
 
+      if (summary.attempted >= maxUploads) {
+        console.log(JSON.stringify({
+          event: "knowledge_sync_attempt_limit_reached",
+          processed: index,
+          total: nodes.length,
+          summary: summaryForLog(summary)
+        }));
+        break;
+      }
+      summary.attempted += 1;
+
       let document: DingTalkKnowledgeDocument | DingTalkKnowledgeFile;
       let contentHash = "";
       try {
@@ -130,16 +154,6 @@ export class KnowledgeSyncService {
         await this.markUnchanged(existing!.id, node);
         this.logProgress(index + 1, nodes.length, summary);
         continue;
-      }
-
-      if (summary.synced >= maxUploads) {
-        console.log(JSON.stringify({
-          event: "knowledge_sync_upload_limit_reached",
-          processed: index,
-          total: nodes.length,
-          summary
-        }));
-        break;
       }
 
       try {
@@ -184,7 +198,7 @@ export class KnowledgeSyncService {
       event: "knowledge_sync_run_completed",
       startedAt,
       finishedAt: now(),
-      summary
+      summary: summaryForLog(summary, true)
     }));
     return summary;
   }
@@ -202,7 +216,7 @@ export class KnowledgeSyncService {
       event: "knowledge_sync_progress",
       processed,
       total,
-      summary
+      summary: summaryForLog(summary)
     }));
   }
 
@@ -298,7 +312,7 @@ export class KnowledgeSyncScheduler {
         event: "knowledge_sync_scheduled",
         startedAt,
         finishedAt: now(),
-        summary
+        summary: summaryForLog(summary, true)
       }));
     } catch (err) {
       console.error(JSON.stringify({
