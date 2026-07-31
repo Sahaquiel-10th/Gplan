@@ -21,7 +21,12 @@ import { store } from "./db.js";
 import { KnowledgeSyncScheduler, KnowledgeSyncService } from "./knowledgeSync.js";
 import { hasImageGenerationIntent } from "./imageIntent.js";
 import { decodeGeneratedImageDataUrl } from "./generatedImage.js";
-import { buildHupunSkillContext, hupunSkillStatus } from "./hupunSkill.js";
+import {
+  buildHupunSkillContext,
+  debugHupunReadOnlyApi,
+  hupunSkillStatus,
+  listHupunReadOnlyApis
+} from "./hupunSkill.js";
 import { asyncRoute, auth, requireRole } from "./middleware.js";
 import { MemorySyncScheduler } from "./memorySync.js";
 import { callModel } from "./modelGateway.js";
@@ -1648,6 +1653,19 @@ app.get("/api/admin/data-platform/plan", ...protectedAdmin, (_req, res) => {
 
 app.get("/api/admin/ai-query/status", ...admin, asyncRoute(async (_req, res) => {
   res.json({ status: await hupunSkillStatus() });
+}));
+
+app.get("/api/admin/ai-query/interfaces", ...admin, asyncRoute(async (_req, res) => {
+  res.json({ interfaces: await listHupunReadOnlyApis() });
+}));
+
+app.post("/api/admin/ai-query/debug", ...admin, asyncRoute(async (req, res) => {
+  const apiPath = requiredString(req.body.path, "接口路径");
+  const params = req.body.params;
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    throw new Error("请求参数必须是 JSON 对象");
+  }
+  res.json({ execution: await debugHupunReadOnlyApi(apiPath, params) });
 }));
 
 app.post("/api/admin/ai-query/chat", ...admin, asyncRoute(async (req, res) => {

@@ -1244,12 +1244,33 @@ label.composer-tool {
 .ai-query-test {
   height: calc(100vh - 190px);
   min-height: 520px;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid #dfe4ea;
   border-radius: 10px;
   background: #fff;
+}
+
+.ai-query-mode-tabs {
+  padding: 8px 16px;
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid #e6e9ed;
+  background: #f8f9fb;
+}
+
+.ai-query-mode-tabs button {
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #68717c;
+}
+
+.ai-query-mode-tabs button.active {
+  border-color: #c9d9ea;
+  color: #1768be;
+  background: #eaf3fd;
 }
 
 .ai-query-toolbar {
@@ -1312,10 +1333,127 @@ label.composer-tool {
 }
 
 .ai-query-messages {
+  flex: 1 1 auto;
   min-height: 0;
   padding: 22px 18px;
   overflow-y: auto;
   background: #f8f9fb;
+}
+
+.api-debugger {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(300px, 0.8fr) minmax(420px, 1.2fr);
+  background: #f8f9fb;
+}
+
+.api-debug-form {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  overflow-y: auto;
+  border-right: 1px solid #e1e5ea;
+  background: #fff;
+}
+
+.api-debug-form label {
+  display: grid;
+  gap: 6px;
+  color: #4f5965;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.api-debug-form input,
+.api-debug-form select {
+  width: 100%;
+}
+
+.api-debug-form input[readonly] {
+  color: #4d5966;
+  background: #f5f7f9;
+}
+
+.api-params-field {
+  flex: 1 1 auto;
+}
+
+.api-params-field textarea {
+  min-height: 190px;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.api-doc-link {
+  width: fit-content;
+  color: #2473ca;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.api-doc-link:hover {
+  text-decoration: underline;
+}
+
+.api-debug-form > .primary {
+  width: fit-content;
+}
+
+.api-debug-result {
+  min-width: 0;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.api-debug-result-head {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.api-debug-result-head h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.api-debug-result-head p {
+  margin: 5px 0 0;
+  color: #7a838e;
+  font-size: 12px;
+}
+
+.api-debug-result-head span {
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: #42617e;
+  background: #e8eef4;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.api-debug-result > pre {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid #dfe4e9;
+  border-radius: 8px;
+  color: #d8e4ef;
+  background: #18212b;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .ai-query-messages .message {
@@ -2688,6 +2826,29 @@ summary {
 
   .skill-status {
     width: fit-content;
+  }
+
+  .api-debugger {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .api-debug-form {
+    flex: 0 0 auto;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid #e1e5ea;
+  }
+
+  .api-debug-result {
+    flex: 0 0 auto;
+    min-height: 420px;
+    overflow: visible;
+  }
+
+  .api-debug-result > pre {
+    min-height: 330px;
   }
 
   .records-toolbar {

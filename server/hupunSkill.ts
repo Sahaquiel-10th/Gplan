@@ -11,9 +11,10 @@ const erpIndexUrl = "https://hpublic.hupun.com/mp/open/md/erp/_index.md";
 const maxCalls = Math.max(1, Math.min(5, Number(process.env.HUPUN_AI_SKILL_MAX_CALLS ?? 3)));
 const resultMaxChars = Math.max(4000, Number(process.env.HUPUN_AI_SKILL_RESULT_MAX_CHARS ?? 30000));
 
-type IndexEntry = {
+export type HupunApiDescriptor = {
   name: string;
   docUrl: string;
+  path: string;
 };
 
 type PlannedCall = {
@@ -70,13 +71,31 @@ async function fetchText(url: string, timeoutMs = 15000) {
   }
 }
 
-function readOnlyEntries(markdown: string): IndexEntry[] {
-  const entries: IndexEntry[] = [];
+function apiPathFromDocUrl(docUrl: string) {
+  const pathname = new URL(docUrl).pathname;
+  const prefix = "/mp/open/md";
+  if (!pathname.startsWith(`${prefix}/`) || !pathname.endsWith(".md")) return "";
+  return pathname.slice(prefix.length, -3);
+}
+
+function readOnlyEntries(markdown: string): HupunApiDescriptor[] {
+  const entries: HupunApiDescriptor[] = [];
   for (const match of markdown.matchAll(/^- (.+?) => (https:\/\/hpublic\.hupun\.com\/mp\/open\/md\/erp\/[^\s]+\.md[^\s]*)$/gm)) {
     const name = match[1].trim();
     if (!/(查询|获取)/.test(name)) continue;
-    entries.push({ name, docUrl: match[2] });
+    const path = apiPathFromDocUrl(match[2]);
+    if (path) entries.push({ name, docUrl: match[2], path });
   }
+  return entries;
+}
+
+let indexCache: { expiresAt: number; entries: HupunApiDescriptor[] } | undefined;
+
+export async function listHupunReadOnlyApis() {
+  if (indexCache && indexCache.expiresAt > Date.now()) return indexCache.entries;
+  const markdown = await fetchText(`${erpIndexUrl}?date=${new Date().toISOString().slice(0, 10)}`);
+  const entries = readOnlyEntries(markdown);
+  indexCache = { expiresAt: Date.now() + 5 * 60_000, entries };
   return entries;
 }
 
@@ -112,7 +131,7 @@ function recentConversationText(messages: Message[]) {
     .join("\n");
 }
 
-async function selectDocuments(model: ModelConfig, messages: Message[], entries: IndexEntry[], requestId: string) {
+async function selectDocuments(model: ModelConfig, messages: Message[], entries: HupunApiDescriptor[], requestId: string) {
   const index = entries.map((entry) => `- ${entry.name} => ${entry.docUrl}`).join("\n");
   const result = await callModel(model, [
     plannerMessage(model, [
@@ -129,7 +148,7 @@ async function selectDocuments(model: ModelConfig, messages: Message[], entries:
   const allowed = new Map(entries.map((entry) => [entry.docUrl, entry]));
   return (Array.isArray(selected) ? selected : [])
     .map((item) => typeof item?.docUrl === "string" ? allowed.get(item.docUrl) : undefined)
-    .filter((item): item is IndexEntry => Boolean(item))
+    .filter((item): item is HupunApiDescriptor => Boolean(item))
     .slice(0, maxCalls);
 }
 
@@ -140,7 +159,7 @@ function endpointFromDoc(markdown: string) {
 async function planCalls(
   model: ModelConfig,
   messages: Message[],
-  documents: Array<IndexEntry & { markdown: string }>,
+  documents: Array<HupunApiDescriptor & { markdown: string }>,
   requestId: string
 ) {
   const docs = documents.map((document) => [
@@ -161,7 +180,7 @@ async function planCalls(
     ].join("\n\n"))
   ], "只允许规划只读查询，不得执行或规划任何写操作。", `${requestId}:hupun-plan`);
   const calls = parseJson<PlannedCall[]>(result.content);
-  const allowed = new Map<string, { path: string; document: IndexEntry & { markdown: string } }>();
+  const allowed = new Map<string, { path: string; document: HupunApiDescriptor & { markdown: string } }>();
   for (const document of documents) {
     const endpoint = endpointFromDoc(document.markdown);
     if (endpoint) allowed.set(document.docUrl, { path: endpoint[2], document });
@@ -214,6 +233,28 @@ async function executeCall(call: PlannedCall) {
   }
 }
 
+export async function debugHupunReadOnlyApi(pathValue: string, params: Record<string, unknown>) {
+  const status = await hupunSkillStatus();
+  if (!status.ready) {
+    const reason = status.missingEnvVars.length
+      ? `缺少环境变量：${status.missingEnvVars.join("、")}`
+      : `找不到可执行的万里牛 CLI：${status.cliPath}`;
+    throw new Error(`万里牛接口暂不可用：${reason}`);
+  }
+  const path = pathValue.trim().startsWith("/") ? pathValue.trim() : `/${pathValue.trim()}`;
+  const entries = await listHupunReadOnlyApis();
+  const api = entries.find((entry) => entry.path === path);
+  if (!api) throw new Error("该路径不在万里牛官方只读查询接口列表中");
+  const startedAt = Date.now();
+  const result = await executeCall({ docUrl: api.docUrl, path: api.path, params });
+  return {
+    api,
+    params,
+    durationMs: Date.now() - startedAt,
+    result
+  };
+}
+
 export async function buildHupunSkillContext(params: {
   model: ModelConfig;
   messages: Message[];
@@ -228,8 +269,7 @@ export async function buildHupunSkillContext(params: {
   }
 
   try {
-    const indexMarkdown = await fetchText(`${erpIndexUrl}?date=${new Date().toISOString().slice(0, 10)}`);
-    const entries = readOnlyEntries(indexMarkdown);
+    const entries = await listHupunReadOnlyApis();
     const selected = await selectDocuments(params.model, params.messages, entries, params.requestId);
     if (!selected.length) {
       return "【万里牛 AI Skill 返回结果】\n本轮没有找到需要且允许调用的万里牛只读接口。";

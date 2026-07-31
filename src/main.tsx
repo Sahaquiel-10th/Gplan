@@ -222,6 +222,19 @@ type HupunSkillStatus = {
   missingEnvVars: string[];
 };
 
+type HupunApiDescriptor = {
+  name: string;
+  docUrl: string;
+  path: string;
+};
+
+type HupunDebugExecution = {
+  api: HupunApiDescriptor;
+  params: Record<string, unknown>;
+  durationMs: number;
+  result: unknown;
+};
+
 type MemoryItem = {
   id: string;
   text: string;
@@ -1614,9 +1627,15 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
 }
 
 function AiQueryTestTab() {
+  const [mode, setMode] = useState<"debug" | "ai">("debug");
   const [models, setModels] = useState<Model[]>([]);
   const [modelId, setModelId] = useState("");
   const [status, setStatus] = useState<HupunSkillStatus | null>(null);
+  const [interfaces, setInterfaces] = useState<HupunApiDescriptor[]>([]);
+  const [debugPath, setDebugPath] = useState("");
+  const [debugParams, setDebugParams] = useState('{\n  "page": 1,\n  "limit": 20\n}');
+  const [debugResult, setDebugResult] = useState<HupunDebugExecution | null>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1626,8 +1645,9 @@ function AiQueryTestTab() {
   useEffect(() => {
     Promise.all([
       api<{ models: Model[]; defaultModelId: string }>("/api/models"),
-      api<{ status: HupunSkillStatus }>("/api/admin/ai-query/status")
-    ]).then(([modelResult, statusResult]) => {
+      api<{ status: HupunSkillStatus }>("/api/admin/ai-query/status"),
+      api<{ interfaces: HupunApiDescriptor[] }>("/api/admin/ai-query/interfaces")
+    ]).then(([modelResult, statusResult, interfaceResult]) => {
       const chatModels = modelResult.models.filter((model) => model.kind === "chat");
       setModels(chatModels);
       setModelId(
@@ -1636,8 +1656,47 @@ function AiQueryTestTab() {
           || ""
       );
       setStatus(statusResult.status);
+      setInterfaces(interfaceResult.interfaces);
+      setDebugPath(
+        interfaceResult.interfaces.find((item) => item.path === "/erp/base/shop/page/get")?.path
+          || interfaceResult.interfaces[0]?.path
+          || ""
+      );
     }).catch((err) => setError(err instanceof Error ? err.message : "加载失败"));
   }, []);
+
+  const selectedInterface = interfaces.find((item) => item.path === debugPath);
+
+  async function executeDebug(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    let params: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(debugParams);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+      params = parsed;
+    } catch {
+      setError("请求参数必须是合法的 JSON 对象");
+      return;
+    }
+    if (!debugPath) {
+      setError("请选择接口");
+      return;
+    }
+    setDebugLoading(true);
+    setDebugResult(null);
+    try {
+      const result = await api<{ execution: HupunDebugExecution }>("/api/admin/ai-query/debug", {
+        method: "POST",
+        body: JSON.stringify({ path: debugPath, params })
+      });
+      setDebugResult(result.execution);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "接口调用失败");
+    } finally {
+      setDebugLoading(false);
+    }
+  }
 
   async function send(event: FormEvent) {
     event.preventDefault();
@@ -1684,61 +1743,122 @@ function AiQueryTestTab() {
     <div className="ai-query-test">
       <div className="ai-query-toolbar">
         <div>
-          <h3>AI问数测试</h3>
-          <p>模型上下文包含系统提示词、当前管理员记忆、百炼知识库召回和万里牛 AI Skill 只读查询结果。</p>
+          <h3>万里牛数据调试</h3>
+          <p>{mode === "debug" ? "直接调用官方只读 API，不经过大模型，不消耗模型 Token。" : "保留原 AI 问数链路，用于后续指标语义层联调。"}</p>
         </div>
         <div className="ai-query-controls">
           <span className={`skill-status ${status?.ready ? "ready" : "blocked"}`}>
             {status?.ready ? "万里牛 Skill 已就绪" : status ? "万里牛 Skill 待配置" : "正在检查 Skill"}
           </span>
-          <select value={modelId} onChange={(event) => setModelId(event.target.value)} disabled={loading}>
-            {models.length ? null : <option value="">暂无可用聊天模型</option>}
-            {models.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}
-          </select>
-          {messages.length ? <button className="secondary" onClick={() => { setMessages([]); setError(""); }}>新测试</button> : null}
+          {mode === "ai" ? (
+            <select value={modelId} onChange={(event) => setModelId(event.target.value)} disabled={loading}>
+              {models.length ? null : <option value="">暂无可用聊天模型</option>}
+              {models.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}
+            </select>
+          ) : null}
+          {mode === "ai" && messages.length ? <button className="secondary" onClick={() => { setMessages([]); setError(""); }}>新测试</button> : null}
         </div>
       </div>
+      <nav className="ai-query-mode-tabs">
+        <button className={mode === "debug" ? "active" : ""} onClick={() => { setMode("debug"); setError(""); }}>
+          接口调试 · 0 Token
+        </button>
+        <button className={mode === "ai" ? "active" : ""} onClick={() => { setMode("ai"); setError(""); }}>
+          AI问数
+        </button>
+      </nav>
       {status && !status.ready ? (
         <div className="ai-query-config-note">
           {status.missingEnvVars.length ? `缺少环境变量：${status.missingEnvVars.join("、")}。` : null}
           {!status.cliAvailable ? ` 未找到 CLI：${status.cliPath}。` : null}
         </div>
       ) : null}
-      <div className="ai-query-messages">
-        {messages.length ? messages.map((message, index) => (
-          <article className={`message ${message.role}`} key={`${message.createdAt}-${index}`}>
-            {message.role === "assistant" ? <div className="avatar"><img src="/brand/xiaoxiang-mark.png" alt="小象 AI" /></div> : null}
-            <div className="bubble">
-              {message.role === "assistant" ? (
-                <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>
-              ) : <pre>{message.content}</pre>}
-              <small className="message-time">{dateTime(message.createdAt)}</small>
+      {mode === "debug" ? (
+        <div className="api-debugger">
+          <form className="api-debug-form" onSubmit={executeDebug}>
+            <label>
+              官方只读接口
+              <select value={debugPath} onChange={(event) => { setDebugPath(event.target.value); setDebugResult(null); }}>
+                {interfaces.length ? null : <option value="">正在加载接口列表...</option>}
+                {interfaces.map((item) => <option key={item.path} value={item.path}>{item.name} · {item.path}</option>)}
+              </select>
+            </label>
+            <label>
+              接口路径
+              <input value={debugPath} readOnly />
+            </label>
+            {selectedInterface ? (
+              <a className="api-doc-link" href={selectedInterface.docUrl} target="_blank" rel="noreferrer">
+                查看万里牛官方接口文档
+              </a>
+            ) : null}
+            <label className="api-params-field">
+              请求参数（JSON）
+              <textarea value={debugParams} onChange={(event) => setDebugParams(event.target.value)} rows={12} spellCheck={false} />
+            </label>
+            {error ? <div className="chat-error"><span>{error}</span></div> : null}
+            <button className="primary" type="submit" disabled={!status?.ready || !debugPath || debugLoading}>
+              <Send size={16} />{debugLoading ? "正在调用..." : "调用接口"}
+            </button>
+          </form>
+          <section className="api-debug-result">
+            <div className="api-debug-result-head">
+              <div>
+                <h4>原始响应</h4>
+                <p>错误码和返回字段保持万里牛原始内容，不经过 AI 解释。</p>
+              </div>
+              {debugResult ? <span>{debugResult.durationMs} ms</span> : null}
             </div>
-          </article>
-        )) : (
-          <div className="empty-state compact">
-            <BarChart3 size={38} />
-            <h2>先从只读经营问题开始</h2>
-            <p>例如：昨天各店铺的订单量和销售额分别是多少？</p>
-          </div>
-        )}
-        {loading ? <div className="typing">正在规划只读接口、查询万里牛并整理结果...</div> : null}
-      </div>
-      <form className="ai-query-composer" onSubmit={send}>
-        {error ? <div className="chat-error"><span>{error}</span></div> : null}
-        <div className="composer-row">
-          <textarea
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            onCompositionStart={() => setIsComposing(true)}
-            onCompositionEnd={() => setIsComposing(false)}
-            onKeyDown={handleKeyDown}
-            placeholder="输入经营数据问题，Enter 发送，Shift+Enter 换行"
-            rows={2}
-          />
-          <button className="primary send" type="submit" disabled={!content.trim() || !modelId || loading}><Send size={18} /></button>
+            {debugResult ? (
+              <pre>{JSON.stringify(debugResult, null, 2)}</pre>
+            ) : (
+              <div className="empty-state compact">
+                <FileSpreadsheet size={38} />
+                <h2>选择接口并填写参数</h2>
+                <p>调用结果会原样显示在这里。</p>
+              </div>
+            )}
+          </section>
         </div>
-      </form>
+      ) : (
+        <>
+          <div className="ai-query-messages">
+            {messages.length ? messages.map((message, index) => (
+              <article className={`message ${message.role}`} key={`${message.createdAt}-${index}`}>
+                {message.role === "assistant" ? <div className="avatar"><img src="/brand/xiaoxiang-mark.png" alt="小象 AI" /></div> : null}
+                <div className="bubble">
+                  {message.role === "assistant" ? (
+                    <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>
+                  ) : <pre>{message.content}</pre>}
+                  <small className="message-time">{dateTime(message.createdAt)}</small>
+                </div>
+              </article>
+            )) : (
+              <div className="empty-state compact">
+                <BarChart3 size={38} />
+                <h2>AI问数链路暂时保留</h2>
+                <p>等接口和指标口径验证后，再用它测试完整问数效果。</p>
+              </div>
+            )}
+            {loading ? <div className="typing">正在规划只读接口、查询万里牛并整理结果...</div> : null}
+          </div>
+          <form className="ai-query-composer" onSubmit={send}>
+            {error ? <div className="chat-error"><span>{error}</span></div> : null}
+            <div className="composer-row">
+              <textarea
+                value={content}
+                onChange={(event) => setContent(event.target.value)}
+                onCompositionStart={() => setIsComposing(true)}
+                onCompositionEnd={() => setIsComposing(false)}
+                onKeyDown={handleKeyDown}
+                placeholder="输入经营数据问题，Enter 发送，Shift+Enter 换行"
+                rows={2}
+              />
+              <button className="primary send" type="submit" disabled={!content.trim() || !modelId || loading}><Send size={18} /></button>
+            </div>
+          </form>
+        </>
+      )}
     </div>
   );
 }
