@@ -48,12 +48,22 @@ function envNumber(name: string, fallback: number) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function envBoolean(name: string, fallback: boolean) {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  return value.toLowerCase() === "true";
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isRetryableDingTalkMessage(message: string) {
   return /fetch failed|timeout|temporary failure|rate.?limit|限流|次数过多|temporarily restricted|Invoke remote method timeout/i.test(message);
+}
+
+export function isDingTalkQuotaExceededMessage(message: string) {
+  return /api调用量已超过限制|调用量已超过限制|额度.*超过限制|quota.*exceed|quota.*exceeded/i.test(message);
 }
 
 async function fetchJsonWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
@@ -298,6 +308,7 @@ export class DingTalkKnowledgeService {
     const operatorId = requiredEnv("DINGTALK_OPERATOR_ID");
     const result: DingTalkKnowledgeNode[] = [];
     const rootNodeId = requiredEnv("DINGTALK_ROOT_NODE_ID");
+    const maxPagesPerParent = envNumber("DINGTALK_NODE_MAX_PAGES_PER_PARENT", 200);
     const queue: string[] = [rootNodeId];
     const seen = new Set<string>();
 
@@ -305,7 +316,31 @@ export class DingTalkKnowledgeService {
       const parentNodeId = queue.shift();
       if (!parentNodeId) continue;
       let nextToken = "";
+      let pages = 0;
+      const seenTokens = new Set<string>();
       do {
+        if (nextToken) {
+          if (seenTokens.has(nextToken)) {
+            console.warn(JSON.stringify({
+              event: "dingtalk_node_pagination_stopped",
+              reason: "repeated_next_token",
+              parentNodeId,
+              nextToken
+            }));
+            break;
+          }
+          seenTokens.add(nextToken);
+        }
+        if (pages >= maxPagesPerParent) {
+          console.warn(JSON.stringify({
+            event: "dingtalk_node_pagination_stopped",
+            reason: "max_pages_per_parent",
+            parentNodeId,
+            pages,
+            maxPagesPerParent
+          }));
+          break;
+        }
         const query = new URLSearchParams({
           operatorId,
           workspaceId,
@@ -314,15 +349,36 @@ export class DingTalkKnowledgeService {
         });
         if (nextToken) query.set("nextToken", nextToken);
         const payload = await this.request(`/v2.0/wiki/nodes?${query}`);
+        let added = 0;
         for (const raw of pickArray(payload)) {
           const node = normalizeNode(raw);
           if (!node || seen.has(node.nodeId)) continue;
           seen.add(node.nodeId);
           result.push(node);
+          added += 1;
           if (result.length >= limit) break;
           if (raw?.hasChildren || /folder|dir|catalog|category/.test(node.type?.toLowerCase() ?? "")) queue.push(node.nodeId);
         }
+        pages += 1;
+        const previousToken = nextToken;
         nextToken = pickNextToken(payload);
+        if (nextToken && nextToken === previousToken) {
+          console.warn(JSON.stringify({
+            event: "dingtalk_node_pagination_stopped",
+            reason: "unchanged_next_token",
+            parentNodeId,
+            nextToken
+          }));
+          break;
+        }
+        if (nextToken && added === 0) {
+          console.warn(JSON.stringify({
+            event: "dingtalk_node_pagination_no_new_nodes",
+            parentNodeId,
+            nextToken,
+            page: pages
+          }));
+        }
       } while (nextToken && result.length < limit);
     }
 
@@ -333,11 +389,13 @@ export class DingTalkKnowledgeService {
     const operatorId = requiredEnv("DINGTALK_OPERATOR_ID");
     const paths = [`/v2.0/wiki/nodes/content?${new URLSearchParams({ operatorId, workspaceId, nodeId: node.nodeId })}`];
     let lastError: Error | undefined;
-    try {
-      const blocksContent = await this.getDocumentBlocksContent(node.nodeId, operatorId);
-      if (blocksContent) return formatMarkdown(node, blocksContent);
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
+    if (envBoolean("DINGTALK_USE_BLOCKS_API", false)) {
+      try {
+        const blocksContent = await this.getDocumentBlocksContent(node.nodeId, operatorId);
+        if (blocksContent) return formatMarkdown(node, blocksContent);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
     }
     for (const path of paths) {
       try {

@@ -205,9 +205,11 @@ export type KnowledgeSyncDocument = {
   sourceUpdatedAt?: string;
   bailianDocumentId?: string;
   bailianJobId?: string;
-  status: "synced" | "skipped" | "failed";
+  status: "synced" | "skipped" | "failed" | "unsupported";
   lastSyncedAt?: string;
   lastError?: string;
+  retryAfter?: string;
+  unsupportedReason?: string;
   createdAt: string;
   updatedAt: string;
 };

@@ -5,6 +5,7 @@ import {
   DingTalkKnowledgeFile,
   DingTalkKnowledgeNode,
   DingTalkKnowledgeService,
+  isDingTalkQuotaExceededMessage,
   isDingTalkDownloadableFile,
   isDingTalkTextDocument
 } from "./dingtalk.js";
@@ -29,7 +30,8 @@ export const knowledgeSyncConfig = {
   timezone: process.env.KNOWLEDGE_SYNC_TIMEZONE?.trim() || "Asia/Shanghai",
   scanMaxNodes: envNumber("KNOWLEDGE_SYNC_SCAN_MAX_NODES", 5000),
   progressLogEvery: envNumber("KNOWLEDGE_SYNC_PROGRESS_LOG_EVERY", 100),
-  maxLoggedErrors: envNumber("KNOWLEDGE_SYNC_MAX_LOGGED_ERRORS", 20)
+  maxLoggedErrors: envNumber("KNOWLEDGE_SYNC_MAX_LOGGED_ERRORS", 20),
+  failedRetryCooldownHours: envNumber("KNOWLEDGE_SYNC_FAILED_RETRY_COOLDOWN_HOURS", 24)
 };
 
 function now() {
@@ -55,6 +57,10 @@ function sha256Buffer(value: Buffer) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function stableNodeHash(node: DingTalkKnowledgeNode) {
+  return sha256([node.nodeId, node.title, node.updatedAt ?? "", node.size ?? ""].join(":"));
+}
+
 function isAlreadySynced(existing: KnowledgeSyncDocument | undefined, contentHash: string) {
   return Boolean(existing?.contentHash === contentHash && existing.bailianDocumentId);
 }
@@ -67,6 +73,22 @@ function unchangedByModifiedTime(existing: KnowledgeSyncDocument | undefined, no
     node.updatedAt &&
     existing.sourceUpdatedAt === node.updatedAt
   );
+}
+
+function knownFailureStillApplies(existing: KnowledgeSyncDocument | undefined, node: DingTalkKnowledgeNode) {
+  if (!existing) return false;
+  if (existing.sourceUpdatedAt && node.updatedAt && existing.sourceUpdatedAt !== node.updatedAt) return false;
+  if (existing.status === "unsupported") return true;
+  if (existing.retryAfter && new Date(existing.retryAfter).getTime() > Date.now()) return true;
+  return false;
+}
+
+function isUnsupportedError(message: string) {
+  return /暂不支持该钉钉文件类型|file size is too large|max size|SizeInBytes content cant be empty|钉钉文件超过下载上限/i.test(message);
+}
+
+function retryAfterIso() {
+  return new Date(Date.now() + Math.max(1, knowledgeSyncConfig.failedRetryCooldownHours) * 60 * 60 * 1000).toISOString();
 }
 
 function addSyncError(summary: KnowledgeSyncSummary, message: string) {
@@ -119,6 +141,11 @@ export class KnowledgeSyncService {
       const existing = (await this.store.read()).knowledgeSyncDocuments.find(
         (item) => item.source === "dingtalk" && item.sourceWorkspaceId === workspaceId && item.sourceNodeId === node.nodeId
       );
+      if (knownFailureStillApplies(existing, node)) {
+        summary.skipped += 1;
+        this.logProgress(index + 1, nodes.length, summary);
+        continue;
+      }
       if (unchangedByModifiedTime(existing, node)) {
         summary.skipped += 1;
         this.logProgress(index + 1, nodes.length, summary);
@@ -143,6 +170,12 @@ export class KnowledgeSyncService {
         contentHash = "markdown" in document ? sha256(document.markdown) : sha256Buffer(document.content);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        await this.upsertNodeFailure(node, {
+          contentHash: existing?.contentHash || stableNodeHash(node),
+          status: isUnsupportedError(message) ? "unsupported" : "failed",
+          lastError: message,
+          retryAfter: isUnsupportedError(message) ? undefined : retryAfterIso()
+        });
         summary.failed += 1;
         addSyncError(summary, `${node.title}: ${message}`);
         this.logProgress(index + 1, nodes.length, summary);
@@ -185,8 +218,9 @@ export class KnowledgeSyncService {
         const message = err instanceof Error ? err.message : String(err);
         await this.upsertDocument(document, {
           contentHash,
-          status: "failed",
-          lastError: message
+          status: isUnsupportedError(message) ? "unsupported" : "failed",
+          lastError: message,
+          retryAfter: isUnsupportedError(message) ? undefined : retryAfterIso()
         });
         summary.failed += 1;
         addSyncError(summary, `${document.title}: ${message}`);
@@ -249,6 +283,7 @@ export class KnowledgeSyncService {
       bailianDocumentId?: string;
       bailianJobId?: string;
       lastError?: string;
+      retryAfter?: string;
     }
   ) {
     const timestamp = now();
@@ -282,6 +317,51 @@ export class KnowledgeSyncService {
       item.bailianJobId = update.bailianJobId ?? item.bailianJobId;
       item.lastSyncedAt = update.status === "synced" ? timestamp : item.lastSyncedAt;
       item.lastError = update.lastError;
+      item.retryAfter = update.retryAfter;
+      item.unsupportedReason = update.status === "unsupported" ? update.lastError : undefined;
+      item.updatedAt = timestamp;
+    });
+  }
+
+  private async upsertNodeFailure(
+    node: DingTalkKnowledgeNode,
+    update: {
+      contentHash: string;
+      status: "failed" | "unsupported";
+      lastError: string;
+      retryAfter?: string;
+    }
+  ) {
+    const timestamp = now();
+    const sourceWorkspaceId = process.env.DINGTALK_WORKSPACE_ID?.trim() || "";
+    await this.store.mutate((db) => {
+      let item = db.knowledgeSyncDocuments.find(
+        (doc) => doc.source === "dingtalk" && doc.sourceWorkspaceId === sourceWorkspaceId && doc.sourceNodeId === node.nodeId
+      );
+      if (!item) {
+        item = {
+          id: uid("ksd"),
+          source: "dingtalk",
+          sourceWorkspaceId,
+          sourceNodeId: node.nodeId,
+          title: node.title,
+          sourceUrl: node.url,
+          contentHash: update.contentHash,
+          sourceUpdatedAt: node.updatedAt,
+          status: update.status,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        };
+        db.knowledgeSyncDocuments.push(item);
+      }
+      item.title = node.title;
+      item.sourceUrl = node.url;
+      item.contentHash = update.contentHash;
+      item.sourceUpdatedAt = node.updatedAt;
+      item.status = update.status;
+      item.lastError = update.lastError;
+      item.retryAfter = update.retryAfter;
+      item.unsupportedReason = update.status === "unsupported" ? update.lastError : undefined;
       item.updatedAt = timestamp;
     });
   }
@@ -290,6 +370,7 @@ export class KnowledgeSyncService {
 export class KnowledgeSyncScheduler {
   private running = false;
   private timer: NodeJS.Timeout | undefined;
+  private quotaPausedUntil: Date | undefined;
 
   constructor(private service: KnowledgeSyncService) {}
 
@@ -300,6 +381,14 @@ export class KnowledgeSyncScheduler {
 
   async scan() {
     if (this.running || !this.inActiveWindow()) return;
+    if (this.quotaPausedUntil && this.quotaPausedUntil.getTime() > Date.now()) {
+      console.warn(JSON.stringify({
+        event: "knowledge_sync_skipped",
+        reason: "dingtalk_quota_circuit_open",
+        pausedUntil: this.quotaPausedUntil.toISOString()
+      }));
+      return;
+    }
     this.running = true;
     const startedAt = now();
     try {
@@ -315,11 +404,16 @@ export class KnowledgeSyncScheduler {
         summary: summaryForLog(summary, true)
       }));
     } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      if (isDingTalkQuotaExceededMessage(error)) {
+        this.quotaPausedUntil = nextQuotaRetryAt();
+      }
       console.error(JSON.stringify({
         event: "knowledge_sync_scheduled_failed",
         startedAt,
         finishedAt: now(),
-        error: err instanceof Error ? err.message : String(err)
+        error,
+        pausedUntil: this.quotaPausedUntil?.toISOString()
       }));
     } finally {
       this.running = false;
@@ -338,4 +432,13 @@ export class KnowledgeSyncScheduler {
     if (start < end) return hour >= start && hour < end;
     return hour >= start || hour < end;
   }
+}
+
+function nextQuotaRetryAt() {
+  const configuredHours = Number(process.env.KNOWLEDGE_SYNC_QUOTA_PAUSE_HOURS);
+  if (Number.isFinite(configuredHours) && configuredHours > 0) {
+    return new Date(Date.now() + configuredHours * 60 * 60 * 1000);
+  }
+  const date = new Date();
+  return new Date(date.getFullYear(), date.getMonth() + 1, 1, 8, 0, 0, 0);
 }

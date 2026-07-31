@@ -113,6 +113,22 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.all("/api/dingtalk/events/:token?", (req, res) => {
+  const expectedToken = process.env.DINGTALK_EVENT_VERIFY_TOKEN?.trim();
+  if (expectedToken && req.params.token !== expectedToken) {
+    return res.status(403).json({ error: "invalid event token" });
+  }
+  console.log(JSON.stringify({
+    event: "dingtalk_event_received",
+    method: req.method,
+    path: req.path,
+    query: req.query,
+    body: req.body,
+    receivedAt: now()
+  }));
+  res.json({ ok: true });
+});
+
 function now() {
   return new Date().toISOString();
 }
