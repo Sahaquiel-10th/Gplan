@@ -113,9 +113,10 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.all("/api/dingtalk/events/:token?", (req, res) => {
+function handleDingTalkEvent(req: Request, res: Response) {
   const expectedToken = process.env.DINGTALK_EVENT_VERIFY_TOKEN?.trim();
-  if (expectedToken && req.params.token !== expectedToken) {
+  const token = typeof req.params.token === "string" ? req.params.token : "";
+  if (expectedToken && token !== expectedToken) {
     return res.status(403).json({ error: "invalid event token" });
   }
   console.log(JSON.stringify({
@@ -127,7 +128,10 @@ app.all("/api/dingtalk/events/:token?", (req, res) => {
     receivedAt: now()
   }));
   res.json({ ok: true });
-});
+}
+
+app.all("/api/dingtalk/events", handleDingTalkEvent);
+app.all("/api/dingtalk/events/:token", handleDingTalkEvent);
 
 function now() {
   return new Date().toISOString();
