@@ -21,6 +21,7 @@ import { store } from "./db.js";
 import { KnowledgeSyncScheduler, KnowledgeSyncService } from "./knowledgeSync.js";
 import { hasImageGenerationIntent } from "./imageIntent.js";
 import { decodeGeneratedImageDataUrl } from "./generatedImage.js";
+import { buildHupunSkillContext, hupunSkillStatus } from "./hupunSkill.js";
 import { asyncRoute, auth, requireRole } from "./middleware.js";
 import { MemorySyncScheduler } from "./memorySync.js";
 import { callModel } from "./modelGateway.js";
@@ -1644,6 +1645,100 @@ app.get("/api/admin/data-platform/plan", ...protectedAdmin, (_req, res) => {
   res.type("text/markdown; charset=utf-8");
   res.sendFile(path.join(root, "docs", "ai-data-query-platform-plan.md"));
 });
+
+app.get("/api/admin/ai-query/status", ...admin, asyncRoute(async (_req, res) => {
+  res.json({ status: await hupunSkillStatus() });
+}));
+
+app.post("/api/admin/ai-query/chat", ...admin, asyncRoute(async (req, res) => {
+  const db = await store.read();
+  const modelId = requiredString(req.body.modelId, "模型");
+  const model = db.models.find((item) => item.id === modelId && item.enabled && item.kind === "chat");
+  if (!model) return res.status(404).json({ error: "聊天模型不存在或未启用" });
+
+  const suppliedMessages = Array.isArray(req.body.messages) ? req.body.messages : [];
+  const normalizedMessages: Message[] = [];
+  for (const value of suppliedMessages.slice(-chatHistoryMessages)) {
+    if (!value || typeof value !== "object") continue;
+    const role = value.role === "user" || value.role === "assistant" ? value.role : undefined;
+    const content = typeof value.content === "string" ? value.content.trim() : "";
+    if (!role || !content) continue;
+    normalizedMessages.push({
+      role,
+      content: content.slice(0, 12000),
+      modelId: model.id,
+      createdAt: now()
+    });
+  }
+  const messages = normalizedMessages;
+  const query = [...messages].reverse().find((message) => message.role === "user")?.content;
+  if (!query) throw new Error("请输入问数问题");
+
+  const [implicitMemories, companyKnowledge]: [RetrievedMemory[], RetrievedItem[]] = await Promise.all([
+    memoryService.searchMemory({
+      companyId: req.user!.companyId,
+      userId: req.user!.id,
+      query
+    }).catch(() => []),
+    companyKnowledgeService.retrieveCompanyKnowledge({
+      companyId: req.user!.companyId,
+      userId: req.user!.id,
+      query
+    }).catch(() => [])
+  ]);
+  const explicitMemories: RetrievedMemory[] = db.userSavedMemories
+    .filter((memory) =>
+      memory.companyId === req.user!.companyId &&
+      memory.userId === req.user!.id &&
+      memory.status === "active"
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .map((memory) => ({
+      text: memory.content,
+      memoryId: memory.id,
+      memoryType: "user_saved",
+      createdAt: memory.createdAt,
+      metadata: { visibility: "explicit" }
+    }));
+  const injectedContext = buildPromptContext({
+    memories: [...explicitMemories, ...implicitMemories],
+    companyKnowledge
+  });
+  const hupunContext = await buildHupunSkillContext({
+    model,
+    messages,
+    requestId: res.locals.requestId
+  });
+  const result = await callModel(model, [
+    {
+      role: "system",
+      content: injectedContext,
+      modelId: model.id,
+      createdAt: now()
+    },
+    {
+      role: "system",
+      content: hupunContext,
+      modelId: model.id,
+      createdAt: now()
+    },
+    ...messages
+  ], db.settings.safetyRules, `${res.locals.requestId}:ai-query`);
+
+  res.json({
+    message: {
+      id: uid("msg"),
+      role: "assistant",
+      content: result.content,
+      modelId: model.id,
+      createdAt: now()
+    },
+    skill: {
+      status: await hupunSkillStatus(),
+      contextIncluded: true
+    }
+  });
+}));
 
 app.post("/api/admin/data-platform/connectors/:id/check", ...protectedAdmin, asyncRoute(async (req, res) => {
   const connectorId = req.params.id as DataConnectorId;

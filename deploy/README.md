@@ -70,9 +70,17 @@ MYSQL_DATABASE=gplan
 MYSQL_CONNECTION_LIMIT=10
 
 YYLX_API_KEY=你的yylx key，可不填，后续后台填
+
+WANLINIU_APP_KEY=你的万里牛AppKey
+WANLINIU_APP_SECRET=你的万里牛Secret
+HUPUN_API_CLI_PATH=/opt/hupun/hupun-api-cli
 ```
 
 当前代码会在 `DB_PROVIDER=mysql` 时使用 MySQL 的 `app_state` 表持久化数据；如果 MySQL 里没有数据，会优先把本地 `data/db.json` 导入进去。
+
+“管理后台 -> AI问数测试”通过万里牛官方 `hupun-api-cli` 发起签名请求。部署前请按万里牛 AI Skill
+安装说明准备与服务器架构匹配的 CLI，并把绝对路径写入 `HUPUN_API_CLI_PATH`。AppKey 和 Secret
+只配置在服务端环境变量中，不要写入前端或提交到仓库。
 
 ## 5. 启动 Node
 
@@ -109,4 +117,3 @@ npm ci
 npm run build
 pm2 restart gplan-ai
 ```
-

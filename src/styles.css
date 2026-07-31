@@ -1241,6 +1241,106 @@ label.composer-tool {
   overflow: auto;
 }
 
+.ai-query-test {
+  height: calc(100vh - 190px);
+  min-height: 520px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid #dfe4ea;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.ai-query-toolbar {
+  min-height: 76px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid #e6e9ed;
+}
+
+.ai-query-toolbar h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.ai-query-toolbar p {
+  margin: 5px 0 0;
+  color: #747d88;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-query-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.ai-query-controls select {
+  max-width: 240px;
+}
+
+.skill-status {
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.skill-status.ready {
+  color: #1c6b45;
+  background: #e8f6ef;
+}
+
+.skill-status.blocked {
+  color: #93621b;
+  background: #fff4dc;
+}
+
+.ai-query-config-note {
+  padding: 9px 16px;
+  border-bottom: 1px solid #f0dfba;
+  color: #7f581c;
+  background: #fff8e9;
+  font-size: 12px;
+}
+
+.ai-query-messages {
+  min-height: 0;
+  padding: 22px 18px;
+  overflow-y: auto;
+  background: #f8f9fb;
+}
+
+.ai-query-messages .message {
+  width: min(900px, 100%);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.ai-query-messages .typing {
+  width: min(900px, 100%);
+}
+
+.ai-query-composer {
+  padding: 11px 16px 15px;
+  border-top: 1px solid #e3e7eb;
+  background: #fff;
+}
+
+.ai-query-composer > .chat-error,
+.ai-query-composer > .composer-row {
+  width: min(900px, 100%);
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .settings-panel {
   max-width: 900px;
   display: grid;
@@ -2566,6 +2666,28 @@ summary {
 
   .tabs .secure-tab {
     margin-left: 0;
+  }
+
+  .ai-query-test {
+    height: calc(100vh - 182px);
+    min-height: 460px;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+  }
+
+  .ai-query-toolbar,
+  .ai-query-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ai-query-controls select {
+    max-width: none;
+  }
+
+  .skill-status {
+    width: fit-content;
   }
 
   .records-toolbar {

@@ -214,6 +214,14 @@ type DataPlatformState = {
   }>;
 };
 
+type HupunSkillStatus = {
+  ready: boolean;
+  hasCredentials: boolean;
+  cliPath: string;
+  cliAvailable: boolean;
+  missingEnvVars: string[];
+};
+
 type MemoryItem = {
   id: string;
   text: string;
@@ -1554,7 +1562,7 @@ function MemoriesPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 }
 
 function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
-  const [tab, setTab] = useState<"settings" | "users" | "tokens" | "secure">("settings");
+  const [tab, setTab] = useState<"settings" | "users" | "tokens" | "aiQuery" | "secure">("settings");
   const [users, setUsers] = useState<User[]>([]);
   const [tokens, setTokens] = useState<IntegrationToken[]>([]);
   const [settings, setSettings] = useState<SystemSettings>({ safetyRules: "" });
@@ -1590,6 +1598,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}><Shield size={16} />规则</button>
           <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={16} />账号</button>
           <button className={tab === "tokens" ? "active" : ""} onClick={() => setTab("tokens")}><KeyRound size={16} />外接机器人设置</button>
+          <button className={tab === "aiQuery" ? "active" : ""} onClick={() => setTab("aiQuery")}><BarChart3 size={16} />AI问数测试</button>
           <button className={`secure-tab ${tab === "secure" ? "active" : ""}`} onClick={() => setTab("secure")}><Lock size={16} />模型充值后台</button>
         </nav>
         {notice ? <div className="notice">{notice}</div> : null}
@@ -1597,9 +1606,140 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           {tab === "settings" ? <SettingsTab settings={settings} setNotice={setNotice} reload={load} /> : null}
           {tab === "users" ? <UsersTab users={users} reload={load} /> : null}
           {tab === "tokens" ? <TokensTab tokens={tokens} reload={load} setNotice={setNotice} /> : null}
+          {tab === "aiQuery" ? <AiQueryTestTab /> : null}
           {tab === "secure" ? <SecureAdminTab users={users} refreshModels={refreshModels} /> : null}
         </div>
       </section>
+  );
+}
+
+function AiQueryTestTab() {
+  const [models, setModels] = useState<Model[]>([]);
+  const [modelId, setModelId] = useState("");
+  const [status, setStatus] = useState<HupunSkillStatus | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [content, setContent] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [isComposing, setIsComposing] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      api<{ models: Model[]; defaultModelId: string }>("/api/models"),
+      api<{ status: HupunSkillStatus }>("/api/admin/ai-query/status")
+    ]).then(([modelResult, statusResult]) => {
+      const chatModels = modelResult.models.filter((model) => model.kind === "chat");
+      setModels(chatModels);
+      setModelId(
+        chatModels.find((model) => model.id === modelResult.defaultModelId)?.id
+          || chatModels[0]?.id
+          || ""
+      );
+      setStatus(statusResult.status);
+    }).catch((err) => setError(err instanceof Error ? err.message : "加载失败"));
+  }, []);
+
+  async function send(event: FormEvent) {
+    event.preventDefault();
+    const text = content.trim();
+    if (!text || !modelId || loading) return;
+    const userMessage: Message = {
+      role: "user",
+      content: text,
+      modelId,
+      createdAt: new Date().toISOString()
+    };
+    const nextMessages = [...messages, userMessage];
+    setMessages(nextMessages);
+    setContent("");
+    setLoading(true);
+    setError("");
+    try {
+      const result = await api<{ message: Message; skill: { status: HupunSkillStatus } }>("/api/admin/ai-query/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          modelId,
+          messages: nextMessages.map((message) => ({ role: message.role, content: message.content }))
+        })
+      });
+      setMessages((items) => [...items, result.message]);
+      setStatus(result.skill.status);
+    } catch (err) {
+      setMessages((items) => items.filter((message) => message !== userMessage));
+      setContent(text);
+      setError(err instanceof Error ? err.message : "问数失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey && !isComposing && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
+    }
+  }
+
+  return (
+    <div className="ai-query-test">
+      <div className="ai-query-toolbar">
+        <div>
+          <h3>AI问数测试</h3>
+          <p>模型上下文包含系统提示词、当前管理员记忆、百炼知识库召回和万里牛 AI Skill 只读查询结果。</p>
+        </div>
+        <div className="ai-query-controls">
+          <span className={`skill-status ${status?.ready ? "ready" : "blocked"}`}>
+            {status?.ready ? "万里牛 Skill 已就绪" : status ? "万里牛 Skill 待配置" : "正在检查 Skill"}
+          </span>
+          <select value={modelId} onChange={(event) => setModelId(event.target.value)} disabled={loading}>
+            {models.length ? null : <option value="">暂无可用聊天模型</option>}
+            {models.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}
+          </select>
+          {messages.length ? <button className="secondary" onClick={() => { setMessages([]); setError(""); }}>新测试</button> : null}
+        </div>
+      </div>
+      {status && !status.ready ? (
+        <div className="ai-query-config-note">
+          {status.missingEnvVars.length ? `缺少环境变量：${status.missingEnvVars.join("、")}。` : null}
+          {!status.cliAvailable ? ` 未找到 CLI：${status.cliPath}。` : null}
+        </div>
+      ) : null}
+      <div className="ai-query-messages">
+        {messages.length ? messages.map((message, index) => (
+          <article className={`message ${message.role}`} key={`${message.createdAt}-${index}`}>
+            {message.role === "assistant" ? <div className="avatar"><img src="/brand/xiaoxiang-mark.png" alt="小象 AI" /></div> : null}
+            <div className="bubble">
+              {message.role === "assistant" ? (
+                <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>
+              ) : <pre>{message.content}</pre>}
+              <small className="message-time">{dateTime(message.createdAt)}</small>
+            </div>
+          </article>
+        )) : (
+          <div className="empty-state compact">
+            <BarChart3 size={38} />
+            <h2>先从只读经营问题开始</h2>
+            <p>例如：昨天各店铺的订单量和销售额分别是多少？</p>
+          </div>
+        )}
+        {loading ? <div className="typing">正在规划只读接口、查询万里牛并整理结果...</div> : null}
+      </div>
+      <form className="ai-query-composer" onSubmit={send}>
+        {error ? <div className="chat-error"><span>{error}</span></div> : null}
+        <div className="composer-row">
+          <textarea
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+            onCompositionStart={() => setIsComposing(true)}
+            onCompositionEnd={() => setIsComposing(false)}
+            onKeyDown={handleKeyDown}
+            placeholder="输入经营数据问题，Enter 发送，Shift+Enter 换行"
+            rows={2}
+          />
+          <button className="primary send" type="submit" disabled={!content.trim() || !modelId || loading}><Send size={18} /></button>
+        </div>
+      </form>
+    </div>
   );
 }
 
