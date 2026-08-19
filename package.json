@@ -8,6 +8,7 @@
     "dev:server": "tsx watch server/index.ts",
     "dev:web": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
+    "test:wanliniu": "tsx --test server/data-connectors/wanliniu/*.test.ts",
     "start": "NODE_ENV=production tsx server/index.ts"
   },
   "dependencies": {

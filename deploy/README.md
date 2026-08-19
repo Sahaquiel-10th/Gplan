@@ -74,6 +74,20 @@ YYLX_API_KEY=你的yylx key，可不填，后续后台填
 WANLINIU_APP_KEY=你的万里牛AppKey
 WANLINIU_APP_SECRET=你的万里牛Secret
 HUPUN_API_CLI_PATH=/opt/hupun/hupun-api-cli
+
+# 经营数据独立数据库（可以与主库在同一个 RDS 实例）
+DATA_DB_PROVIDER=mysql
+DATA_MYSQL_HOST=你的RDS内网地址
+DATA_MYSQL_PORT=3306
+DATA_MYSQL_USER=有gplan_data读写权限的应用账号
+DATA_MYSQL_PASSWORD=该应用账号密码
+DATA_MYSQL_DATABASE=gplan_data
+DATA_MYSQL_CONNECTION_LIMIT=5
+WANLINIU_COMPANY_ID=company_default
+WANLINIU_SYNC_ENABLED=false
+WANLINIU_SYNC_INTERVAL_MINUTES=15
+WANLINIU_INITIAL_LOOKBACK_DAYS=30
+WANLINIU_SYNC_OVERLAP_MINUTES=10
 ```
 
 当前代码会在 `DB_PROVIDER=mysql` 时使用 MySQL 的 `app_state` 表持久化数据；如果 MySQL 里没有数据，会优先把本地 `data/db.json` 导入进去。
@@ -81,6 +95,11 @@ HUPUN_API_CLI_PATH=/opt/hupun/hupun-api-cli
 “管理后台 -> AI问数测试”通过万里牛官方 `hupun-api-cli` 发起签名请求。部署前请按万里牛 AI Skill
 安装说明准备与服务器架构匹配的 CLI，并把绝对路径写入 `HUPUN_API_CLI_PATH`。AppKey 和 Secret
 只配置在服务端环境变量中，不要写入前端或提交到仓库。
+
+经营数据同步通过“管理后台 -> 数据接入 -> 万里牛 ERP -> 手动同步”触发。第一次会全量同步
+店铺、商品和当前库存，并回溯最近 30 天的销售出库和采购入库；后续按修改时间增量同步。
+确认首轮数据和 `data_sync_runs` 留痕正常后，再把 `WANLINIU_SYNC_ENABLED` 改为 `true`
+并重启服务。同步游标只会在某类资源全部分页成功后推进，失败任务可安全重跑。
 
 ## 5. 启动 Node
 

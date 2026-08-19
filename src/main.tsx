@@ -111,6 +111,8 @@ type Conversation = {
   archived: boolean;
   title: string;
   messages: Message[];
+  messageCount?: number;
+  messagesLoaded?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -207,7 +209,7 @@ type DataPlatformState = {
     id: string;
     connectorId: DataConnector["id"];
     action: "check_credentials" | "manual_sync" | "scheduled_sync";
-    status: "success" | "blocked" | "failed";
+    status: "running" | "success" | "blocked" | "failed";
     message: string;
     startedAt: string;
     finishedAt: string;
@@ -410,8 +412,12 @@ function Login({ onDone }: { onDone: (user: User) => void }) {
 }
 
 function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const conversationPageSize = 30;
   const [models, setModels] = useState<Model[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationPage, setConversationPage] = useState(1);
+  const [hasMoreConversations, setHasMoreConversations] = useState(false);
+  const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [activeId, setActiveId] = useState<string>("");
@@ -473,14 +479,31 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function refresh() {
     const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult] = await Promise.all([
       api<{ models: Model[]; defaultModelId: string }>("/api/models"),
-      api<{ conversations: Conversation[] }>("/api/conversations"),
+      api<{ conversations: Conversation[]; pagination: { page: number; hasMore: boolean } }>(
+        `/api/conversations?summary=1&page=1&pageSize=${conversationPageSize}&archived=${showArchived}`
+      ),
       api<{ workspaces: Workspace[] }>("/api/workspaces"),
       api<{ agents: Agent[] }>("/api/agents"),
       api<AppCapabilities>("/api/capabilities")
     ]);
     setModels(modelResult.models);
     setDefaultModelId(modelResult.defaultModelId);
-    setConversations(conversationResult.conversations);
+    setConversations((current) => {
+      const firstPage = conversationResult.conversations.map((summary) => {
+        const loaded = current.find((item) => item.id === summary.id && item.messagesLoaded);
+        return loaded
+          ? { ...summary, messages: loaded.messages, messagesLoaded: true }
+          : { ...summary, messagesLoaded: false };
+      });
+      const activeLoaded = current.find(
+        (item) => item.id === activeId && item.messagesLoaded && item.archived === showArchived
+      );
+      return activeLoaded && !firstPage.some((item) => item.id === activeLoaded.id)
+        ? [...firstPage, activeLoaded]
+        : firstPage;
+    });
+    setConversationPage(1);
+    setHasMoreConversations(conversationResult.pagination.hasMore);
     setWorkspaces(workspaceResult.workspaces);
     setAgents(agentResult.agents);
     setCapabilities(capabilityResult);
@@ -493,7 +516,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   useEffect(() => {
     refresh().catch((err) => setError(err.message));
-  }, []);
+  }, [showArchived]);
 
   useEffect(() => {
     function refreshWhenVisible() {
@@ -501,7 +524,52 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }
     document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => document.removeEventListener("visibilitychange", refreshWhenVisible);
-  }, []);
+  }, [showArchived, activeId]);
+
+  async function loadMoreConversations() {
+    if (loadingMoreConversations || !hasMoreConversations) return;
+    const nextPage = conversationPage + 1;
+    setLoadingMoreConversations(true);
+    try {
+      const result = await api<{ conversations: Conversation[]; pagination: { page: number; hasMore: boolean } }>(
+        `/api/conversations?summary=1&page=${nextPage}&pageSize=${conversationPageSize}&archived=${showArchived}`
+      );
+      setConversations((current) => {
+        const byId = new Map(current.map((item) => [item.id, item]));
+        for (const summary of result.conversations) {
+          if (!byId.has(summary.id)) byId.set(summary.id, { ...summary, messagesLoaded: false });
+        }
+        return [...byId.values()];
+      });
+      setConversationPage(result.pagination.page);
+      setHasMoreConversations(result.pagination.hasMore);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载对话失败");
+    } finally {
+      setLoadingMoreConversations(false);
+    }
+  }
+
+  async function openConversation(conversation: Conversation) {
+    setActiveId(conversation.id);
+    setView("chat");
+    setError("");
+    setSidebarOpen(false);
+    if (conversation.messagesLoaded) return;
+    setLoadingByConversation((items) => ({ ...items, [conversation.id]: true }));
+    try {
+      const result = await api<{ conversation: Conversation }>(
+        `/api/conversations/${encodeURIComponent(conversation.id)}`
+      );
+      setConversations((items) => items.map((item) => (
+        item.id === conversation.id ? { ...result.conversation, messagesLoaded: true } : item
+      )));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载对话失败");
+    } finally {
+      setLoadingByConversation((items) => ({ ...items, [conversation.id]: false }));
+    }
+  }
 
   useEffect(() => {
     const hasLoading = Object.values(loadingByConversation).some(Boolean);
@@ -606,6 +674,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         archived: false,
         title: activeAgent ? `${activeAgent.name} · ${titleFrom(text || attachments[0]?.originalName || "附件")}` : titleFrom(text || attachments[0]?.originalName || "附件"),
         messages: [userMessage],
+        messagesLoaded: true,
         createdAt: userMessage.createdAt,
         updatedAt: userMessage.createdAt
       };
@@ -635,7 +704,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       });
       setConversations((items) => {
         const rest = items.filter((item) => item.id !== result.conversation.id && item.id !== tempId);
-        return [result.conversation, ...rest];
+        return [{ ...result.conversation, messagesLoaded: true }, ...rest];
       });
       setActiveId((current) => (current === tempId || current === active?.id ? result.conversation.id : current));
       setPendingAttachments([]);
@@ -832,12 +901,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 <div className={`conversation-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
                   <button
                     className="conversation-main"
-                    onClick={() => {
-                      setActiveId(conversation.id);
-                      setView("chat");
-                      setError("");
-                      setSidebarOpen(false);
-                    }}
+                    onClick={() => openConversation(conversation)}
                   >
                     <MessageSquare size={16} />
                     <span>{conversation.title}</span>
@@ -879,7 +943,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <div className="workspace-conversations">
               {ungroupedConversations.map((conversation) => (
                 <div className={`conversation-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
-                  <button className="conversation-main" onClick={() => { setActiveId(conversation.id); setView("chat"); setError(""); setSidebarOpen(false); }}>
+                  <button className="conversation-main" onClick={() => openConversation(conversation)}>
                     <MessageSquare size={15} />
                     <span>{conversation.title}</span>
                   </button>
@@ -899,6 +963,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 </div>
               ))}
             </div>
+          ) : null}
+          {hasMoreConversations ? (
+            <button
+              className="conversation-load-more"
+              type="button"
+              disabled={loadingMoreConversations}
+              onClick={loadMoreConversations}
+            >
+              {loadingMoreConversations ? "加载中…" : "加载更多对话"}
+            </button>
           ) : null}
         </div>
         </div>
@@ -2340,6 +2414,15 @@ function DataPlatformTab() {
   useEffect(() => {
     load().catch((err) => setNotice(err instanceof Error ? err.message : "数据接入状态加载失败"));
   }, []);
+
+  const hasRunningSync = state?.connectors.some((connector) => connector.status === "syncing") ?? false;
+  useEffect(() => {
+    if (!hasRunningSync) return;
+    const timer = window.setInterval(() => {
+      load().catch((err) => setNotice(err instanceof Error ? err.message : "同步状态刷新失败"));
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [hasRunningSync]);
 
   async function runConnectorAction(connector: DataConnector, action: "check" | "sync") {
     setNotice("");

@@ -17,6 +17,9 @@ import {
   memoryUserId
 } from "./bailian.js";
 import { DingTalkKnowledgeService } from "./dingtalk.js";
+import { dataPlatformStore, type DataPlatformStatus } from "./dataPlatformDb.js";
+import { missingWanliniuSyncConfig, wanliniuClient } from "./data-connectors/wanliniu/client.js";
+import { WanliniuSyncScheduler, wanliniuSyncService, type WanliniuSyncSummary } from "./data-connectors/wanliniu/sync.js";
 import { store } from "./db.js";
 import { KnowledgeSyncScheduler, KnowledgeSyncService } from "./knowledgeSync.js";
 import { hasImageGenerationIntent } from "./imageIntent.js";
@@ -50,6 +53,23 @@ const knowledgeSyncService = new KnowledgeSyncService(store, dingtalkKnowledgeSe
 const knowledgeSyncScheduler = new KnowledgeSyncScheduler(knowledgeSyncService);
 const memoryService = new BailianMemoryService();
 const memorySyncScheduler = new MemorySyncScheduler(store, memoryService);
+const wanliniuSyncScheduler = new WanliniuSyncScheduler(
+  wanliniuSyncService,
+  async () => {
+    const configured = process.env.WANLINIU_COMPANY_ID?.trim();
+    if (configured) return configured;
+    const db = await store.read();
+    return db.users.find((user) => user.role === "admin")?.companyId || db.users[0]?.companyId;
+  },
+  async (result) => {
+    await finishWanliniuSyncLog({
+      logId: uid("dsl"),
+      action: "scheduled_sync",
+      summary: result.summary,
+      error: result.error
+    });
+  }
+);
 const userMemoryMaxItems = 10;
 const userMemoryMaxChars = 200;
 const userMemoryMaxTotalChars = 2000;
@@ -154,7 +174,7 @@ function connectorHasCredentials(connector: DataConnector) {
   return connector.requiredEnvVars.every((key) => Boolean(process.env[key]?.trim()));
 }
 
-function dataLayerOverview(connectors: DataConnector[]) {
+function dataLayerOverview(connectors: DataConnector[], dataDatabase: DataPlatformStatus) {
   const readyCount = connectors.filter((connector) => connectorHasCredentials(connector)).length;
   return [
     {
@@ -173,7 +193,7 @@ function dataLayerOverview(connectors: DataConnector[]) {
       id: "warehouse",
       name: "业务数据库层",
       description: "先落原始镜像表，再生成店铺日汇总、库存快照、现金流汇总等指标表。",
-      status: "表结构规划完成，等待真实同步任务落表"
+      status: dataDatabase.message
     },
     {
       id: "semantic",
@@ -188,6 +208,60 @@ function dataLayerOverview(connectors: DataConnector[]) {
       status: "等待店铺经营分析智能体接入工具"
     }
   ];
+}
+
+function wanliniuSummaryMessage(summary: WanliniuSyncSummary) {
+  const resources = summary.resources
+    .map((item) => `${item.resource} ${item.recordsRead} 条`)
+    .join("，");
+  return `万里牛同步完成：读取 ${summary.recordsRead} 条源记录，写入/更新 ${summary.recordsWritten} 行；${resources}。`;
+}
+
+async function finishWanliniuSyncLog(input: {
+  logId: string;
+  action: DataSyncLog["action"];
+  summary?: WanliniuSyncSummary;
+  error?: string;
+}) {
+  const successful = Boolean(input.summary);
+  const message = input.summary ? wanliniuSummaryMessage(input.summary) : input.error || "万里牛同步失败";
+  await store.mutate((db) => {
+    const connector = db.dataConnectors.find((item) => item.id === "wanliniu");
+    if (connector) {
+      connector.status = successful ? "ready" : "error";
+      connector.message = message;
+      if (successful) connector.lastSyncedAt = now();
+    }
+    const existing = db.dataSyncLogs.find((item) => item.id === input.logId);
+    if (existing) {
+      existing.status = successful ? "success" : "failed";
+      existing.message = message;
+      existing.finishedAt = now();
+    } else {
+      db.dataSyncLogs.push({
+        id: input.logId,
+        connectorId: "wanliniu",
+        action: input.action,
+        status: successful ? "success" : "failed",
+        message,
+        startedAt: input.summary?.startedAt || now(),
+        finishedAt: now()
+      });
+    }
+  });
+}
+
+async function runWanliniuSync(companyId: string, logId: string, action: DataSyncLog["action"]) {
+  try {
+    const summary = await wanliniuSyncService.syncAll(companyId);
+    await finishWanliniuSyncLog({ logId, action, summary });
+  } catch (error) {
+    await finishWanliniuSyncLog({
+      logId,
+      action,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 function syncLog(connectorId: DataConnectorId, action: DataSyncLog["action"], status: DataSyncLog["status"], message: string): DataSyncLog {
@@ -632,7 +706,36 @@ app.get("/api/conversations", auth(jwtSecret), asyncRoute(async (req, res) => {
   const conversations = db.conversations
     .filter((conversation) => conversation.userId === req.user!.id)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  res.json({ conversations });
+  if (req.query.summary !== "1") return res.json({ conversations });
+
+  const archived = req.query.archived === "true";
+  const page = Math.max(1, Number.parseInt(String(req.query.page ?? "1"), 10) || 1);
+  const pageSize = Math.max(10, Math.min(50, Number.parseInt(String(req.query.pageSize ?? "30"), 10) || 30));
+  const matching = conversations.filter((conversation) => conversation.archived === archived);
+  const offset = (page - 1) * pageSize;
+  const paged = matching.slice(offset, offset + pageSize).map((conversation) => ({
+    ...conversation,
+    messages: [],
+    messageCount: conversation.messages.length
+  }));
+  res.json({
+    conversations: paged,
+    pagination: {
+      page,
+      pageSize,
+      total: matching.length,
+      hasMore: offset + paged.length < matching.length
+    }
+  });
+}));
+
+app.get("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const db = await store.read();
+  const conversation = db.conversations.find(
+    (item) => item.id === req.params.id && item.userId === req.user!.id
+  );
+  if (!conversation) return res.status(404).json({ error: "对话不存在" });
+  res.json({ conversation });
 }));
 
 app.get("/api/workspaces", auth(jwtSecret), asyncRoute(async (req, res) => {
@@ -1653,13 +1756,15 @@ app.get("/api/admin/usage-stats/export", ...protectedAdmin, asyncRoute(async (re
 
 app.get("/api/admin/data-platform", ...protectedAdmin, asyncRoute(async (_req, res) => {
   const db = await store.read();
+  const dataDatabase = dataPlatformStore.status();
   const connectors = db.dataConnectors.map((connector) => ({
     ...connector,
     hasCredentials: connectorHasCredentials(connector),
     missingEnvVars: connector.requiredEnvVars.filter((key) => !process.env[key]?.trim())
   }));
   res.json({
-    layers: dataLayerOverview(db.dataConnectors),
+    layers: dataLayerOverview(db.dataConnectors, dataDatabase),
+    database: dataDatabase,
     connectors,
     metrics: db.dataMetricDefinitions,
     syncLogs: db.dataSyncLogs.slice().sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 80)
@@ -1780,6 +1885,47 @@ app.post("/api/admin/ai-query/chat", ...admin, asyncRoute(async (req, res) => {
 
 app.post("/api/admin/data-platform/connectors/:id/check", ...protectedAdmin, asyncRoute(async (req, res) => {
   const connectorId = req.params.id as DataConnectorId;
+  if (connectorId === "wanliniu") {
+    const startedAt = now();
+    const missing = missingWanliniuSyncConfig();
+    let status: DataSyncLog["status"] = "success";
+    let message = "万里牛凭证和经营数据库检测通过，可以开始同步。";
+    if (missing.length) {
+      status = "blocked";
+      message = `缺少环境变量：${missing.join("、")}`;
+    } else {
+      try {
+        await wanliniuClient.checkCredentials();
+        const database = dataPlatformStore.status();
+        if (!database.ready) {
+          status = "blocked";
+          message = `万里牛接口连接成功，但${database.message}`;
+        }
+      } catch (error) {
+        status = "failed";
+        message = error instanceof Error ? error.message : "万里牛凭证检测失败";
+      }
+    }
+    const result = await store.mutate((db) => {
+      const connector = db.dataConnectors.find((item) => item.id === connectorId);
+      if (!connector) throw new Error("数据源不存在");
+      connector.lastCheckedAt = now();
+      connector.status = status === "success" ? "ready" : status === "blocked" ? "waiting_credentials" : "error";
+      connector.message = message;
+      const log: DataSyncLog = {
+        id: uid("dsl"),
+        connectorId,
+        action: "check_credentials",
+        status,
+        message,
+        startedAt,
+        finishedAt: now()
+      };
+      db.dataSyncLogs.push(log);
+      return { connector, missingEnvVars: missing, hasCredentials: missing.length === 0, log };
+    });
+    return res.json({ result });
+  }
   if (connectorId === "dingtalk_knowledge") {
     const startedAt = now();
     const missing = [
@@ -1849,6 +1995,52 @@ app.post("/api/admin/data-platform/connectors/:id/check", ...protectedAdmin, asy
 
 app.post("/api/admin/data-platform/connectors/:id/sync", ...protectedAdmin, asyncRoute(async (req, res) => {
   const connectorId = req.params.id as DataConnectorId;
+  if (connectorId === "wanliniu") {
+    const missing = missingWanliniuSyncConfig();
+    const database = dataPlatformStore.status();
+    const blockedMessage = missing.length
+      ? `暂不能同步，缺少环境变量：${missing.join("、")}`
+      : !database.ready
+        ? `暂不能同步：${database.message}`
+        : wanliniuSyncService.isRunning()
+          ? "万里牛同步任务正在运行，请等待本轮完成。"
+          : "";
+    if (blockedMessage) {
+      const result = await store.mutate((db) => {
+        const connector = db.dataConnectors.find((item) => item.id === connectorId);
+        if (!connector) throw new Error("数据源不存在");
+        connector.status = missing.length ? "waiting_credentials" : wanliniuSyncService.isRunning() ? "syncing" : "error";
+        connector.message = blockedMessage;
+        const log = syncLog(connectorId, "manual_sync", "blocked", blockedMessage);
+        db.dataSyncLogs.push(log);
+        return { connector, missingEnvVars: missing, hasCredentials: missing.length === 0, log };
+      });
+      return res.json({ result });
+    }
+
+    const startedAt = now();
+    const logId = uid("dsl");
+    const result = await store.mutate((db) => {
+      const connector = db.dataConnectors.find((item) => item.id === connectorId);
+      if (!connector) throw new Error("数据源不存在");
+      connector.status = "syncing";
+      connector.lastCheckedAt = now();
+      connector.message = "万里牛同步任务已启动；将依次同步店铺、商品、库存、销售出库和采购入库。";
+      const log: DataSyncLog = {
+        id: logId,
+        connectorId,
+        action: "manual_sync",
+        status: "running",
+        message: connector.message,
+        startedAt,
+        finishedAt: startedAt
+      };
+      db.dataSyncLogs.push(log);
+      return { connector, missingEnvVars: [], hasCredentials: true, log };
+    });
+    void runWanliniuSync(req.user!.companyId, logId, "manual_sync");
+    return res.status(202).json({ result });
+  }
   if (connectorId === "dingtalk_knowledge") {
     const startedAt = now();
     const missing = [
@@ -2038,3 +2230,4 @@ app.listen(port, () => {
 
 memorySyncScheduler.start();
 knowledgeSyncScheduler.start();
+wanliniuSyncScheduler.start();

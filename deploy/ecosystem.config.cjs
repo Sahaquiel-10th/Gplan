@@ -2,8 +2,9 @@ module.exports = {
   apps: [
     {
       name: "gplan-ai",
-      script: "npm",
-      args: "run start",
+      script: "server/index.ts",
+      interpreter: "node",
+      node_args: "--import tsx",
       cwd: "/opt/gplan",
       env: {
         NODE_ENV: "production",
@@ -17,4 +18,3 @@ module.exports = {
     }
   ]
 };
-

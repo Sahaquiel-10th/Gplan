@@ -544,6 +544,27 @@ textarea {
   color: #f0b7ba;
 }
 
+.conversation-load-more {
+  min-height: 34px;
+  margin: 5px 7px 2px;
+  border: 1px solid #46505c;
+  border-radius: 7px;
+  background: #303740;
+  color: #c9d0da;
+  font-size: 12px;
+}
+
+.conversation-load-more:hover:not(:disabled) {
+  border-color: #5c6978;
+  background: #39424d;
+  color: #fff;
+}
+
+.conversation-load-more:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .side-bottom {
   margin-top: auto;
   display: grid;
@@ -2694,6 +2715,11 @@ details {
 
 .status-dot.success {
   background: #2fa466;
+}
+
+.status-dot.running {
+  background: #2f80ed;
+  box-shadow: 0 0 0 4px rgba(47, 128, 237, 0.12);
 }
 
 .status-dot.blocked {

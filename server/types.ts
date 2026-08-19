@@ -218,7 +218,7 @@ export type DataSyncLog = {
   id: string;
   connectorId: DataConnectorId;
   action: "check_credentials" | "manual_sync" | "scheduled_sync";
-  status: "success" | "blocked" | "failed";
+  status: "running" | "success" | "blocked" | "failed";
   message: string;
   startedAt: string;
   finishedAt: string;
