@@ -152,25 +152,25 @@ export class WanliniuSyncService {
       return pageResult(records, await this.dataStore.upsertShops(companyId, normalized, runId), pageSize);
     }
     if (resource === "products") {
-      const pageSize = 100;
+      const pageSize = 20;
       const records = await this.client.listProducts(page, pageSize, window.modifiedAfter, window.modifiedBefore);
       const normalized = records.flatMap(normalizeProducts);
       return pageResult(records, await this.dataStore.upsertProducts(companyId, normalized, runId), pageSize);
     }
     if (resource === "inventory") {
       const pageSize = 200;
-      const records = await this.client.listInventory(page, pageSize, window.modifiedAfter, window.mode === "incremental" ? window.modifiedBefore : undefined);
+      const records = await this.client.listInventory(page, pageSize, window.modifiedAfter, window.modifiedAfter ? window.modifiedBefore : undefined);
       const snapshotAt = mysqlDateInShanghai(window.startedAt);
       const normalized = records.map((record) => normalizeInventory(record, snapshotAt));
       return pageResult(records, await this.dataStore.upsertInventory(companyId, normalized, runId), pageSize);
     }
     if (resource === "sale_outbound") {
-      const pageSize = 200;
+      const pageSize = 20;
       const records = await this.client.listSaleOutbound(page, pageSize, requiredWindowStart(window), window.modifiedBefore);
       const normalized = records.map(normalizeOutbound);
       return pageResult(records, await this.dataStore.upsertOutbound(companyId, normalized, runId), pageSize);
     }
-    const pageSize = 200;
+    const pageSize = 20;
     const records = await this.client.listPurchaseInbound(page, pageSize, requiredWindowStart(window), window.modifiedBefore);
     const normalized = records.map(normalizeInbound);
     return pageResult(records, await this.dataStore.upsertInbound(companyId, normalized, runId), pageSize);
@@ -190,6 +190,10 @@ export class WanliniuSyncService {
       if (Number.isNaN(cursorDate.getTime())) throw new Error(`${resource} 的同步游标时间无效`);
       modifiedAfter = new Date(cursorDate.getTime() - overlapMs);
       mode = "incremental";
+    } else if (resource === "products") {
+      modifiedAfter = new Date(process.env.WANLINIU_PRODUCT_INITIAL_START?.trim() || "2000-01-01T00:00:00+08:00");
+    } else if (resource === "inventory") {
+      modifiedAfter = new Date(started.getTime() - 7 * 86_400_000 + 60_000);
     } else if (resource === "sale_outbound" || resource === "purchase_inbound") {
       modifiedAfter = new Date(started.getTime() - lookbackMs);
     }

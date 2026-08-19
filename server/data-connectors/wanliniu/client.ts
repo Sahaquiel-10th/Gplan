@@ -41,8 +41,9 @@ function parseCliJson(raw: string) {
   if (!source) throw new Error("万里牛 CLI 未返回数据");
   try {
     return JSON.parse(source) as unknown;
-  } catch {
-    throw new Error(`万里牛 CLI 返回了非 JSON 内容：${source.slice(0, 2000)}`);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "JSON 解析失败";
+    throw new Error(`万里牛 CLI 响应无法解析（${source.length} 字节）：${reason}`);
   }
 }
 
@@ -111,7 +112,7 @@ export class WanliniuClient {
           ].filter(Boolean).join("\n").trim()
         : "";
       const message = details || (error instanceof Error ? error.message : String(error));
-      throw new Error(message.slice(0, 4000));
+      throw new Error(safeErrorMessage(message));
     } finally {
       await fs.rm(temporaryDirectory, { recursive: true, force: true });
     }
@@ -178,4 +179,27 @@ function isRetryable(message: string) {
 
 function delay(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function safeErrorMessage(message: string) {
+  const trimmed = message.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return trimmed.slice(0, 1000);
+  try {
+    const payload = JSON.parse(trimmed) as Record<string, unknown>;
+    const nested = typeof payload.error_message === "string" ? parseNestedError(payload.error_message) : undefined;
+    const code = nested?.code ?? payload.code ?? payload.http_code;
+    const description = nested?.message ?? payload.message ?? "万里牛接口调用失败";
+    return `万里牛接口错误${code === undefined ? "" : `（${String(code)}）`}：${String(description).slice(0, 500)}`;
+  } catch {
+    return "万里牛接口或 CLI 返回了无法安全展示的错误；请查看服务端结构化日志。";
+  }
+}
+
+function parseNestedError(value: string) {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
 }
