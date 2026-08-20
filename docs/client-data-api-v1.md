@@ -23,14 +23,16 @@ Token 仅在签发时展示一次，请存入服务端密钥管理系统，不�
 
 例如两个万里牛仓库需要按一个甲方仓库报送：
 
-| 万里牛源仓库 | 甲方目标仓库 |
+| 万里牛源店铺 | 甲方目标店铺 |
 | --- | --- |
-| `CK001` 淘宝仓库 | `CUSTOMER_MAIN` 总仓 |
-| `CK002` 天猫仓库 | `CUSTOMER_MAIN` 总仓 |
+| `SHOP_TB` 淘宝店 | `CUSTOMER_MAIN` 统一店铺 |
+| `SHOP_TM` 天猫店 | `CUSTOMER_MAIN` 统一店铺 |
 
-库存接口会把两条源仓库存量实时合并为 `CUSTOMER_MAIN` 的库存。调整映射规则不需要改接口地址、字段或历史 ODS 数据。未配置映射的店铺、仓库、商品默认返回万里牛原编码和名称，因此可以先联调，再逐步补齐口径。
+出货接口会把两条源店铺实时显示为“统一店铺”。库存接口按产品汇总全部仓库库存，不向甲方暴露仓库维度。调整映射规则不需要改接口地址、字段或历史 ODS 数据。未配置映射的店铺、商品默认返回万里牛原编码和名称，因此可以先联调，再逐步补齐口径。
 
-当前支持三类映射：`shop`（店铺）、`storage`（仓库）、`product`（商品）。
+当前甲方接口使用 `shop`（店铺）和 `product`（商品）映射；内部数据仍保留原店铺、仓库和商品明细。
+
+映射规则采用“查询时实时生效”的方式：修改规则后，甲方再次查询历史日期时也会看到新口径；内部 ODS 原始数据不会被改写，因此平台内部仍可追溯合并前的真实店铺和仓库。如果未来业务要求“某日期之前按旧口径、之后按新口径”，需要另行启用带生效日期的版本化映射。
 
 ## 3. 通用约定
 
@@ -103,7 +105,6 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/ping' \
 | --- | --- | --- |
 | `start_date` | 是 | 开始日期，`YYYY-MM-DD` |
 | `end_date` | 是 | 结束日期，`YYYY-MM-DD`，包含当天 |
-| `shop_code` | 否 | 映射后的店铺编码 |
 | `product_code` | 否 | 映射后的商品编码 |
 | `page` | 否 | 页码 |
 | `page_size` | 否 | 每页数量，最大 200 |
@@ -117,17 +118,12 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/shipments?start_date=2026-08-19&end_da
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `outbound_no` | string | 出库单号，业务定位和去重依据之一 |
 | `shipment_time` | datetime | 出货时间 |
-| `shop_code` | string | 甲方口径店铺编码；无映射时为源编码/名称 |
 | `shop_name` | string | 甲方口径店铺名称 |
-| `storage_code` | string | 甲方口径仓库编码 |
-| `storage_name` | string | 甲方口径仓库名称 |
 | `product_code` | string | 产品编码 |
 | `product_name` | string | 产品名称 |
 | `quantity` | decimal | 出货数量 |
 | `gmv` | decimal | 该商品明细的成交金额（元） |
-| `updated_at` | datetime | 本平台最近入仓时间 |
 
 ## 6. 当前库存
 
@@ -135,7 +131,7 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/shipments?start_date=2026-08-19&end_da
 
 权限：`inventory:read`
 
-查询参数：`storage_code`、`product_code`、`page`、`page_size` 均为可选。库存无需日期参数，返回最近一次同步后的当前快照。
+查询参数：`product_code`、`page`、`page_size` 均为可选。库存无需日期参数，返回最近一次同步后的当前库存，并按产品汇总全部仓库。
 
 ```bash
 curl -sS 'https://ai.miwuj.cn/api/open/v1/inventory?page=1&page_size=100' \
@@ -146,17 +142,9 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/inventory?page=1&page_size=100' \
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `snapshot_at` | datetime | 参与汇总的最新库存快照时间 |
-| `storage_code` | string | 甲方口径仓库编码 |
-| `storage_name` | string | 甲方口径仓库名称 |
 | `product_code` | string | 产品编码 |
 | `product_name` | string | 产品名称 |
-| `inventory_quantity` | decimal | 库存总数量；多个源仓映射至同一目标仓时自动求和 |
-| `available_quantity` | decimal | 可用数量 |
-| `locked_quantity` | decimal | 锁定数量 |
-| `in_transit_quantity` | decimal | 在途数量 |
-| `defect_quantity` | decimal | 次品数量 |
-| `updated_at` | datetime | 本平台最近入仓时间 |
+| `inventory_quantity` | decimal | 库存总数量，已按产品汇总全部仓库 |
 
 ## 7. 入库明细
 
@@ -170,7 +158,6 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/inventory?page=1&page_size=100' \
 | --- | --- | --- |
 | `start_date` | 是 | 开始日期，`YYYY-MM-DD` |
 | `end_date` | 是 | 结束日期，`YYYY-MM-DD`，包含当天 |
-| `storage_code` | 否 | 映射后的仓库编码 |
 | `product_code` | 否 | 映射后的商品编码 |
 | `page` | 否 | 页码 |
 | `page_size` | 否 | 每页数量，最大 200 |
@@ -184,19 +171,10 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/inbounds?start_date=2026-08-19&end_dat
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `inbound_no` | string | 入库单号 |
 | `inbound_time` | datetime | 入库时间 |
-| `storage_code` | string | 甲方口径仓库编码 |
-| `storage_name` | string | 甲方口径仓库名称 |
-| `supplier_code` | string | 供应商编码 |
-| `supplier_name` | string | 供应商名称 |
 | `product_code` | string | 产品编码 |
 | `product_name` | string | 产品名称 |
 | `inbound_quantity` | decimal | 入库数量 |
-| `unit` | string | 单位 |
-| `unit_price` | decimal | 入库单价 |
-| `total_amount` | decimal | 入库金额 |
-| `updated_at` | datetime | 本平台最近入仓时间 |
 
 ## 8. 接入与验收清单
 

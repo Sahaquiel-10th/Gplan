@@ -183,17 +183,12 @@ router.get("/shipments", authenticate("shipments:read"), async (req, res, next) 
     const joinParams = [client.id, client.id, client.id, ...params];
     const [countRows] = await db.query<RowDataPacket[]>(`SELECT COUNT(*) total ${fromSql}`, joinParams);
     const [rows] = await db.query<RowDataPacket[]>(`SELECT
-        v.outbound_no,
         v.shipment_time,
-        ${shopExpr} AS shop_code,
         COALESCE(ms.target_name, v.shop_name) AS shop_name,
-        COALESCE(mw.target_code, v.storage_code) AS storage_code,
-        COALESCE(mw.target_name, v.storage_name, v.storage_code) AS storage_name,
         ${productExpr} AS product_code,
         COALESCE(mp.target_name, v.product_name) AS product_name,
         v.quantity,
-        v.gmv,
-        v.ingested_at AS updated_at
+        v.gmv
       ${fromSql}
       ORDER BY v.shipment_time, v.outbound_no, v.product_code
       LIMIT ? OFFSET ?`, [...joinParams, pageSize, offset]);
@@ -208,37 +203,24 @@ router.get("/inventory", authenticate("inventory:read"), async (req, res, next) 
     const db = requirePool();
     const client = req.dataApiClient!;
     const { page, pageSize, offset } = paging(req);
-    const storageCode = optionalFilter(req, "storage_code");
     const productCode = optionalFilter(req, "product_code");
-    const storageExpr = "COALESCE(mw.target_code, v.storage_code)";
     const productExpr = "COALESCE(mp.target_code, v.product_code)";
     const where = ["v.company_id = ?"];
     const filters: unknown[] = [client.companyId];
-    if (storageCode) { where.push(`${storageExpr} = ?`); filters.push(storageCode); }
     if (productCode) { where.push(`${productExpr} = ?`); filters.push(productCode); }
     const fromSql = `FROM vw_wln_inventory_v1 v
-      LEFT JOIN data_api_entity_mappings mw
-        ON mw.client_id = ? AND mw.entity_type = 'storage' AND mw.source_code = v.storage_code AND mw.enabled = 1
       LEFT JOIN data_api_entity_mappings mp
         ON mp.client_id = ? AND mp.entity_type = 'product' AND mp.source_code = v.product_code AND mp.enabled = 1
       WHERE ${where.join(" AND ")}
-      GROUP BY ${storageExpr}, COALESCE(mw.target_name, v.storage_code), ${productExpr}, COALESCE(mp.target_name, v.product_name)`;
-    const params = [client.id, client.id, ...filters];
+      GROUP BY ${productExpr}`;
+    const params = [client.id, ...filters];
     const [countRows] = await db.query<RowDataPacket[]>(`SELECT COUNT(*) total FROM (SELECT 1 ${fromSql}) grouped`, params);
     const [rows] = await db.query<RowDataPacket[]>(`SELECT
-        MAX(v.snapshot_at) AS snapshot_at,
-        ${storageExpr} AS storage_code,
-        COALESCE(mw.target_name, v.storage_code) AS storage_name,
         ${productExpr} AS product_code,
-        COALESCE(mp.target_name, v.product_name) AS product_name,
-        SUM(v.inventory_quantity) AS inventory_quantity,
-        SUM(v.available_quantity) AS available_quantity,
-        SUM(v.locked_quantity) AS locked_quantity,
-        SUM(v.in_transit_quantity) AS in_transit_quantity,
-        SUM(v.defect_quantity) AS defect_quantity,
-        MAX(v.ingested_at) AS updated_at
+        MAX(COALESCE(mp.target_name, v.product_name)) AS product_name,
+        SUM(v.inventory_quantity) AS inventory_quantity
       ${fromSql}
-      ORDER BY storage_code, product_code
+      ORDER BY product_code
       LIMIT ? OFFSET ?`, [...params, pageSize, offset]);
     sendPage(res, rows, Number(countRows[0]?.total || 0), page, pageSize);
     await recordRequest(client.id, res, "/inventory", rows.length, startedAt);
@@ -269,19 +251,10 @@ router.get("/inbounds", authenticate("inbounds:read"), async (req, res, next) =>
     const params = [client.id, client.id, ...filters];
     const [countRows] = await db.query<RowDataPacket[]>(`SELECT COUNT(*) total ${fromSql}`, params);
     const [rows] = await db.query<RowDataPacket[]>(`SELECT
-        v.inbound_no,
         v.inbound_time,
-        ${storageExpr} AS storage_code,
-        COALESCE(mw.target_name, v.storage_name, v.storage_code) AS storage_name,
-        v.supplier_code,
-        v.supplier_name,
         ${productExpr} AS product_code,
         COALESCE(mp.target_name, v.product_name) AS product_name,
-        v.inbound_quantity,
-        v.unit,
-        v.unit_price,
-        v.total_amount,
-        v.ingested_at AS updated_at
+        v.inbound_quantity
       ${fromSql}
       ORDER BY v.inbound_time, v.inbound_no, v.product_code
       LIMIT ? OFFSET ?`, [...params, pageSize, offset]);

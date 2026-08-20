@@ -1779,6 +1779,11 @@ app.get("/api/admin/data-platform/plan", ...admin, (_req, res) => {
   res.sendFile(path.join(root, "docs", "ai-data-query-platform-plan.md"));
 });
 
+app.get("/api/admin/data-platform/client-api-doc", ...admin, (_req, res) => {
+  res.type("text/markdown; charset=utf-8");
+  res.sendFile(path.join(root, "docs", "client-data-api-v1.md"));
+});
+
 app.get("/api/admin/ai-query/status", ...admin, asyncRoute(async (_req, res) => {
   res.json({ status: await hupunSkillStatus() });
 }));

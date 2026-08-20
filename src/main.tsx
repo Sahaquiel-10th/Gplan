@@ -2532,6 +2532,7 @@ function DataPlatformTab() {
           </div>
         </div>
       </section>
+      <ClientApiDocumentation />
       <section className="data-section">
         <div className="records-heading">
           <h3>接入留痕</h3>
@@ -2551,6 +2552,78 @@ function DataPlatformTab() {
         </div>
       </section>
     </div>
+  );
+}
+
+function ClientApiDocumentation() {
+  const [copied, setCopied] = useState(false);
+  const curlExample = `curl -sS 'https://ai.miwuj.cn/api/open/v1/shipments?start_date=2026-08-19&end_date=2026-08-19&page=1&page_size=100' \\
+  -H 'Authorization: Bearer <API_TOKEN>'`;
+
+  async function copyExample() {
+    await navigator.clipboard.writeText(curlExample);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  }
+
+  return (
+    <section className="data-section client-api-doc">
+      <div className="client-api-doc-heading">
+        <div>
+          <div className="client-api-title-row">
+            <h3>甲方经营数据开放 API</h3>
+            <span className="status-pill ready">V1 · 可联调</span>
+          </div>
+          <p>甲方服务端通过 HTTPS 定时拉取；平台鉴权后查询经营数据库、实时应用映射规则，再以分页 JSON 返回约定字段。</p>
+        </div>
+        <a className="secondary" href="/api/admin/data-platform/client-api-doc" target="_blank" rel="noreferrer">
+          <FileText size={15} />打开完整联调文档
+        </a>
+      </div>
+
+      <div className="client-api-basics">
+        <div><small>基础地址</small><code>https://ai.miwuj.cn/api/open/v1</code></div>
+        <div><small>鉴权</small><code>Authorization: Bearer &lt;API_TOKEN&gt;</code></div>
+        <div><small>格式</small><code>application/json · UTF-8</code></div>
+      </div>
+
+      <div className="client-api-flow" aria-label="API 数据流程">
+        <span>甲方发起 GET 请求</span><b>→</b><span>Token 鉴权</span><b>→</b><span>查询 RDS 并应用映射</span><b>→</b><span>返回分页 JSON</span>
+      </div>
+
+      <div className="client-api-endpoints">
+        <article>
+          <div><code>GET /shipments</code><span>出货明细</span></div>
+          <p><strong>必填：</strong><code>start_date</code>、<code>end_date</code></p>
+          <p><strong>返回：</strong>出货时间、店铺名称、产品编码、产品名称、数量、GMV</p>
+        </article>
+        <article>
+          <div><code>GET /inventory</code><span>当前库存</span></div>
+          <p><strong>日期：</strong>无需传入，读取最新库存</p>
+          <p><strong>返回：</strong>产品编码、产品名称、库存数量（全部仓库按产品汇总）</p>
+        </article>
+        <article>
+          <div><code>GET /inbounds</code><span>入库明细</span></div>
+          <p><strong>必填：</strong><code>start_date</code>、<code>end_date</code></p>
+          <p><strong>返回：</strong>入库时间、产品编码、产品名称、入库数量</p>
+        </article>
+      </div>
+
+      <details className="client-api-example">
+        <summary>请求示例与分页规则</summary>
+        <div className="code-sample-heading">
+          <span>出货接口请求示例</span>
+          <button className="secondary compact" onClick={copyExample}><Copy size={14} />{copied ? "已复制" : "复制"}</button>
+        </div>
+        <pre><code>{curlExample}</code></pre>
+        <p>默认每页 100 条，最大 200 条。持续请求下一页，直到响应中的 <code>pagination.has_more</code> 为 <code>false</code>。出货和入库单次最多查询 31 个自然日。</p>
+      </details>
+
+      <div className="client-api-policy">
+        <strong>映射与历史数据：</strong>
+        <span>内部原始数据永远保留合并前口径；甲方 API 每次查询都应用当前映射。因此店铺合并后，即使甲方重新查询以前的日期，也只会看到合并后的名称，不会同时拿到合并前和合并后两套口径。</span>
+      </div>
+    </section>
   );
 }
 
