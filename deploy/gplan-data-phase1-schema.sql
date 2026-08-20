@@ -252,6 +252,61 @@ LEFT JOIN gplan_data.ods_wln_products p
   ON p.company_id = i.company_id
  AND p.sku_code = i.sku_code;
 
+-- 甲方 API 客户端。Token 只保存 SHA-256 摘要，明文只在创建时展示一次。
+CREATE TABLE IF NOT EXISTS gplan_data.data_api_clients (
+  id VARCHAR(64) NOT NULL,
+  company_id VARCHAR(128) NOT NULL,
+  client_code VARCHAR(64) NOT NULL,
+  client_name VARCHAR(255) NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  scopes_json JSON NOT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  expires_at DATETIME(3) NULL,
+  last_used_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+    ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uniq_data_api_client_code (company_id, client_code),
+  UNIQUE KEY uniq_data_api_token_hash (token_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 甲方口径映射表：多条源编码可以映射为同一个甲方编码，从而实现店铺、仓库或商品合并。
+-- 未配置映射的编码自动按万里牛原编码和原名称返回，不会阻塞 API 联调。
+CREATE TABLE IF NOT EXISTS gplan_data.data_api_entity_mappings (
+  client_id VARCHAR(64) NOT NULL,
+  entity_type VARCHAR(32) NOT NULL,
+  source_code VARCHAR(255) NOT NULL,
+  source_name VARCHAR(255) NULL,
+  target_code VARCHAR(255) NOT NULL,
+  target_name VARCHAR(255) NOT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  metadata_json JSON NULL,
+  created_at DATETIME(3) NOT NULL,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+    ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (client_id, entity_type, source_code),
+  INDEX idx_data_api_mapping_target (client_id, entity_type, target_code),
+  CONSTRAINT fk_data_api_mapping_client
+    FOREIGN KEY (client_id) REFERENCES gplan_data.data_api_clients(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- API 调用留痕，不记录 Token 和业务返回内容。
+CREATE TABLE IF NOT EXISTS gplan_data.data_api_request_logs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  client_id VARCHAR(64) NOT NULL,
+  request_id VARCHAR(64) NOT NULL,
+  endpoint VARCHAR(128) NOT NULL,
+  http_status INT NOT NULL,
+  response_rows INT NOT NULL DEFAULT 0,
+  duration_ms INT NOT NULL DEFAULT 0,
+  requested_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (id),
+  INDEX idx_data_api_logs_client_time (client_id, requested_at),
+  INDEX idx_data_api_logs_request (request_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 执行后的结构核对。
 SELECT TABLE_TYPE, TABLE_NAME
 FROM information_schema.TABLES

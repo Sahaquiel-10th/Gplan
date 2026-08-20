@@ -18,6 +18,7 @@ import {
 } from "./bailian.js";
 import { DingTalkKnowledgeService } from "./dingtalk.js";
 import { dataPlatformStore, type DataPlatformStatus } from "./dataPlatformDb.js";
+import { clientDataApiRouter } from "./clientDataApi.js";
 import { missingWanliniuSyncConfig, wanliniuClient } from "./data-connectors/wanliniu/client.js";
 import { WanliniuSyncScheduler, wanliniuSyncService, type WanliniuSyncSummary } from "./data-connectors/wanliniu/sync.js";
 import { store } from "./db.js";
@@ -132,6 +133,8 @@ app.use((req, res, next) => {
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
+
+app.use("/api/open/v1", clientDataApiRouter);
 
 function handleDingTalkEvent(req: Request, res: Response) {
   const expectedToken = process.env.DINGTALK_EVENT_VERIFY_TOKEN?.trim();
