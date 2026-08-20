@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS gplan_data.ods_wln_sale_outbound (
   company_id VARCHAR(128) NOT NULL,
   outbound_uid VARCHAR(128) NOT NULL,
   outbound_no VARCHAR(128) NULL,
-  external_order_no VARCHAR(128) NULL,
+  external_order_no TEXT NULL,
   bill_date DATETIME(3) NULL,
   bill_type INT NULL,
   shop_id VARCHAR(128) NULL,

@@ -47,12 +47,15 @@ function parseCliJson(raw: string) {
   }
 }
 
-function unwrapRecords(payload: unknown): WanliniuRecord[] {
+export function unwrapRecords(payload: unknown): WanliniuRecord[] {
   if (Array.isArray(payload)) return payload.filter(isRecord);
   if (!isRecord(payload)) throw new Error("万里牛接口返回结构不是 JSON 对象");
   if (payload.code !== undefined && Number(payload.code) !== 0) {
     throw new Error(`万里牛接口返回错误：${JSON.stringify(payload)}`);
   }
+  // 部分万里牛分页接口在“本页无数据”时只返回 { code: 0 }，没有 data 字段。
+  // 这代表正常到达分页末尾，不应把增量同步标记为失败。
+  if (Number(payload.code) === 0 && payload.data === undefined) return [];
   if (!Array.isArray(payload.data)) {
     throw new Error(`万里牛接口缺少 data 数组：${JSON.stringify(payload).slice(0, 2000)}`);
   }

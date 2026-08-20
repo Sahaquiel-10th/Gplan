@@ -1649,7 +1649,7 @@ function MemoriesPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 }
 
 function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
-  const [tab, setTab] = useState<"settings" | "users" | "tokens" | "aiQuery" | "secure">("settings");
+  const [tab, setTab] = useState<"settings" | "users" | "tokens" | "aiQuery" | "data" | "secure">("settings");
   const [users, setUsers] = useState<User[]>([]);
   const [tokens, setTokens] = useState<IntegrationToken[]>([]);
   const [settings, setSettings] = useState<SystemSettings>({ safetyRules: "" });
@@ -1686,6 +1686,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={16} />账号</button>
           <button className={tab === "tokens" ? "active" : ""} onClick={() => setTab("tokens")}><KeyRound size={16} />外接机器人设置</button>
           <button className={tab === "aiQuery" ? "active" : ""} onClick={() => setTab("aiQuery")}><BarChart3 size={16} />AI问数测试</button>
+          <button className={tab === "data" ? "active" : ""} onClick={() => setTab("data")}><FileSpreadsheet size={16} />数据接入</button>
           <button className={`secure-tab ${tab === "secure" ? "active" : ""}`} onClick={() => setTab("secure")}><Lock size={16} />模型充值后台</button>
         </nav>
         {notice ? <div className="notice">{notice}</div> : null}
@@ -1694,6 +1695,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           {tab === "users" ? <UsersTab users={users} reload={load} /> : null}
           {tab === "tokens" ? <TokensTab tokens={tokens} reload={load} setNotice={setNotice} /> : null}
           {tab === "aiQuery" ? <AiQueryTestTab /> : null}
+          {tab === "data" ? <DataPlatformTab /> : null}
           {tab === "secure" ? <SecureAdminTab users={users} refreshModels={refreshModels} /> : null}
         </div>
       </section>
@@ -1942,7 +1944,7 @@ function SecureAdminTab({ users, refreshModels }: { users: User[]; refreshModels
   const [checking, setChecking] = useState(true);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [subtab, setSubtab] = useState<"models" | "records" | "data">("models");
+  const [subtab, setSubtab] = useState<"models" | "records">("models");
   const [models, setModels] = useState<Model[]>([]);
   const [records, setRecords] = useState<(Conversation & { user: User })[]>([]);
 
@@ -2000,15 +2002,10 @@ function SecureAdminTab({ users, refreshModels }: { users: User[]; refreshModels
       <nav className="subtabs">
         <button className={subtab === "models" ? "active" : ""} onClick={() => setSubtab("models")}><Bot size={16} />模型配置</button>
         <button className={subtab === "records" ? "active" : ""} onClick={() => setSubtab("records")}><BarChart3 size={16} />记录与用量</button>
-        <button className={subtab === "data" ? "active" : ""} onClick={() => setSubtab("data")}><FileSpreadsheet size={16} />数据接入</button>
       </nav>
       {subtab === "models" ? (
         <ModelsTab models={models} reload={async () => { await loadProtected(); await refreshModels(); }} />
-      ) : subtab === "records" ? (
-        <RecordsTab records={records} users={users} />
-      ) : (
-        <DataPlatformTab />
-      )}
+      ) : <RecordsTab records={records} users={users} />}
     </div>
   );
 }

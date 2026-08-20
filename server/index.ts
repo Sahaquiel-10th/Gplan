@@ -1754,7 +1754,7 @@ app.get("/api/admin/usage-stats/export", ...protectedAdmin, asyncRoute(async (re
   res.send(`\uFEFF${workbook}`);
 }));
 
-app.get("/api/admin/data-platform", ...protectedAdmin, asyncRoute(async (_req, res) => {
+app.get("/api/admin/data-platform", ...admin, asyncRoute(async (_req, res) => {
   const db = await store.read();
   const dataDatabase = dataPlatformStore.status();
   const connectors = db.dataConnectors.map((connector) => ({
@@ -1771,7 +1771,7 @@ app.get("/api/admin/data-platform", ...protectedAdmin, asyncRoute(async (_req, r
   });
 }));
 
-app.get("/api/admin/data-platform/plan", ...protectedAdmin, (_req, res) => {
+app.get("/api/admin/data-platform/plan", ...admin, (_req, res) => {
   res.type("text/markdown; charset=utf-8");
   res.sendFile(path.join(root, "docs", "ai-data-query-platform-plan.md"));
 });
@@ -1883,7 +1883,7 @@ app.post("/api/admin/ai-query/chat", ...admin, asyncRoute(async (req, res) => {
   });
 }));
 
-app.post("/api/admin/data-platform/connectors/:id/check", ...protectedAdmin, asyncRoute(async (req, res) => {
+app.post("/api/admin/data-platform/connectors/:id/check", ...admin, asyncRoute(async (req, res) => {
   const connectorId = req.params.id as DataConnectorId;
   if (connectorId === "wanliniu") {
     const startedAt = now();
@@ -1993,7 +1993,7 @@ app.post("/api/admin/data-platform/connectors/:id/check", ...protectedAdmin, asy
   res.json({ result });
 }));
 
-app.post("/api/admin/data-platform/connectors/:id/sync", ...protectedAdmin, asyncRoute(async (req, res) => {
+app.post("/api/admin/data-platform/connectors/:id/sync", ...admin, asyncRoute(async (req, res) => {
   const connectorId = req.params.id as DataConnectorId;
   if (connectorId === "wanliniu") {
     const missing = missingWanliniuSyncConfig();
