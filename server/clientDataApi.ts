@@ -10,6 +10,8 @@ type DataApiClient = {
   scopes: string[];
 };
 
+class ClientInputError extends Error {}
+
 declare global {
   namespace Express {
     interface Request {
@@ -40,7 +42,7 @@ const pool = configured ? mysql.createPool({
 const router = Router();
 
 function requirePool() {
-  if (!pool) throw new Error("甲方数据 API 尚未配置经营数据库");
+  if (!pool) throw new Error("数据服务暂不可用");
   return pool;
 }
 
@@ -58,7 +60,7 @@ function authenticate(scope?: string) {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const token = bearerToken(req);
-      if (!token) return res.status(401).json({ code: 40101, message: "缺少 Bearer Token" });
+      if (!token) return res.status(401).json({ code: 40101, message: "缺少 Bearer Token", request_id: res.locals.requestId });
       const db = requirePool();
       const [rows] = await db.execute<RowDataPacket[]>(
         `SELECT id, company_id, client_code, scopes_json
@@ -69,10 +71,10 @@ function authenticate(scope?: string) {
         [hashToken(token)]
       );
       const row = rows[0];
-      if (!row) return res.status(401).json({ code: 40102, message: "API Token 无效或已停用" });
+      if (!row) return res.status(401).json({ code: 40102, message: "API Token 无效或已停用", request_id: res.locals.requestId });
       const scopes = parseScopes(row.scopes_json);
       if (scope && !scopes.includes("*") && !scopes.includes(scope)) {
-        return res.status(403).json({ code: 40301, message: `Token 缺少权限：${scope}` });
+        return res.status(403).json({ code: 40301, message: "Token 没有当前接口的读取权限", request_id: res.locals.requestId });
       }
       req.dataApiClient = {
         id: String(row.id),
@@ -96,7 +98,7 @@ function positiveInteger(value: unknown, fallback: number, maximum: number) {
 
 function requiredDate(req: Request, name: "start_date" | "end_date") {
   const value = typeof req.query[name] === "string" ? req.query[name].trim() : "";
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error(`${name} 必须是 YYYY-MM-DD`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new ClientInputError(`${name} 必须是 YYYY-MM-DD`);
   return value;
 }
 
@@ -105,8 +107,8 @@ function dateRange(req: Request) {
   const endDate = requiredDate(req, "end_date");
   const start = new Date(`${startDate}T00:00:00+08:00`);
   const end = new Date(`${endDate}T00:00:00+08:00`);
-  if (end < start) throw new Error("end_date 不能早于 start_date");
-  if (end.getTime() - start.getTime() > 30 * 86_400_000) throw new Error("单次查询日期跨度不能超过 31 个自然日");
+  if (end < start) throw new ClientInputError("end_date 不能早于 start_date");
+  if (end.getTime() - start.getTime() > 30 * 86_400_000) throw new ClientInputError("单次查询日期跨度不能超过 31 个自然日");
   return { startDate, endDate };
 }
 
@@ -261,6 +263,24 @@ router.get("/inbounds", authenticate("inbounds:read"), async (req, res, next) =>
     sendPage(res, rows, Number(countRows[0]?.total || 0), page, pageSize);
     await recordRequest(client.id, res, "/inbounds", rows.length, startedAt);
   } catch (error) { next(error); }
+});
+
+router.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
+  const expected = error instanceof ClientInputError;
+  if (!expected) {
+    console.error(JSON.stringify({
+      event: "client_data_api_failed",
+      requestId: res.locals.requestId,
+      method: req.method,
+      path: req.path,
+      error: error.message
+    }));
+  }
+  res.status(expected ? 400 : 500).json({
+    code: expected ? 40001 : 50001,
+    message: expected ? error.message : "数据服务暂时不可用",
+    request_id: res.locals.requestId
+  });
 });
 
 export const clientDataApiRouter = router;

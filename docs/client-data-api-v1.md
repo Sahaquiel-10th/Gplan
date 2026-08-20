@@ -3,7 +3,6 @@
 ## 1. 接口说明
 
 - 生产地址：`https://ai.miwuj.cn/api/open/v1`
-- 数据来源：万里牛 ERP 同步至小象 G 计划经营数据仓库后的标准数据
 - 数据格式：UTF-8 JSON
 - 鉴权方式：HTTP Bearer Token
 - 当前版本：`v1`
@@ -17,26 +16,9 @@ Accept: application/json
 
 Token 仅在签发时展示一次，请存入服务端密钥管理系统，不要放入网页、App 或代码仓库。不同甲方使用独立 Token，可单独停用和轮换。
 
-## 2. 什么是映射表
+## 2. 通用约定
 
-映射表不是另一份需要反复复制的业务数据，而是一组“源口径 → 甲方口径”的实时转换规则。万里牛原始同步表保持不变，API 查询时关联映射规则后返回甲方认可的编码和名称。
-
-例如两个万里牛仓库需要按一个甲方仓库报送：
-
-| 万里牛源店铺 | 甲方目标店铺 |
-| --- | --- |
-| `SHOP_TB` 淘宝店 | `CUSTOMER_MAIN` 统一店铺 |
-| `SHOP_TM` 天猫店 | `CUSTOMER_MAIN` 统一店铺 |
-
-出货接口会把两条源店铺实时显示为“统一店铺”。库存接口按产品汇总全部仓库库存，不向甲方暴露仓库维度。调整映射规则不需要改接口地址、字段或历史 ODS 数据。未配置映射的店铺、商品默认返回万里牛原编码和名称，因此可以先联调，再逐步补齐口径。
-
-当前甲方接口使用 `shop`（店铺）和 `product`（商品）映射；内部数据仍保留原店铺、仓库和商品明细。
-
-映射规则采用“查询时实时生效”的方式：修改规则后，甲方再次查询历史日期时也会看到新口径；内部 ODS 原始数据不会被改写，因此平台内部仍可追溯合并前的真实店铺和仓库。如果未来业务要求“某日期之前按旧口径、之后按新口径”，需要另行启用带生效日期的版本化映射。
-
-## 3. 通用约定
-
-### 3.1 成功响应
+### 2.1 成功响应
 
 ```json
 {
@@ -62,16 +44,17 @@ Token 仅在签发时展示一次，请存入服务端密钥管理系统，不�
 - 金额单位为人民币元，数量可能包含小数。
 - 每个响应头和响应体均带有 `request_id`，联调排错时请提供该值。
 
-### 3.2 错误响应
+### 2.2 错误响应
 
 | HTTP 状态 | code | 含义 |
 | --- | ---: | --- |
 | 401 | `40101` | 未提供 Bearer Token |
 | 401 | `40102` | Token 无效、过期或已停用 |
 | 403 | `40301` | Token 没有当前资源的读取权限 |
-| 400 | — | 日期格式、范围或其他参数错误 |
+| 400 | `40001` | 日期格式、范围或其他参数错误 |
+| 500 | `50001` | 数据服务暂时不可用 |
 
-## 4. 连通性检测
+## 3. 连通性检测
 
 ### `GET /ping`
 
@@ -93,7 +76,7 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/ping' \
 }
 ```
 
-## 5. 出货明细
+## 4. 出货明细
 
 ### `GET /shipments`
 
@@ -105,7 +88,7 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/ping' \
 | --- | --- | --- |
 | `start_date` | 是 | 开始日期，`YYYY-MM-DD` |
 | `end_date` | 是 | 结束日期，`YYYY-MM-DD`，包含当天 |
-| `product_code` | 否 | 映射后的商品编码 |
+| `product_code` | 否 | 产品编码 |
 | `page` | 否 | 页码 |
 | `page_size` | 否 | 每页数量，最大 200 |
 
@@ -119,19 +102,19 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/shipments?start_date=2026-08-19&end_da
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `shipment_time` | datetime | 出货时间 |
-| `shop_name` | string | 甲方口径店铺名称 |
+| `shop_name` | string | 店铺名称 |
 | `product_code` | string | 产品编码 |
 | `product_name` | string | 产品名称 |
 | `quantity` | decimal | 出货数量 |
 | `gmv` | decimal | 该商品明细的成交金额（元） |
 
-## 6. 当前库存
+## 5. 当前库存
 
 ### `GET /inventory`
 
 权限：`inventory:read`
 
-查询参数：`product_code`、`page`、`page_size` 均为可选。库存无需日期参数，返回最近一次同步后的当前库存，并按产品汇总全部仓库。
+查询参数：`product_code`、`page`、`page_size` 均为可选。库存无需日期参数，返回当前库存。
 
 ```bash
 curl -sS 'https://ai.miwuj.cn/api/open/v1/inventory?page=1&page_size=100' \
@@ -144,9 +127,9 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/inventory?page=1&page_size=100' \
 | --- | --- | --- |
 | `product_code` | string | 产品编码 |
 | `product_name` | string | 产品名称 |
-| `inventory_quantity` | decimal | 库存总数量，已按产品汇总全部仓库 |
+| `inventory_quantity` | decimal | 库存数量 |
 
-## 7. 入库明细
+## 6. 入库明细
 
 ### `GET /inbounds`
 
@@ -158,7 +141,7 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/inventory?page=1&page_size=100' \
 | --- | --- | --- |
 | `start_date` | 是 | 开始日期，`YYYY-MM-DD` |
 | `end_date` | 是 | 结束日期，`YYYY-MM-DD`，包含当天 |
-| `product_code` | 否 | 映射后的商品编码 |
+| `product_code` | 否 | 产品编码 |
 | `page` | 否 | 页码 |
 | `page_size` | 否 | 每页数量，最大 200 |
 
@@ -176,14 +159,12 @@ curl -sS 'https://ai.miwuj.cn/api/open/v1/inbounds?start_date=2026-08-19&end_dat
 | `product_name` | string | 产品名称 |
 | `inbound_quantity` | decimal | 入库数量 |
 
-## 8. 接入与验收清单
+## 7. 接入与验收清单
 
 1. 小象 G 计划确认甲方系统名称、联系人，并签发独立 Token。
 2. 双方先调用 `/ping` 验证网络和鉴权。
 3. 分别读取出货、库存、入库各一页，核对字段类型。
-4. 甲方提供需要合并或改名的店铺、仓库、商品清单，小象 G 计划录入映射规则。
-5. 再次调用相同 API，核对映射后的编码、名称和库存汇总口径。
-6. 双方选定一个自然日，与万里牛后台数据核对数量、GMV 和入库数量。
-7. 验收后约定拉取频率、失败重试与 Token 轮换联系人。
+4. 双方选定一个自然日，核对出货数量、GMV、库存数量和入库数量。
+5. 验收后约定拉取频率、失败重试与 Token 轮换联系人。
 
 API 的 `/v1` 路径和本文字段在 V1 生命周期内保持兼容；新增可选字段不会影响既有字段。若发生不兼容变更，将发布新版本路径，不要求甲方临时更换现有 V1 接口。

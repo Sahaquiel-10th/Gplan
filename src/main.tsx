@@ -2455,7 +2455,7 @@ function DataPlatformTab() {
           <p>先把万里牛和企业支付宝接成受控数据能力：每个数据源、每次检测、每次同步都会留痕。</p>
         </div>
         <a className="secondary" href="/api/admin/data-platform/plan" target="_blank" rel="noreferrer">
-          <FileSpreadsheet size={15} />查看方案文档
+          <FileSpreadsheet size={15} />查看内部方案
         </a>
       </section>
       {notice ? <div className="import-notice">{notice}</div> : null}
@@ -2574,7 +2574,7 @@ function ClientApiDocumentation() {
             <h3>甲方经营数据开放 API</h3>
             <span className="status-pill ready">V1 · 可联调</span>
           </div>
-          <p>甲方服务端通过 HTTPS 定时拉取；平台鉴权后查询经营数据库、实时应用映射规则，再以分页 JSON 返回约定字段。</p>
+          <p>甲方服务端通过 HTTPS 定时拉取；平台鉴权后读取授权数据，再以分页 JSON 返回约定字段。</p>
         </div>
         <a className="secondary" href="/api/admin/data-platform/client-api-doc" target="_blank" rel="noreferrer">
           <FileText size={15} />打开完整联调文档
@@ -2588,7 +2588,7 @@ function ClientApiDocumentation() {
       </div>
 
       <div className="client-api-flow" aria-label="API 数据流程">
-        <span>甲方发起 GET 请求</span><b>→</b><span>Token 鉴权</span><b>→</b><span>查询 RDS 并应用映射</span><b>→</b><span>返回分页 JSON</span>
+        <span>甲方发起 GET 请求</span><b>→</b><span>Token 鉴权</span><b>→</b><span>读取授权数据</span><b>→</b><span>返回分页 JSON</span>
       </div>
 
       <div className="client-api-endpoints">
@@ -2600,7 +2600,7 @@ function ClientApiDocumentation() {
         <article>
           <div><code>GET /inventory</code><span>当前库存</span></div>
           <p><strong>日期：</strong>无需传入，读取最新库存</p>
-          <p><strong>返回：</strong>产品编码、产品名称、库存数量（全部仓库按产品汇总）</p>
+          <p><strong>返回：</strong>产品编码、产品名称、库存数量</p>
         </article>
         <article>
           <div><code>GET /inbounds</code><span>入库明细</span></div>
@@ -2620,8 +2620,8 @@ function ClientApiDocumentation() {
       </details>
 
       <div className="client-api-policy">
-        <strong>映射与历史数据：</strong>
-        <span>内部原始数据永远保留合并前口径；甲方 API 每次查询都应用当前映射。因此店铺合并后，即使甲方重新查询以前的日期，也只会看到合并后的名称，不会同时拿到合并前和合并后两套口径。</span>
+        <strong>数据更新约定：</strong>
+        <span>出货和入库建议按自然日重新拉取并覆盖对应日期，库存建议每次读取完整结果并替换上次快照，避免因重复追加产生重复数据。</span>
       </div>
     </section>
   );
