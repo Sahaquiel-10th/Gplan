@@ -181,7 +181,9 @@ export class WanliniuSyncService {
     const startedAt = started.toISOString();
     const cursor = await this.dataStore.getCursor(resource);
     const overlapMs = positiveNumber("WANLINIU_SYNC_OVERLAP_MINUTES", 10) * 60_000;
-    const lookbackMs = positiveNumber("WANLINIU_INITIAL_LOOKBACK_DAYS", 30) * 86_400_000;
+    // 首次在线同步只建立最近 1 天的游标；历史数据使用独立的按日分片回补任务，
+    // 避免高订单量客户在单次任务中触发最大分页数或长时间占用连接器。
+    const lookbackMs = positiveNumber("WANLINIU_INITIAL_LOOKBACK_DAYS", 1) * 86_400_000;
     let modifiedAfter: Date | undefined;
     let mode: SyncMode = "full";
 

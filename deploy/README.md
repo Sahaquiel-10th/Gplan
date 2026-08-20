@@ -86,7 +86,7 @@ DATA_MYSQL_CONNECTION_LIMIT=5
 WANLINIU_COMPANY_ID=company_default
 WANLINIU_SYNC_ENABLED=false
 WANLINIU_SYNC_INTERVAL_MINUTES=15
-WANLINIU_INITIAL_LOOKBACK_DAYS=30
+WANLINIU_INITIAL_LOOKBACK_DAYS=1
 WANLINIU_PRODUCT_INITIAL_START=2000-01-01T00:00:00+08:00
 WANLINIU_SYNC_OVERLAP_MINUTES=10
 ```
@@ -98,7 +98,7 @@ WANLINIU_SYNC_OVERLAP_MINUTES=10
 只配置在服务端环境变量中，不要写入前端或提交到仓库。
 
 经营数据同步通过“管理后台 -> 数据接入 -> 万里牛 ERP -> 手动同步”触发。第一次会全量同步
-店铺、商品和当前库存，并回溯最近 30 天的销售出库和采购入库；后续按修改时间增量同步。
+店铺、商品和当前库存，并先同步最近 1 天的销售出库和采购入库以建立增量游标；历史数据应使用按日分片回补任务，避免大数据量首次同步超时或超过分页上限。
 确认首轮数据和 `data_sync_runs` 留痕正常后，再把 `WANLINIU_SYNC_ENABLED` 改为 `true`
 并重启服务。同步游标只会在某类资源全部分页成功后推进，失败任务可安全重跑。
 
