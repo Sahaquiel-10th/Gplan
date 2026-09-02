@@ -49,7 +49,8 @@ export class WanliniuSyncService {
 
   constructor(
     private client: WanliniuClient = wanliniuClient,
-    private dataStore: DataPlatformStore = dataPlatformStore
+    private dataStore: DataPlatformStore = dataPlatformStore,
+    private now: () => Date = () => new Date()
   ) {}
 
   isRunning() {
@@ -88,6 +89,7 @@ export class WanliniuSyncService {
 
   private async syncResource(resource: DataResource, companyId: string): Promise<WanliniuResourceSummary> {
     const window = await this.syncWindow(resource);
+    const windows = splitSyncWindows(resource, window);
     const runId = uid("dsr");
     let recordsRead = 0;
     let recordsWritten = 0;
@@ -101,25 +103,30 @@ export class WanliniuSyncService {
 
     try {
       const maxPages = positiveInteger("WANLINIU_SYNC_MAX_PAGES", 5000);
-      for (let page = 1; page <= maxPages; page += 1) {
-        const { sourceRecords, written, hasMore } = await this.syncPage({
-          resource,
-          companyId,
-          runId,
-          page,
-          window
-        });
-        pages = page;
-        recordsRead += sourceRecords;
-        recordsWritten += written;
-        if (!hasMore) break;
-        if (page === maxPages) throw new Error(`${resource} 已达到最大分页数 ${maxPages}，为避免游标越过未同步数据，本次任务终止`);
+      let completedCursor = window.cursor;
+      for (const currentWindow of windows) {
+        for (let page = 1; page <= maxPages; page += 1) {
+          const { sourceRecords, written, hasMore } = await this.syncPage({
+            resource,
+            companyId,
+            runId,
+            page,
+            window: currentWindow
+          });
+          pages += 1;
+          recordsRead += sourceRecords;
+          recordsWritten += written;
+          if (!hasMore) break;
+          if (page === maxPages) throw new Error(`${resource} 单个时间分片已达到最大分页数 ${maxPages}，本次任务停在 ${currentWindow.modifiedAfter || "起点"}`);
+        }
+        completedCursor = currentWindow.cursor;
+        // 大数据量资源每完成一个时间分片就保存断点；中途失败时无需从头重扫。
+        await this.dataStore.saveCursor(resource, completedCursor);
       }
-      await this.dataStore.saveCursor(resource, window.cursor);
       await this.dataStore.completeSyncRun(runId, {
         recordsRead,
         recordsWritten,
-        cursor: window.cursor
+        cursor: completedCursor
       });
       return {
         resource,
@@ -177,7 +184,7 @@ export class WanliniuSyncService {
   }
 
   private async syncWindow(resource: DataResource): Promise<SyncWindow> {
-    const started = new Date();
+    const started = this.now();
     const startedAt = started.toISOString();
     const cursor = await this.dataStore.getCursor(resource);
     const overlapMs = positiveNumber("WANLINIU_SYNC_OVERLAP_MINUTES", 10) * 60_000;
@@ -228,14 +235,26 @@ export class WanliniuSyncScheduler {
 
   start() {
     if (!envBoolean("WANLINIU_SYNC_ENABLED", false) || this.timer) return;
-    const intervalMs = Math.max(1, positiveNumber("WANLINIU_SYNC_INTERVAL_MINUTES", 15)) * 60_000;
-    this.timer = setInterval(() => void this.tick(), intervalMs);
-    this.timer.unref();
+    this.scheduleNext();
   }
 
   stop() {
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+  }
+
+  private scheduleNext() {
+    const dailyTime = process.env.WANLINIU_SYNC_DAILY_TIME?.trim() || "03:00";
+    const delayMs = millisecondsUntilNextShanghaiTime(new Date(), dailyTime);
+    this.timer = setTimeout(async () => {
+      this.timer = undefined;
+      try {
+        await this.tick();
+      } finally {
+        if (envBoolean("WANLINIU_SYNC_ENABLED", false)) this.scheduleNext();
+      }
+    }, delayMs);
+    this.timer.unref();
   }
 
   private async tick() {
@@ -258,6 +277,47 @@ function pageResult(records: WanliniuRecord[], written: number, pageSize: number
 function requiredWindowStart(window: SyncWindow) {
   if (!window.modifiedAfter) throw new Error("该接口必须提供同步起始时间");
   return window.modifiedAfter;
+}
+
+function splitSyncWindows(resource: DataResource, window: SyncWindow) {
+  if (!window.modifiedAfter || (resource !== "sale_outbound" && resource !== "purchase_inbound")) {
+    return [window];
+  }
+  const start = parseApiDateInShanghai(window.modifiedAfter);
+  const end = parseApiDateInShanghai(window.modifiedBefore);
+  const sliceMs = Math.max(1, positiveNumber("WANLINIU_SYNC_SLICE_HOURS", 24)) * 3_600_000;
+  const result: SyncWindow[] = [];
+  let cursor = start;
+  while (cursor < end) {
+    const sliceEnd = new Date(Math.min(cursor.getTime() + sliceMs, end.getTime()));
+    const completedAt = sliceEnd.toISOString();
+    result.push({
+      ...window,
+      modifiedAfter: apiDate(cursor),
+      modifiedBefore: apiDate(sliceEnd),
+      cursor: { modifiedThrough: completedAt, completedAt, mode: window.mode }
+    });
+    cursor = sliceEnd;
+  }
+  return result.length ? result : [window];
+}
+
+function parseApiDateInShanghai(value: string) {
+  const parsed = new Date(`${value.replace(" ", "T")}+08:00`);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`万里牛同步时间无效：${value}`);
+  return parsed;
+}
+
+export function millisecondsUntilNextShanghaiTime(now: Date, dailyTime: string) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(dailyTime);
+  const hour = Number(match?.[1]);
+  const minute = Number(match?.[2]);
+  if (!match || hour > 23 || minute > 59) throw new Error(`WANLINIU_SYNC_DAILY_TIME 格式无效：${dailyTime}`);
+  const shanghaiOffsetMs = 8 * 3_600_000;
+  const local = new Date(now.getTime() + shanghaiOffsetMs);
+  let target = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(), hour, minute) - shanghaiOffsetMs;
+  if (target <= now.getTime()) target += 86_400_000;
+  return target - now.getTime();
 }
 
 function apiDate(value: Date) {

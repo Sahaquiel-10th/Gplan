@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { DataPlatformStore, DataResource, SyncCursor } from "../../dataPlatformDb.js";
 import type { WanliniuClient } from "./client.js";
-import { WanliniuSyncService } from "./sync.js";
+import { millisecondsUntilNextShanghaiTime, WanliniuSyncService } from "./sync.js";
 
 test("首轮五类资源全部成功后分别保存游标和运行留痕", async () => {
   const cursors = new Map<DataResource, SyncCursor>();
@@ -84,4 +84,58 @@ test("某资源失败时不推进该资源游标", async () => {
   await assert.rejects(() => new WanliniuSyncService(client, store).syncAll("company-test"), /模拟网络故障/);
   assert.equal(cursors.has("shops"), false);
   assert.equal(failed.length, 1);
+});
+
+test("销售出库跨多天时按24小时分片并逐段保存游标", async () => {
+  const cursors = new Map<DataResource, SyncCursor>([["sale_outbound", {
+    modifiedThrough: "2026-08-20T08:00:00.000Z",
+    completedAt: "2026-08-20T08:00:00.000Z",
+    mode: "incremental"
+  }]]);
+  const saleWindows: Array<[string, string]> = [];
+  const savedSaleCursors: string[] = [];
+  const client = {
+    listShops: async () => [],
+    listProducts: async () => [],
+    listInventory: async () => [],
+    listSaleOutbound: async (_page: number, _limit: number, start: string, end: string) => {
+      saleWindows.push([start, end]);
+      return [];
+    },
+    listPurchaseInbound: async () => []
+  } as unknown as WanliniuClient;
+  const store = {
+    status: () => ({ configured: true, ready: true, provider: "mysql", database: "test", message: "ok" }),
+    startSyncRun: async () => undefined,
+    completeSyncRun: async () => undefined,
+    failSyncRun: async () => assert.fail("不应失败"),
+    getCursor: async (resource: DataResource) => cursors.get(resource),
+    saveCursor: async (resource: DataResource, cursor: SyncCursor) => {
+      cursors.set(resource, cursor);
+      if (resource === "sale_outbound") savedSaleCursors.push(cursor.modifiedThrough);
+    },
+    upsertShops: async () => 0,
+    upsertProducts: async () => 0,
+    upsertInventory: async () => 0,
+    upsertOutbound: async () => 0,
+    upsertInbound: async () => 0
+  } as DataPlatformStore;
+
+  await new WanliniuSyncService(client, store, () => new Date("2026-08-23T08:00:00.000Z")).syncAll("company-test");
+  assert.equal(saleWindows.length, 4);
+  assert.deepEqual(saleWindows[0], ["2026-08-20 15:50:00", "2026-08-21 15:50:00"]);
+  assert.deepEqual(saleWindows.at(-1), ["2026-08-23 15:50:00", "2026-08-23 16:00:00"]);
+  assert.equal(savedSaleCursors.length, 4);
+  assert.equal(savedSaleCursors.at(-1), "2026-08-23T08:00:00.000Z");
+});
+
+test("固定调度始终对准下一个北京时间03:00", () => {
+  assert.equal(
+    millisecondsUntilNextShanghaiTime(new Date("2026-09-02T01:00:00.000Z"), "03:00"),
+    18 * 3_600_000
+  );
+  assert.equal(
+    millisecondsUntilNextShanghaiTime(new Date("2026-09-02T18:59:00.000Z"), "03:00"),
+    60_000
+  );
 });
