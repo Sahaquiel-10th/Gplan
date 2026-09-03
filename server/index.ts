@@ -1940,7 +1940,7 @@ async function generateManagementBrief(
   const result = await callModel(model, [
     {
       role: "system",
-      content: "你正在撰写企业内部经营管理简报。事实数据与提示词由系统提供。不得虚构数据、原因或行动结果；无法判断的内容明确标为待核查。使用简洁中文和 Markdown，先给结论，再给证据和行动建议。",
+      content: "你正在撰写企业内部经营管理简报。事实数据与提示词由系统提供。不得虚构数据、原因或行动结果；无法判断的内容明确标为待核查。使用简洁中文和 Markdown，先给结论，再给证据和行动建议。全文控制在 600 个汉字以内。",
       modelId: model.id,
       createdAt: now()
     },
@@ -1957,7 +1957,7 @@ async function generateManagementBrief(
       modelId: model.id,
       createdAt: now()
     }
-  ], db.settings.safetyRules, requestId);
+  ], db.settings.safetyRules, requestId, 900);
   const generatedAt = now();
   return store.mutate((state) => {
     const existing = state.managementBriefReports.find((item) =>

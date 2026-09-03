@@ -14,7 +14,7 @@ type ChatResult = {
 
 const requestTimeoutMs = numberEnv("MODEL_REQUEST_TIMEOUT_MS", 150000);
 const imageRequestTimeoutMs = numberEnv("IMAGE_REQUEST_TIMEOUT_MS", 180000);
-const maxOutputTokens = numberEnv("MODEL_MAX_OUTPUT_TOKENS", 3000);
+const defaultMaxOutputTokens = numberEnv("MODEL_MAX_OUTPUT_TOKENS", 3000);
 
 function numberEnv(name: string, fallback: number) {
   const value = Number(process.env[name]);
@@ -40,12 +40,14 @@ export async function callModel(
   model: ModelConfig,
   messages: Message[],
   safetyRules = "",
-  requestId = "unknown"
+  requestId = "unknown",
+  outputTokenLimit = defaultMaxOutputTokens
 ): Promise<ChatResult> {
+  const maxOutputTokens = Math.max(128, Math.min(defaultMaxOutputTokens, Math.round(outputTokenLimit)));
   if (!model.enabled) throw new Error("模型未启用");
   if (!model.apiKey) throw new Error("模型缺少 API Key");
   if (model.kind === "image") return callImageModel(model, messages, safetyRules, requestId);
-  if (model.protocol === "anthropic") return callAnthropicModel(model, messages, safetyRules, requestId);
+  if (model.protocol === "anthropic") return callAnthropicModel(model, messages, safetyRules, requestId, maxOutputTokens);
 
   const systemMessages: Message[] = [safetyRules, model.systemPrompt]
     .map((content) => content.trim())
@@ -149,7 +151,8 @@ async function callAnthropicModel(
   model: ModelConfig,
   messages: Message[],
   safetyRules = "",
-  requestId = "unknown"
+  requestId = "unknown",
+  maxOutputTokens = defaultMaxOutputTokens
 ): Promise<ChatResult> {
   const system = [safetyRules, model.systemPrompt].map((content) => content.trim()).filter(Boolean).join("\n\n");
   const endpoint = `${model.baseUrl.replace(/\/$/, "")}/messages`;
