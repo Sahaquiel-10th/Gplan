@@ -3122,6 +3122,7 @@ details {
   display: flex;
   align-items: flex-end;
   gap: 8px;
+  flex: 0 0 auto;
 }
 
 .dashboard-date-control label {
@@ -3183,17 +3184,28 @@ details {
   gap: 14px;
 }
 
+.dashboard-grid > *,
+.dashboard-section-title > div,
+.dashboard-brief-card > header > div {
+  min-width: 0;
+}
+
 .dashboard-panel,
 .dashboard-brief-section {
   padding: 16px;
 }
 
 .dashboard-trend-bars {
-  height: 190px;
+  min-height: 240px;
   margin-top: 16px;
   display: flex;
   align-items: flex-end;
   gap: 4px;
+}
+
+.trend-panel {
+  display: grid;
+  grid-template-rows: auto minmax(240px, 1fr);
 }
 
 .dashboard-trend-bars > div {
@@ -3280,6 +3292,7 @@ details {
   font-size: 13px;
   font-style: normal;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .dashboard-section-title,
@@ -3308,6 +3321,7 @@ details {
 .dashboard-section-title > span {
   color: #75808d;
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .dashboard-brief-list {
@@ -3320,8 +3334,17 @@ details {
   padding: 15px;
 }
 
-.dashboard-brief-card > header button {
+.dashboard-brief-card > header .primary {
+  width: auto;
+  min-width: max-content;
+  margin-top: 0;
   flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.dashboard-brief-card h4,
+.records-heading h3 {
+  word-break: keep-all;
 }
 
 .dashboard-report-content {
@@ -3416,11 +3439,18 @@ details {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.records-heading h3 {
+  min-width: 0;
+  margin: 0;
 }
 
 .records-heading span {
   color: #8a929d;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 details {
@@ -3594,6 +3624,11 @@ summary {
 
   .dashboard-date-control {
     margin-left: 0;
+  }
+
+  .dashboard-brief-card > header .primary {
+    width: 100%;
+    min-width: 0;
   }
 
   .data-layers,
