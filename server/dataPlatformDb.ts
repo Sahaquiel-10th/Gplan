@@ -347,15 +347,20 @@ class MySqlDataPlatformStore implements DataPlatformStore {
     );
     const [shopRows] = await this.pool.query<mysql.RowDataPacket[]>(
       `SELECT COALESCE(h.shop_name, h.shop_nick, '未命名店铺') name, COALESCE(h.shop_source, '') source,
-              COALESCE(SUM(h.gross_amount), 0) gmv, COUNT(*) orders,
-              COALESCE((SELECT SUM(i.quantity) FROM ods_wln_sale_outbound_items i
-                JOIN ods_wln_sale_outbound ih ON ih.company_id=i.company_id AND ih.outbound_uid=i.outbound_uid
-                WHERE ih.company_id=h.company_id AND ih.bill_date>=? AND ih.bill_date<?
-                  AND COALESCE(ih.shop_name, ih.shop_nick, '未命名店铺')=COALESCE(h.shop_name, h.shop_nick, '未命名店铺')), 0) units
+              COALESCE(SUM(h.gross_amount), 0) gmv, COUNT(*) orders
        FROM ods_wln_sale_outbound h WHERE h.company_id = ? AND h.bill_date >= ? AND h.bill_date < ?
        GROUP BY COALESCE(h.shop_name, h.shop_nick, '未命名店铺'), COALESCE(h.shop_source, '')
        ORDER BY gmv DESC LIMIT 20`,
-      [start, end, companyId, start, end]
+      [companyId, start, end]
+    );
+    const [shopUnitRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT COALESCE(h.shop_name, h.shop_nick, '未命名店铺') name, COALESCE(h.shop_source, '') source,
+              COALESCE(SUM(i.quantity), 0) units
+       FROM ods_wln_sale_outbound_items i
+       JOIN ods_wln_sale_outbound h ON h.company_id=i.company_id AND h.outbound_uid=i.outbound_uid
+       WHERE h.company_id=? AND h.bill_date>=? AND h.bill_date<?
+       GROUP BY COALESCE(h.shop_name, h.shop_nick, '未命名店铺'), COALESCE(h.shop_source, '')`,
+      [companyId, start, end]
     );
     const [productRows] = await this.pool.query<mysql.RowDataPacket[]>(
       `SELECT COALESCE(NULLIF(i.sku_code, ''), NULLIF(i.bar_code, ''), '未编码') sku_code,
@@ -406,6 +411,7 @@ class MySqlDataPlatformStore implements DataPlatformStore {
     const sales = salesRows[0] ?? {};
     const orders = number(sales.orders);
     const trend = trendRows.map((row) => ({ date: String(row.date), gmv: number(row.gmv), orders: number(row.orders) }));
+    const shopUnits = new Map(shopUnitRows.map((row) => [JSON.stringify([row.name, row.source]), number(row.units)]));
     const trendDays = 30;
     return {
       reportDate,
@@ -424,7 +430,13 @@ class MySqlDataPlatformStore implements DataPlatformStore {
         thirtyDayDailyAverageOrders: trend.reduce((sum, item) => sum + item.orders, 0) / trendDays
       },
       dailyTrend: trend,
-      shops: shopRows.map((row) => ({ name: String(row.name), source: String(row.source), gmv: number(row.gmv), orders: number(row.orders), units: number(row.units) })),
+      shops: shopRows.map((row) => ({
+        name: String(row.name),
+        source: String(row.source),
+        gmv: number(row.gmv),
+        orders: number(row.orders),
+        units: shopUnits.get(JSON.stringify([row.name, row.source])) || 0
+      })),
       products: productRows.map((row) => ({ skuCode: String(row.sku_code), name: String(row.name), gmv: number(row.gmv), units: number(row.units) })),
       inventory: inventoryRows.map((row) => ({ skuCode: String(row.sku_code), name: String(row.name), units: number(row.units), lockedUnits: number(row.locked_units), inTransitUnits: number(row.in_transit_units) })),
       dataStatus: statusRows.map((row) => ({ resource: String(row.resource), modifiedThrough: String(row.modified_through), lastSuccessAt: String(row.last_success_at) }))
