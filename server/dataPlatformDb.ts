@@ -329,26 +329,29 @@ class MySqlDataPlatformStore implements DataPlatformStore {
     const trendStart = `${addDays(reportDate, -29)} 00:00:00`;
     const [salesRows] = await this.pool.query<mysql.RowDataPacket[]>(
       `SELECT COALESCE(SUM(gross_amount), 0) gmv, COALESCE(SUM(actual_payment), 0) actual_payment, COUNT(*) orders
-       FROM ods_wln_sale_outbound WHERE company_id = ? AND bill_date >= ? AND bill_date < ?`,
+       FROM ods_wln_sale_outbound FORCE INDEX (idx_wln_sale_outbound_dashboard)
+       WHERE company_id = ? AND bill_date >= ? AND bill_date < ?`,
       [companyId, start, end]
     );
     const [unitRows] = await this.pool.query<mysql.RowDataPacket[]>(
       `SELECT COALESCE(SUM(i.quantity), 0) units
-       FROM ods_wln_sale_outbound_items i
-       JOIN ods_wln_sale_outbound h ON h.company_id = i.company_id AND h.outbound_uid = i.outbound_uid
+       FROM ods_wln_sale_outbound h FORCE INDEX (idx_wln_sale_outbound_bill_date)
+       STRAIGHT_JOIN ods_wln_sale_outbound_items i ON i.company_id = h.company_id AND i.outbound_uid = h.outbound_uid
        WHERE h.company_id = ? AND h.bill_date >= ? AND h.bill_date < ?`,
       [companyId, start, end]
     );
     const [trendRows] = await this.pool.query<mysql.RowDataPacket[]>(
       `SELECT DATE_FORMAT(bill_date, '%Y-%m-%d') date, COALESCE(SUM(gross_amount), 0) gmv, COUNT(*) orders
-       FROM ods_wln_sale_outbound WHERE company_id = ? AND bill_date >= ? AND bill_date < ?
+       FROM ods_wln_sale_outbound FORCE INDEX (idx_wln_sale_outbound_dashboard)
+       WHERE company_id = ? AND bill_date >= ? AND bill_date < ?
        GROUP BY DATE_FORMAT(bill_date, '%Y-%m-%d') ORDER BY DATE_FORMAT(bill_date, '%Y-%m-%d')`,
       [companyId, trendStart, end]
     );
     const [shopRows] = await this.pool.query<mysql.RowDataPacket[]>(
       `SELECT COALESCE(h.shop_name, h.shop_nick, '未命名店铺') name, COALESCE(h.shop_source, '') source,
               COALESCE(SUM(h.gross_amount), 0) gmv, COUNT(*) orders
-       FROM ods_wln_sale_outbound h WHERE h.company_id = ? AND h.bill_date >= ? AND h.bill_date < ?
+       FROM ods_wln_sale_outbound h FORCE INDEX (idx_wln_sale_outbound_bill_date)
+       WHERE h.company_id = ? AND h.bill_date >= ? AND h.bill_date < ?
        GROUP BY COALESCE(h.shop_name, h.shop_nick, '未命名店铺'), COALESCE(h.shop_source, '')
        ORDER BY gmv DESC LIMIT 20`,
       [companyId, start, end]
@@ -356,8 +359,8 @@ class MySqlDataPlatformStore implements DataPlatformStore {
     const [shopUnitRows] = await this.pool.query<mysql.RowDataPacket[]>(
       `SELECT COALESCE(h.shop_name, h.shop_nick, '未命名店铺') name, COALESCE(h.shop_source, '') source,
               COALESCE(SUM(i.quantity), 0) units
-       FROM ods_wln_sale_outbound_items i
-       JOIN ods_wln_sale_outbound h ON h.company_id=i.company_id AND h.outbound_uid=i.outbound_uid
+       FROM ods_wln_sale_outbound h FORCE INDEX (idx_wln_sale_outbound_bill_date)
+       STRAIGHT_JOIN ods_wln_sale_outbound_items i ON i.company_id=h.company_id AND i.outbound_uid=h.outbound_uid
        WHERE h.company_id=? AND h.bill_date>=? AND h.bill_date<?
        GROUP BY COALESCE(h.shop_name, h.shop_nick, '未命名店铺'), COALESCE(h.shop_source, '')`,
       [companyId, start, end]
@@ -366,8 +369,8 @@ class MySqlDataPlatformStore implements DataPlatformStore {
       `SELECT COALESCE(NULLIF(i.sku_code, ''), NULLIF(i.bar_code, ''), '未编码') sku_code,
               COALESCE(NULLIF(i.goods_name, ''), NULLIF(i.sku_name, ''), '未命名商品') name,
               COALESCE(SUM(i.gross_amount), 0) gmv, COALESCE(SUM(i.quantity), 0) units
-       FROM ods_wln_sale_outbound_items i
-       JOIN ods_wln_sale_outbound h ON h.company_id=i.company_id AND h.outbound_uid=i.outbound_uid
+       FROM ods_wln_sale_outbound h FORCE INDEX (idx_wln_sale_outbound_bill_date)
+       STRAIGHT_JOIN ods_wln_sale_outbound_items i ON i.company_id=h.company_id AND i.outbound_uid=h.outbound_uid
        WHERE h.company_id=? AND h.bill_date>=? AND h.bill_date<?
        GROUP BY COALESCE(NULLIF(i.sku_code, ''), NULLIF(i.bar_code, ''), '未编码'),
                 COALESCE(NULLIF(i.goods_name, ''), NULLIF(i.sku_name, ''), '未命名商品')

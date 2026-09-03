@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS gplan_data.ods_wln_sale_outbound (
   PRIMARY KEY (company_id, outbound_uid),
   UNIQUE KEY uniq_wln_sale_outbound_no (company_id, outbound_no),
   INDEX idx_wln_sale_outbound_bill_date (company_id, bill_date),
+  INDEX idx_wln_sale_outbound_dashboard (company_id, bill_date, gross_amount, actual_payment),
   INDEX idx_wln_sale_outbound_shop_date (company_id, shop_nick, bill_date),
   INDEX idx_wln_sale_outbound_modified (company_id, source_modified_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
