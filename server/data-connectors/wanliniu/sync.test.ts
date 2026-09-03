@@ -39,7 +39,8 @@ test("首轮五类资源全部成功后分别保存游标和运行留痕", async
     upsertProducts: async (_companyId, records) => records.length,
     upsertInventory: async (_companyId, records) => records.length,
     upsertOutbound: async (_companyId, records) => records.length,
-    upsertInbound: async (_companyId, records) => records.length
+    upsertInbound: async (_companyId, records) => records.length,
+    getManagementDashboardFacts: async () => { throw new Error("unused"); }
   };
 
   const summary = await new WanliniuSyncService(client, store).syncAll("company-test");
@@ -78,7 +79,8 @@ test("某资源失败时不推进该资源游标", async () => {
     upsertProducts: async () => 0,
     upsertInventory: async () => 0,
     upsertOutbound: async () => 0,
-    upsertInbound: async () => 0
+    upsertInbound: async () => 0,
+    getManagementDashboardFacts: async () => { throw new Error("unused"); }
   } as DataPlatformStore;
 
   await assert.rejects(() => new WanliniuSyncService(client, store).syncAll("company-test"), /模拟网络故障/);
@@ -118,7 +120,8 @@ test("销售出库跨多天时按24小时分片并逐段保存游标", async () 
     upsertProducts: async () => 0,
     upsertInventory: async () => 0,
     upsertOutbound: async () => 0,
-    upsertInbound: async () => 0
+    upsertInbound: async () => 0,
+    getManagementDashboardFacts: async () => { throw new Error("unused"); }
   } as DataPlatformStore;
 
   await new WanliniuSyncService(client, store, () => new Date("2026-08-23T08:00:00.000Z")).syncAll("company-test");

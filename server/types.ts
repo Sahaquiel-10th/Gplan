@@ -256,6 +256,19 @@ export type ManagementBriefDefinition = {
   updatedAt: string;
 };
 
+export type ManagementBriefReport = {
+  id: string;
+  companyId: string;
+  definitionId: string;
+  definitionName: string;
+  reportDate: string;
+  content: string;
+  modelId: string;
+  generatedBy: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Database = {
   users: User[];
   models: ModelConfig[];
@@ -273,6 +286,7 @@ export type Database = {
   dataSyncLogs: DataSyncLog[];
   dataMetricDefinitions: DataMetricDefinition[];
   managementBriefDefinitions: ManagementBriefDefinition[];
+  managementBriefReports: ManagementBriefReport[];
   knowledgeSyncDocuments: KnowledgeSyncDocument[];
   settings: SystemSettings;
 };

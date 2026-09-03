@@ -57,12 +57,7 @@ const memoryService = new BailianMemoryService();
 const memorySyncScheduler = new MemorySyncScheduler(store, memoryService);
 const wanliniuSyncScheduler = new WanliniuSyncScheduler(
   wanliniuSyncService,
-  async () => {
-    const configured = process.env.WANLINIU_COMPANY_ID?.trim();
-    if (configured) return configured;
-    const db = await store.read();
-    return db.users.find((user) => user.role === "admin")?.companyId || db.users[0]?.companyId;
-  },
+  resolveWanliniuCompanyId,
   async (result) => {
     await finishWanliniuSyncLog({
       logId: uid("dsl"),
@@ -70,6 +65,16 @@ const wanliniuSyncScheduler = new WanliniuSyncScheduler(
       summary: result.summary,
       error: result.error
     });
+    if (result.summary) {
+      const companyId = await resolveWanliniuCompanyId();
+      if (companyId) {
+        try {
+          await generateEnabledManagementBriefs(companyId, yesterdayInShanghai(), "system", "scheduled-management-brief");
+        } catch (error) {
+          console.error("定时经营简报生成失败", error);
+        }
+      }
+    }
   }
 );
 const userMemoryMaxItems = 10;
@@ -1850,6 +1855,175 @@ app.delete("/api/admin/management-briefs/:id", ...admin, asyncRoute(async (req, 
     db.managementBriefDefinitions.splice(index, 1);
   });
   res.json({ ok: true });
+}));
+
+function dashboardDate(value: unknown) {
+  const date = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
+  if (!date || Number.isNaN(new Date(`${date}T12:00:00+08:00`).getTime())) throw new Error("日期格式无效");
+  return date;
+}
+
+function yesterdayInShanghai() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const today = `${parts.find((item) => item.type === "year")?.value}-${parts.find((item) => item.type === "month")?.value}-${parts.find((item) => item.type === "day")?.value}`;
+  const value = new Date(`${today}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() - 1);
+  return value.toISOString().slice(0, 10);
+}
+
+async function resolveWanliniuCompanyId() {
+  const configured = process.env.WANLINIU_COMPANY_ID?.trim();
+  if (configured) return configured;
+  const db = await store.read();
+  return db.users.find((user) => user.role === "admin")?.companyId || db.users[0]?.companyId;
+}
+
+function managementFactsForDimensions(
+  facts: Awaited<ReturnType<typeof dataPlatformStore.getManagementDashboardFacts>>,
+  dimensionIds: string[]
+) {
+  const selected = new Set(dimensionIds);
+  return {
+    reportDate: facts.reportDate,
+    ...(selected.has("sales_overview") ? { salesOverview: facts.summary } : {}),
+    ...(selected.has("shop_performance") ? { shopPerformance: facts.shops } : {}),
+    ...(selected.has("product_performance") ? { productPerformance: facts.products } : {}),
+    ...(selected.has("inventory_status") ? {
+      inventorySummary: {
+        units: facts.summary.inventoryUnits,
+        skus: facts.summary.inventorySkus,
+        lockedUnits: facts.summary.lockedInventoryUnits
+      },
+      inventoryStatus: facts.inventory
+    } : {}),
+    ...(selected.has("purchase_inbound") ? {
+      purchaseInbound: {
+        orders: facts.summary.inboundOrders,
+        units: facts.summary.inboundUnits
+      }
+    } : {}),
+    ...(selected.has("period_comparison") ? {
+      periodComparison: {
+        dailyTrend: facts.dailyTrend,
+        thirtyDayDailyAverageGmv: facts.summary.thirtyDayDailyAverageGmv,
+        thirtyDayDailyAverageOrders: facts.summary.thirtyDayDailyAverageOrders
+      }
+    } : {}),
+    ...(selected.has("data_quality") ? { dataStatus: facts.dataStatus } : {})
+  };
+}
+
+async function generateManagementBrief(
+  companyId: string,
+  definitionId: string,
+  reportDate: string,
+  generatedBy: string,
+  requestId: string
+) {
+  const db = await store.read();
+  const definition = db.managementBriefDefinitions.find((item) =>
+    item.id === definitionId && item.companyId === companyId && item.enabled
+  );
+  if (!definition) throw new Error("简报不存在或已停用");
+  const model = db.models.find((item) => item.enabled && item.isDefault && item.kind === "chat" && item.apiKey)
+    || db.models.find((item) => item.enabled && item.kind === "chat" && item.apiKey);
+  if (!model) throw new Error("没有可用的聊天模型，请先配置默认模型");
+  const facts = await dataPlatformStore.getManagementDashboardFacts(companyId, reportDate);
+  const dimensions = definition.dimensionIds
+    .map((id) => managementBriefDimensions.find((item) => item.id === id))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const result = await callModel(model, [
+    {
+      role: "system",
+      content: "你正在撰写企业内部经营管理简报。事实数据与提示词由系统提供。不得虚构数据、原因或行动结果；无法判断的内容明确标为待核查。使用简洁中文和 Markdown，先给结论，再给证据和行动建议。",
+      modelId: model.id,
+      createdAt: now()
+    },
+    {
+      role: "user",
+      content: [
+        `简报名称：${definition.name}`,
+        `简报日期：${reportDate}`,
+        `选定数据维度：${dimensions.map((item) => item.name).join("、")}`,
+        `管理员要求：${definition.prompt}`,
+        "以下为系统查询得到的经营事实（JSON）：",
+        JSON.stringify(managementFactsForDimensions(facts, definition.dimensionIds))
+      ].join("\n\n"),
+      modelId: model.id,
+      createdAt: now()
+    }
+  ], db.settings.safetyRules, requestId);
+  const generatedAt = now();
+  return store.mutate((state) => {
+    const existing = state.managementBriefReports.find((item) =>
+      item.companyId === companyId && item.definitionId === definition.id && item.reportDate === reportDate
+    );
+    if (existing) {
+      existing.definitionName = definition.name;
+      existing.content = result.content;
+      existing.modelId = model.id;
+      existing.generatedBy = generatedBy;
+      existing.updatedAt = generatedAt;
+      return existing;
+    }
+    const created = {
+      id: uid("report"),
+      companyId,
+      definitionId: definition.id,
+      definitionName: definition.name,
+      reportDate,
+      content: result.content,
+      modelId: model.id,
+      generatedBy,
+      createdAt: generatedAt,
+      updatedAt: generatedAt
+    };
+    state.managementBriefReports.push(created);
+    return created;
+  });
+}
+
+async function generateEnabledManagementBriefs(companyId: string, reportDate: string, generatedBy: string, requestId: string) {
+  const db = await store.read();
+  const definitions = db.managementBriefDefinitions.filter((item) => item.companyId === companyId && item.enabled);
+  for (const definition of definitions) {
+    await generateManagementBrief(companyId, definition.id, reportDate, generatedBy, `${requestId}:${definition.id}`);
+  }
+}
+
+app.get("/api/admin/management-dashboard", ...admin, asyncRoute(async (req, res) => {
+  const reportDate = dashboardDate(req.query.date || yesterdayInShanghai());
+  const [db, facts] = await Promise.all([
+    store.read(),
+    dataPlatformStore.getManagementDashboardFacts(req.user!.companyId, reportDate)
+  ]);
+  const definitions = db.managementBriefDefinitions.filter((item) =>
+    item.companyId === req.user!.companyId && item.enabled
+  );
+  const reports = db.managementBriefReports
+    .filter((item) => item.companyId === req.user!.companyId)
+    .slice()
+    .sort((a, b) => b.reportDate.localeCompare(a.reportDate) || b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, 180);
+  res.json({ reportDate, facts, definitions, reports });
+}));
+
+app.post("/api/admin/management-dashboard/generate", ...admin, asyncRoute(async (req, res) => {
+  const reportDate = dashboardDate(req.body.reportDate || yesterdayInShanghai());
+  const definitionId = requiredString(req.body.definitionId, "简报");
+  const report = await generateManagementBrief(
+    req.user!.companyId,
+    definitionId,
+    reportDate,
+    req.user!.id,
+    `${res.locals.requestId}:management-brief`
+  );
+  res.status(201).json({ report });
 }));
 
 app.get("/api/admin/ai-query/status", ...admin, asyncRoute(async (_req, res) => {

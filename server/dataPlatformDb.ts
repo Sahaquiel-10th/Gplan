@@ -31,6 +31,29 @@ export type SyncRunResult = {
   cursor?: SyncCursor;
 };
 
+export type ManagementDashboardFacts = {
+  reportDate: string;
+  summary: {
+    gmv: number;
+    actualPayment: number;
+    orders: number;
+    units: number;
+    averageOrderValue: number;
+    inboundOrders: number;
+    inboundUnits: number;
+    inventoryUnits: number;
+    inventorySkus: number;
+    lockedInventoryUnits: number;
+    thirtyDayDailyAverageGmv: number;
+    thirtyDayDailyAverageOrders: number;
+  };
+  dailyTrend: Array<{ date: string; gmv: number; orders: number }>;
+  shops: Array<{ name: string; source: string; gmv: number; orders: number; units: number }>;
+  products: Array<{ skuCode: string; name: string; gmv: number; units: number }>;
+  inventory: Array<{ skuCode: string; name: string; units: number; lockedUnits: number; inTransitUnits: number }>;
+  dataStatus: Array<{ resource: string; modifiedThrough: string; lastSuccessAt: string }>;
+};
+
 export interface DataPlatformStore {
   status(): DataPlatformStatus;
   startSyncRun(run: { id: string; resource: DataResource; mode: SyncMode; startedAt: string }): Promise<void>;
@@ -43,6 +66,7 @@ export interface DataPlatformStore {
   upsertInventory(companyId: string, records: NormalizedInventory[], runId: string): Promise<number>;
   upsertOutbound(companyId: string, records: NormalizedOutbound[], runId: string): Promise<number>;
   upsertInbound(companyId: string, records: NormalizedInbound[], runId: string): Promise<number>;
+  getManagementDashboardFacts(companyId: string, reportDate: string): Promise<ManagementDashboardFacts>;
 }
 
 class UnavailableDataPlatformStore implements DataPlatformStore {
@@ -59,6 +83,7 @@ class UnavailableDataPlatformStore implements DataPlatformStore {
   async upsertInventory() { return this.unavailable(); }
   async upsertOutbound() { return this.unavailable(); }
   async upsertInbound() { return this.unavailable(); }
+  async getManagementDashboardFacts() { return this.unavailable(); }
 }
 
 class MySqlDataPlatformStore implements DataPlatformStore {
@@ -297,6 +322,114 @@ class MySqlDataPlatformStore implements DataPlatformStore {
       connection.release();
     }
   }
+
+  async getManagementDashboardFacts(companyId: string, reportDate: string): Promise<ManagementDashboardFacts> {
+    const start = `${reportDate} 00:00:00`;
+    const end = `${nextDate(reportDate)} 00:00:00`;
+    const trendStart = `${addDays(reportDate, -29)} 00:00:00`;
+    const [salesRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT COALESCE(SUM(gross_amount), 0) gmv, COALESCE(SUM(actual_payment), 0) actual_payment, COUNT(*) orders
+       FROM ods_wln_sale_outbound WHERE company_id = ? AND bill_date >= ? AND bill_date < ?`,
+      [companyId, start, end]
+    );
+    const [unitRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT COALESCE(SUM(i.quantity), 0) units
+       FROM ods_wln_sale_outbound_items i
+       JOIN ods_wln_sale_outbound h ON h.company_id = i.company_id AND h.outbound_uid = i.outbound_uid
+       WHERE h.company_id = ? AND h.bill_date >= ? AND h.bill_date < ?`,
+      [companyId, start, end]
+    );
+    const [trendRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT DATE_FORMAT(bill_date, '%Y-%m-%d') date, COALESCE(SUM(gross_amount), 0) gmv, COUNT(*) orders
+       FROM ods_wln_sale_outbound WHERE company_id = ? AND bill_date >= ? AND bill_date < ?
+       GROUP BY DATE(bill_date) ORDER BY DATE(bill_date)`,
+      [companyId, trendStart, end]
+    );
+    const [shopRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT COALESCE(h.shop_name, h.shop_nick, '未命名店铺') name, COALESCE(h.shop_source, '') source,
+              COALESCE(SUM(h.gross_amount), 0) gmv, COUNT(*) orders,
+              COALESCE((SELECT SUM(i.quantity) FROM ods_wln_sale_outbound_items i
+                JOIN ods_wln_sale_outbound ih ON ih.company_id=i.company_id AND ih.outbound_uid=i.outbound_uid
+                WHERE ih.company_id=h.company_id AND ih.bill_date>=? AND ih.bill_date<?
+                  AND COALESCE(ih.shop_name, ih.shop_nick, '未命名店铺')=COALESCE(h.shop_name, h.shop_nick, '未命名店铺')), 0) units
+       FROM ods_wln_sale_outbound h WHERE h.company_id = ? AND h.bill_date >= ? AND h.bill_date < ?
+       GROUP BY COALESCE(h.shop_name, h.shop_nick, '未命名店铺'), COALESCE(h.shop_source, '')
+       ORDER BY gmv DESC LIMIT 20`,
+      [start, end, companyId, start, end]
+    );
+    const [productRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT COALESCE(NULLIF(i.sku_code, ''), NULLIF(i.bar_code, ''), '未编码') sku_code,
+              COALESCE(NULLIF(i.goods_name, ''), NULLIF(i.sku_name, ''), '未命名商品') name,
+              COALESCE(SUM(i.gross_amount), 0) gmv, COALESCE(SUM(i.quantity), 0) units
+       FROM ods_wln_sale_outbound_items i
+       JOIN ods_wln_sale_outbound h ON h.company_id=i.company_id AND h.outbound_uid=i.outbound_uid
+       WHERE h.company_id=? AND h.bill_date>=? AND h.bill_date<?
+       GROUP BY COALESCE(NULLIF(i.sku_code, ''), NULLIF(i.bar_code, ''), '未编码'),
+                COALESCE(NULLIF(i.goods_name, ''), NULLIF(i.sku_name, ''), '未命名商品')
+       ORDER BY gmv DESC LIMIT 20`,
+      [companyId, start, end]
+    );
+    const [inventoryRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT i.sku_code, COALESCE(NULLIF(p.goods_name, ''), NULLIF(i.spec_name, ''), i.sku_code) name,
+              COALESCE(SUM(i.actual_quantity), 0) units, COALESCE(SUM(i.locked_quantity), 0) locked_units,
+              COALESCE(SUM(i.in_transit_quantity), 0) in_transit_units
+       FROM ods_wln_inventory_current i
+       LEFT JOIN ods_wln_products p ON p.company_id=i.company_id AND p.sku_code=i.sku_code
+       WHERE i.company_id=? GROUP BY i.sku_code, COALESCE(NULLIF(p.goods_name, ''), NULLIF(i.spec_name, ''), i.sku_code)
+       ORDER BY units DESC LIMIT 20`,
+      [companyId]
+    );
+    const [inventorySummaryRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT COALESCE(SUM(actual_quantity), 0) units, COUNT(DISTINCT sku_code) skus,
+              COALESCE(SUM(locked_quantity), 0) locked_units
+       FROM ods_wln_inventory_current WHERE company_id=?`,
+      [companyId]
+    );
+    const [inboundRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT COUNT(*) inbound_orders FROM ods_wln_purchase_inbound
+       WHERE company_id=? AND bill_date>=? AND bill_date<?`,
+      [companyId, start, end]
+    );
+    const [inboundUnitRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT COALESCE(SUM(i.quantity), 0) inbound_units
+       FROM ods_wln_purchase_inbound_items i
+       JOIN ods_wln_purchase_inbound h ON h.company_id=i.company_id AND h.stock_code=i.stock_code
+       WHERE h.company_id=? AND h.bill_date>=? AND h.bill_date<?`,
+      [companyId, start, end]
+    );
+    const [statusRows] = await this.pool.query<mysql.RowDataPacket[]>(
+      `SELECT resource_name resource,
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(cursor_json, '$.modifiedThrough')), '') modified_through,
+              DATE_FORMAT(last_success_at, '%Y-%m-%d %H:%i:%s') last_success_at
+       FROM data_sync_cursors WHERE connector_id='wanliniu' ORDER BY resource_name`
+    );
+    const sales = salesRows[0] ?? {};
+    const orders = number(sales.orders);
+    const trend = trendRows.map((row) => ({ date: String(row.date), gmv: number(row.gmv), orders: number(row.orders) }));
+    const trendDays = 30;
+    return {
+      reportDate,
+      summary: {
+        gmv: number(sales.gmv),
+        actualPayment: number(sales.actual_payment),
+        orders,
+        units: number(unitRows[0]?.units),
+        averageOrderValue: orders ? number(sales.gmv) / orders : 0,
+        inboundOrders: number(inboundRows[0]?.inbound_orders),
+        inboundUnits: number(inboundUnitRows[0]?.inbound_units),
+        inventoryUnits: number(inventorySummaryRows[0]?.units),
+        inventorySkus: number(inventorySummaryRows[0]?.skus),
+        lockedInventoryUnits: number(inventorySummaryRows[0]?.locked_units),
+        thirtyDayDailyAverageGmv: trend.reduce((sum, item) => sum + item.gmv, 0) / trendDays,
+        thirtyDayDailyAverageOrders: trend.reduce((sum, item) => sum + item.orders, 0) / trendDays
+      },
+      dailyTrend: trend,
+      shops: shopRows.map((row) => ({ name: String(row.name), source: String(row.source), gmv: number(row.gmv), orders: number(row.orders), units: number(row.units) })),
+      products: productRows.map((row) => ({ skuCode: String(row.sku_code), name: String(row.name), gmv: number(row.gmv), units: number(row.units) })),
+      inventory: inventoryRows.map((row) => ({ skuCode: String(row.sku_code), name: String(row.name), units: number(row.units), lockedUnits: number(row.locked_units), inTransitUnits: number(row.in_transit_units) })),
+      dataStatus: statusRows.map((row) => ({ resource: String(row.resource), modifiedThrough: String(row.modified_through), lastSuccessAt: String(row.last_success_at) }))
+    };
+  }
 }
 
 type SqlExecutor = mysql.Pool | mysql.PoolConnection;
@@ -338,6 +471,21 @@ function chunks<T>(items: T[], size: number) {
 
 function json(value: unknown) {
   return value === undefined ? null : JSON.stringify(value);
+}
+
+function number(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function addDays(date: string, days: number) {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function nextDate(date: string) {
+  return addDays(date, 1);
 }
 
 async function createDataPlatformStore(): Promise<DataPlatformStore> {

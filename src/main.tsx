@@ -25,6 +25,7 @@ import {
   LockKeyhole,
   Lock,
   LogOut,
+  LayoutDashboard,
   Menu,
   MessageSquare,
   Paperclip,
@@ -233,6 +234,40 @@ type ManagementBriefDefinition = {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+type ManagementBriefReport = {
+  id: string;
+  definitionId: string;
+  definitionName: string;
+  reportDate: string;
+  content: string;
+  modelId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ManagementDashboardFacts = {
+  reportDate: string;
+  summary: {
+    gmv: number;
+    actualPayment: number;
+    orders: number;
+    units: number;
+    averageOrderValue: number;
+    inboundOrders: number;
+    inboundUnits: number;
+    inventoryUnits: number;
+    inventorySkus: number;
+    lockedInventoryUnits: number;
+    thirtyDayDailyAverageGmv: number;
+    thirtyDayDailyAverageOrders: number;
+  };
+  dailyTrend: Array<{ date: string; gmv: number; orders: number }>;
+  shops: Array<{ name: string; source: string; gmv: number; orders: number; units: number }>;
+  products: Array<{ skuCode: string; name: string; gmv: number; units: number }>;
+  inventory: Array<{ skuCode: string; name: string; units: number; lockedUnits: number; inTransitUnits: number }>;
+  dataStatus: Array<{ resource: string; modifiedThrough: string; lastSuccessAt: string }>;
 };
 
 type HupunSkillStatus = {
@@ -448,7 +483,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "memories" | "account" | "agents" | "agentEditor">("chat");
+  const [view, setView] = useState<"chat" | "admin" | "dashboard" | "memories" | "account" | "agents" | "agentEditor">("chat");
   const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -890,10 +925,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           智能体
         </button>
         {user.role === "admin" ? (
-          <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => { setView("admin"); setSidebarOpen(false); }}>
-            <Settings size={16} />
-            管理后台
-          </button>
+          <>
+            <button className={`nav-item ${view === "dashboard" ? "active" : ""}`} onClick={() => { setView("dashboard"); setActiveId(""); setSidebarOpen(false); }}>
+              <LayoutDashboard size={16} />
+              经营驾驶舱
+            </button>
+            <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => { setView("admin"); setSidebarOpen(false); }}>
+              <Settings size={16} />
+              管理后台
+            </button>
+          </>
         ) : null}
         <div className="sidebar-navigation">
         <div className="conversation-list">
@@ -1013,6 +1054,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       {view === "admin" && user.role === "admin" ? (
         <AdminPanel refreshModels={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
+      ) : view === "dashboard" && user.role === "admin" ? (
+        <ManagementDashboardPage onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "memories" ? (
         <MemoriesPage onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "agents" ? (
@@ -1663,6 +1706,168 @@ function MemoriesPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           <h2>暂无个人记忆</h2>
         </div>
       )}
+    </section>
+  );
+}
+
+function currencyText(value: number) {
+  return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY", maximumFractionDigits: 2 }).format(value);
+}
+
+function comparisonText(value: number, baseline: number) {
+  if (!baseline) return "暂无 30 天基准";
+  const percent = (value - baseline) / baseline * 100;
+  return `${percent >= 0 ? "高于" : "低于"}近 30 天日均 ${Math.abs(percent).toFixed(1)}%`;
+}
+
+function ManagementDashboardPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
+  const [date, setDate] = useState(dateDaysAgo(1));
+  const [facts, setFacts] = useState<ManagementDashboardFacts | null>(null);
+  const [definitions, setDefinitions] = useState<ManagementBriefDefinition[]>([]);
+  const [reports, setReports] = useState<ManagementBriefReport[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function load(targetDate = date) {
+    setLoading(true);
+    setNotice("");
+    try {
+      const result = await api<{
+        reportDate: string;
+        facts: ManagementDashboardFacts;
+        definitions: ManagementBriefDefinition[];
+        reports: ManagementBriefReport[];
+      }>(`/api/admin/management-dashboard?date=${encodeURIComponent(targetDate)}`);
+      setDate(result.reportDate);
+      setFacts(result.facts);
+      setDefinitions(result.definitions);
+      setReports(result.reports);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "驾驶舱加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load().catch(() => undefined);
+  }, []);
+
+  async function generate(definition: ManagementBriefDefinition) {
+    setGenerating(definition.id);
+    setNotice(`正在生成“${definition.name}”，AI 会先阅读所选经营数据...`);
+    try {
+      const result = await api<{ report: ManagementBriefReport }>("/api/admin/management-dashboard/generate", {
+        method: "POST",
+        body: JSON.stringify({ reportDate: date, definitionId: definition.id })
+      });
+      setReports((current) => [result.report, ...current.filter((item) => item.id !== result.report.id)]);
+      setNotice(`“${definition.name}”已生成。`);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "简报生成失败");
+    } finally {
+      setGenerating("");
+    }
+  }
+
+  const currentReports = new Map(
+    reports.filter((item) => item.reportDate === date).map((item) => [item.definitionId, item])
+  );
+  const historicalReports = reports.filter((item) => item.reportDate !== date).slice(0, 12);
+  const maxTrendGmv = Math.max(1, ...(facts?.dailyTrend.map((item) => item.gmv) ?? []));
+
+  return (
+    <section className="admin-page dashboard-page">
+      <header className="admin-header dashboard-header">
+        <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
+        <div>
+          <h2>经营驾驶舱</h2>
+          <p>从经营数据出发，给管理层结论、证据和下一步动作。</p>
+        </div>
+        <div className="dashboard-date-control">
+          <label>经营日期<input type="date" max={dateDaysAgo(1)} value={date} onChange={(event) => { setDate(event.target.value); load(event.target.value).catch(() => undefined); }} /></label>
+          <button className="secondary" disabled={loading} onClick={() => load()}><RotateCcw size={15} />刷新</button>
+        </div>
+      </header>
+      <div className="admin-body dashboard-body">
+        {notice ? <div className="import-notice">{notice}</div> : null}
+        {loading && !facts ? <div className="secure-loading">正在汇总经营数据...</div> : facts ? (
+          <>
+            <section className="dashboard-kpis">
+              <article><small>GMV</small><strong>{currencyText(facts.summary.gmv)}</strong><span>{comparisonText(facts.summary.gmv, facts.summary.thirtyDayDailyAverageGmv)}</span></article>
+              <article><small>出库订单</small><strong>{numberText(facts.summary.orders)}</strong><span>{comparisonText(facts.summary.orders, facts.summary.thirtyDayDailyAverageOrders)}</span></article>
+              <article><small>销售件数</small><strong>{numberText(facts.summary.units)}</strong><span>实付 {currencyText(facts.summary.actualPayment)}</span></article>
+              <article><small>客单价</small><strong>{currencyText(facts.summary.averageOrderValue)}</strong><span>GMV ÷ 出库订单数</span></article>
+              <article><small>当前库存</small><strong>{numberText(facts.summary.inventoryUnits)}</strong><span>{numberText(facts.summary.inventorySkus)} 个 SKU · 锁定 {numberText(facts.summary.lockedInventoryUnits)}</span></article>
+              <article><small>采购入库</small><strong>{numberText(facts.summary.inboundUnits)}</strong><span>{numberText(facts.summary.inboundOrders)} 张入库单</span></article>
+            </section>
+
+            <section className="dashboard-grid">
+              <article className="dashboard-panel trend-panel">
+                <div className="records-heading"><h3>近 30 天 GMV 趋势</h3><span>{facts.dailyTrend.length} 天有数据</span></div>
+                <div className="dashboard-trend-bars">
+                  {facts.dailyTrend.map((item) => (
+                    <div key={item.date} title={`${item.date} · ${currencyText(item.gmv)}`}>
+                      <i style={{ height: `${Math.max(3, item.gmv / maxTrendGmv * 100)}%` }} />
+                      <small>{item.date.slice(5)}</small>
+                    </div>
+                  ))}
+                </div>
+              </article>
+              <article className="dashboard-panel">
+                <div className="records-heading"><h3>店铺表现</h3><span>按 GMV 排序</span></div>
+                <div className="dashboard-ranking">
+                  {facts.shops.slice(0, 8).map((shop, index) => (
+                    <div key={`${shop.name}-${shop.source}`}><b>{index + 1}</b><span><strong>{shop.name}</strong><small>{shop.source || "未知平台"} · {numberText(shop.orders)} 单 · {numberText(shop.units)} 件</small></span><em>{currencyText(shop.gmv)}</em></div>
+                  ))}
+                </div>
+              </article>
+              <article className="dashboard-panel">
+                <div className="records-heading"><h3>商品销售排行</h3><span>前 8 项</span></div>
+                <div className="dashboard-ranking product-ranking">
+                  {facts.products.slice(0, 8).map((product, index) => (
+                    <div key={`${product.skuCode}-${product.name}`}><b>{index + 1}</b><span><strong>{product.name}</strong><small>{product.skuCode} · {numberText(product.units)} 件</small></span><em>{currencyText(product.gmv)}</em></div>
+                  ))}
+                </div>
+              </article>
+              <article className="dashboard-panel">
+                <div className="records-heading"><h3>库存量较高商品</h3><span>前 8 项</span></div>
+                <div className="dashboard-ranking product-ranking">
+                  {facts.inventory.slice(0, 8).map((product, index) => (
+                    <div key={`${product.skuCode}-${product.name}`}><b>{index + 1}</b><span><strong>{product.name}</strong><small>{product.skuCode} · 锁定 {numberText(product.lockedUnits)} · 在途 {numberText(product.inTransitUnits)}</small></span><em>{numberText(product.units)}</em></div>
+                  ))}
+                </div>
+              </article>
+            </section>
+
+            <section className="dashboard-brief-section">
+              <div className="dashboard-section-title">
+                <div><h3>AI 管理简报</h3><p>每份简报只使用它在后台选定的数据维度和提示词。</p></div>
+                <span>{date}</span>
+              </div>
+              <div className="dashboard-brief-list">
+                {definitions.map((definition) => {
+                  const report = currentReports.get(definition.id);
+                  return (
+                    <article className="dashboard-brief-card" key={definition.id}>
+                      <header><div><h4>{definition.name}</h4><p>{definition.description}</p></div><button className="primary" disabled={Boolean(generating)} onClick={() => generate(definition)}><Brain size={15} />{generating === definition.id ? "生成中..." : report ? "重新生成" : "生成简报"}</button></header>
+                      {report ? <><div className="dashboard-report-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{report.content}</ReactMarkdown></div><small>生成于 {dateTime(report.updatedAt)}</small></> : <div className="dashboard-empty-brief">这一天还没有生成这份简报。</div>}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+
+            {historicalReports.length ? (
+              <section className="dashboard-panel dashboard-history">
+                <div className="records-heading"><h3>最近生成记录</h3><span>{historicalReports.length} 条</span></div>
+                {historicalReports.map((report) => <button key={report.id} onClick={() => { setDate(report.reportDate); load(report.reportDate).catch(() => undefined); }}><span><strong>{report.definitionName}</strong><small>{dateTime(report.updatedAt)}</small></span><b>{report.reportDate}</b><ChevronRight size={15} /></button>)}
+              </section>
+            ) : null}
+          </>
+        ) : null}
+      </div>
     </section>
   );
 }
