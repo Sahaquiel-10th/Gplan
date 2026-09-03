@@ -342,7 +342,7 @@ class MySqlDataPlatformStore implements DataPlatformStore {
     const [trendRows] = await this.pool.query<mysql.RowDataPacket[]>(
       `SELECT DATE_FORMAT(bill_date, '%Y-%m-%d') date, COALESCE(SUM(gross_amount), 0) gmv, COUNT(*) orders
        FROM ods_wln_sale_outbound WHERE company_id = ? AND bill_date >= ? AND bill_date < ?
-       GROUP BY DATE(bill_date) ORDER BY DATE(bill_date)`,
+       GROUP BY DATE_FORMAT(bill_date, '%Y-%m-%d') ORDER BY DATE_FORMAT(bill_date, '%Y-%m-%d')`,
       [companyId, trendStart, end]
     );
     const [shopRows] = await this.pool.query<mysql.RowDataPacket[]>(
