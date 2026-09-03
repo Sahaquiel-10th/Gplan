@@ -2875,6 +2875,240 @@ details {
   margin-right: 6px;
 }
 
+.brief-settings-entry,
+.brief-settings-header,
+.brief-definition-head,
+.brief-title-row,
+.brief-card-actions,
+.brief-form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.brief-settings-entry small,
+.brief-settings-header small {
+  color: #8a94a3;
+}
+
+.brief-settings-entry h3,
+.brief-settings-entry p,
+.brief-settings-header h2,
+.brief-settings-header p {
+  margin: 0;
+}
+
+.brief-settings-entry h3 {
+  margin-top: 3px;
+}
+
+.brief-settings-entry p,
+.brief-settings-header p {
+  margin-top: 6px;
+  color: #6b7480;
+  line-height: 1.55;
+}
+
+.brief-settings-header {
+  justify-content: flex-start;
+  align-items: flex-start;
+  padding: 5px 0 2px;
+}
+
+.brief-settings-header > button {
+  flex: 0 0 auto;
+}
+
+.brief-dimension-catalog .records-heading > div p,
+.management-brief-settings .data-section > .records-heading > div p {
+  margin: 5px 0 0;
+  color: #75808d;
+  font-size: 13px;
+}
+
+.brief-dimension-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.brief-dimension-grid article {
+  padding: 13px;
+  border: 1px solid #e1e6ec;
+  border-radius: 7px;
+  background: #fafbfd;
+}
+
+.brief-dimension-grid h4,
+.brief-dimension-grid p,
+.brief-definition-card h4,
+.brief-definition-card p {
+  margin: 0;
+}
+
+.brief-dimension-grid p,
+.brief-definition-card > .brief-definition-head p {
+  margin-top: 6px;
+  color: #6f7a88;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.brief-dimension-grid small {
+  margin-top: 8px;
+  display: block;
+  color: #8b95a2;
+  line-height: 1.55;
+}
+
+.brief-definition-list {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.brief-definition-card {
+  padding: 14px;
+  border: 1px solid #dfe5ec;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.brief-definition-card.disabled {
+  opacity: 0.66;
+  background: #f8f9fb;
+}
+
+.brief-definition-head {
+  align-items: flex-start;
+}
+
+.brief-title-row {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.brief-card-actions {
+  flex: 0 0 auto;
+}
+
+.brief-dimension-chips {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.brief-dimension-chips span {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #edf5ff;
+  color: #336fa9;
+  font-size: 12px;
+}
+
+.brief-definition-card details {
+  margin-top: 11px;
+  border-top: 1px solid #edf0f3;
+  padding-top: 10px;
+}
+
+.brief-definition-card summary {
+  cursor: pointer;
+  color: #596777;
+  font-size: 13px;
+}
+
+.brief-prompt-preview {
+  margin-top: 9px !important;
+  padding: 11px;
+  border-radius: 6px;
+  background: #f6f8fa;
+  color: #4d5967;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.brief-create-form {
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid #cfe0f3;
+  border-radius: 8px;
+  background: #f8fbff;
+  display: grid;
+  gap: 14px;
+}
+
+.brief-create-form > label,
+.brief-create-form fieldset {
+  display: grid;
+  gap: 7px;
+  color: #3f4c5a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.brief-create-form input,
+.brief-create-form textarea,
+.brief-create-form select {
+  width: 100%;
+  border: 1px solid #ccd5df;
+  border-radius: 6px;
+  background: #fff;
+  color: #20262d;
+  font: inherit;
+}
+
+.brief-create-form input,
+.brief-create-form select {
+  min-height: 40px;
+  padding: 0 10px;
+}
+
+.brief-create-form textarea {
+  padding: 10px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.brief-create-form fieldset {
+  margin: 0;
+  padding: 13px;
+  border: 1px solid #dce4ed;
+  border-radius: 7px;
+}
+
+.brief-create-form fieldset > p {
+  margin: 0;
+  color: #7b8693;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.brief-dimension-selectors {
+  display: grid;
+  gap: 8px;
+}
+
+.brief-dimension-selector {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px 40px;
+  gap: 7px;
+}
+
+.brief-dimension-selector .icon-only {
+  min-width: 40px;
+  padding: 0;
+  justify-content: center;
+}
+
+.brief-form-footer span {
+  color: #8a94a3;
+  font-size: 12px;
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -3071,7 +3305,10 @@ summary {
   .data-platform-hero,
   .client-api-doc-heading,
   .connector-card-head,
-  .connector-actions {
+  .connector-actions,
+  .brief-settings-entry,
+  .brief-definition-head,
+  .brief-settings-header {
     align-items: stretch;
     flex-direction: column;
   }
@@ -3079,6 +3316,7 @@ summary {
   .data-layers,
   .client-api-basics,
   .client-api-endpoints,
+  .brief-dimension-grid,
   .metric-tool-list article,
   .data-log-list article {
     grid-template-columns: 1fr;

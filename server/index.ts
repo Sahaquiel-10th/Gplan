@@ -34,6 +34,7 @@ import {
 import { asyncRoute, auth, requireRole } from "./middleware.js";
 import { MemorySyncScheduler } from "./memorySync.js";
 import { callModel } from "./modelGateway.js";
+import { managementBriefDimensions, normalizeManagementBriefDimensionIds } from "./managementBriefs.js";
 import { buildPromptContext } from "./promptContext.js";
 import { isSupportedAttachment, parseAttachment, safeAttachmentExtension } from "./attachmentParser.js";
 import { createPlainToken, hashPassword, hashToken, signToken, uid, verifyPassword, verifyToken } from "./security.js";
@@ -1783,6 +1784,73 @@ app.get("/api/admin/data-platform/client-api-doc", ...admin, (_req, res) => {
   res.type("text/markdown; charset=utf-8");
   res.sendFile(path.join(root, "docs", "client-data-api-v1.md"));
 });
+
+app.get("/api/admin/management-briefs", ...admin, asyncRoute(async (req, res) => {
+  const db = await store.read();
+  const definitions = db.managementBriefDefinitions
+    .filter((item) => item.companyId === req.user!.companyId)
+    .slice()
+    .sort((a, b) => Number(a.source === "custom") - Number(b.source === "custom") || a.createdAt.localeCompare(b.createdAt));
+  res.json({ dimensions: managementBriefDimensions, definitions });
+}));
+
+app.post("/api/admin/management-briefs", ...admin, asyncRoute(async (req, res) => {
+  const name = requiredString(req.body.name, "简报名称").slice(0, 40);
+  const description = typeof req.body.description === "string" ? req.body.description.trim().slice(0, 160) : "";
+  const prompt = requiredString(req.body.prompt, "提示词");
+  if (prompt.length < 20) throw new Error("提示词至少需要 20 个字符");
+  if (prompt.length > 4000) throw new Error("提示词不能超过 4000 个字符");
+  const dimensionIds = normalizeManagementBriefDimensionIds(req.body.dimensionIds);
+  const createdAt = now();
+  const definition = await store.mutate((db) => {
+    if (db.managementBriefDefinitions.some((item) =>
+      item.companyId === req.user!.companyId && item.name.toLowerCase() === name.toLowerCase()
+    )) throw new Error("简报名称已存在");
+    const created = {
+      id: uid("brief"),
+      companyId: req.user!.companyId,
+      source: "custom" as const,
+      name,
+      description,
+      dimensionIds,
+      prompt,
+      enabled: true,
+      createdBy: req.user!.id,
+      createdAt,
+      updatedAt: createdAt
+    };
+    db.managementBriefDefinitions.push(created);
+    return created;
+  });
+  res.status(201).json({ definition });
+}));
+
+app.patch("/api/admin/management-briefs/:id/enabled", ...admin, asyncRoute(async (req, res) => {
+  if (typeof req.body.enabled !== "boolean") throw new Error("启用状态无效");
+  const definition = await store.mutate((db) => {
+    const target = db.managementBriefDefinitions.find((item) =>
+      item.id === req.params.id && item.companyId === req.user!.companyId
+    );
+    if (!target) throw new Error("简报不存在");
+    if (target.source === "system") throw new Error("系统预设简报不能修改");
+    target.enabled = req.body.enabled;
+    target.updatedAt = now();
+    return target;
+  });
+  res.json({ definition });
+}));
+
+app.delete("/api/admin/management-briefs/:id", ...admin, asyncRoute(async (req, res) => {
+  await store.mutate((db) => {
+    const index = db.managementBriefDefinitions.findIndex((item) =>
+      item.id === req.params.id && item.companyId === req.user!.companyId
+    );
+    if (index < 0) throw new Error("简报不存在");
+    if (db.managementBriefDefinitions[index].source === "system") throw new Error("系统预设简报不能删除");
+    db.managementBriefDefinitions.splice(index, 1);
+  });
+  res.json({ ok: true });
+}));
 
 app.get("/api/admin/ai-query/status", ...admin, asyncRoute(async (_req, res) => {
   res.json({ status: await hupunSkillStatus() });

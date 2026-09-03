@@ -233,6 +233,29 @@ export type DataMetricDefinition = {
   status: "planned" | "available";
 };
 
+export type ManagementBriefDimensionId =
+  | "sales_overview"
+  | "shop_performance"
+  | "product_performance"
+  | "inventory_status"
+  | "purchase_inbound"
+  | "period_comparison"
+  | "data_quality";
+
+export type ManagementBriefDefinition = {
+  id: string;
+  companyId: string;
+  source: "system" | "custom";
+  name: string;
+  description: string;
+  dimensionIds: ManagementBriefDimensionId[];
+  prompt: string;
+  enabled: boolean;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Database = {
   users: User[];
   models: ModelConfig[];
@@ -249,6 +272,7 @@ export type Database = {
   dataConnectors: DataConnector[];
   dataSyncLogs: DataSyncLog[];
   dataMetricDefinitions: DataMetricDefinition[];
+  managementBriefDefinitions: ManagementBriefDefinition[];
   knowledgeSyncDocuments: KnowledgeSyncDocument[];
   settings: SystemSettings;
 };

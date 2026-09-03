@@ -216,6 +216,25 @@ type DataPlatformState = {
   }>;
 };
 
+type ManagementBriefDimension = {
+  id: string;
+  name: string;
+  description: string;
+  fields: string[];
+};
+
+type ManagementBriefDefinition = {
+  id: string;
+  source: "system" | "custom";
+  name: string;
+  description: string;
+  dimensionIds: string[];
+  prompt: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type HupunSkillStatus = {
   ready: boolean;
   hasCredentials: boolean;
@@ -2393,6 +2412,7 @@ function dateDaysAgo(days: number) {
 }
 
 function DataPlatformTab() {
+  const [page, setPage] = useState<"overview" | "briefs">("overview");
   const [state, setState] = useState<DataPlatformState | null>(null);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
@@ -2444,6 +2464,8 @@ function DataPlatformTab() {
     if (connector.sourceType === "payment") return "支付资金数据";
     return "企业知识库内容";
   };
+
+  if (page === "briefs") return <ManagementBriefSettings onBack={() => setPage("overview")} />;
 
   if (loading && !state) return <div className="secure-loading">正在加载数据接入状态...</div>;
 
@@ -2532,6 +2554,16 @@ function DataPlatformTab() {
           </div>
         </div>
       </section>
+      <section className="data-section brief-settings-entry">
+        <div>
+          <small>内部管理配置</small>
+          <h3>管理简报</h3>
+          <p>查看系统预设，或新增企业自己的 AI 简报。这里的配置不会展示给普通员工。</p>
+        </div>
+        <button className="secondary" onClick={() => setPage("briefs")}>
+          <Settings size={16} />进入简报设置<ChevronRight size={16} />
+        </button>
+      </section>
       <ClientApiDocumentation />
       <section className="data-section">
         <div className="records-heading">
@@ -2549,6 +2581,220 @@ function DataPlatformTab() {
               <time>{dateTime(log.finishedAt)}</time>
             </article>
           )) : <p className="hint">暂无留痕。点击“检测凭证”或“手动同步”后会生成记录。</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ManagementBriefSettings({ onBack }: { onBack: () => void }) {
+  const [dimensions, setDimensions] = useState<ManagementBriefDimension[]>([]);
+  const [definitions, setDefinitions] = useState<ManagementBriefDefinition[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [selectedDimensions, setSelectedDimensions] = useState<string[]>([""]);
+
+  async function load() {
+    const result = await api<{ dimensions: ManagementBriefDimension[]; definitions: ManagementBriefDefinition[] }>(
+      "/api/admin/management-briefs"
+    );
+    setDimensions(result.dimensions);
+    setDefinitions(result.definitions);
+  }
+
+  useEffect(() => {
+    load()
+      .catch((err) => setNotice(err instanceof Error ? err.message : "简报设置加载失败"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const dimensionById = new Map(dimensions.map((item) => [item.id, item]));
+  const systemDefinitions = definitions.filter((item) => item.source === "system");
+  const customDefinitions = definitions.filter((item) => item.source === "custom");
+
+  function updateDimension(index: number, value: string) {
+    setSelectedDimensions((current) => current.map((item, itemIndex) => itemIndex === index ? value : item));
+  }
+
+  function addDimensionRow() {
+    if (selectedDimensions.length >= dimensions.length) return;
+    setSelectedDimensions((current) => [...current, ""]);
+  }
+
+  function removeDimensionRow(index: number) {
+    setSelectedDimensions((current) => current.length === 1 ? [""] : current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function resetForm() {
+    setName("");
+    setDescription("");
+    setPrompt("");
+    setSelectedDimensions([""]);
+    setShowCreate(false);
+  }
+
+  async function createBrief(event: FormEvent) {
+    event.preventDefault();
+    setNotice("");
+    const dimensionIds = selectedDimensions.filter(Boolean);
+    if (!dimensionIds.length) return setNotice("请至少选择一个数据维度");
+    setSaving(true);
+    try {
+      await api("/api/admin/management-briefs", {
+        method: "POST",
+        body: JSON.stringify({ name, description, prompt, dimensionIds })
+      });
+      resetForm();
+      setNotice("自定义简报已新增。后续生成任务会按这份配置准备数据并调用 AI。");
+      await load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "新增简报失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleBrief(definition: ManagementBriefDefinition) {
+    setNotice("");
+    try {
+      await api(`/api/admin/management-briefs/${definition.id}/enabled`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: !definition.enabled })
+      });
+      await load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "简报状态更新失败");
+    }
+  }
+
+  async function deleteBrief(definition: ManagementBriefDefinition) {
+    if (!window.confirm(`确定删除“${definition.name}”吗？`)) return;
+    setNotice("");
+    try {
+      await api(`/api/admin/management-briefs/${definition.id}`, { method: "DELETE" });
+      setNotice("自定义简报已删除。");
+      await load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "删除简报失败");
+    }
+  }
+
+  if (loading) return <div className="secure-loading">正在加载管理简报设置...</div>;
+
+  const renderBrief = (definition: ManagementBriefDefinition) => (
+    <article className={`brief-definition-card ${definition.enabled ? "" : "disabled"}`} key={definition.id}>
+      <div className="brief-definition-head">
+        <div>
+          <div className="brief-title-row">
+            <h4>{definition.name}</h4>
+            <span className={`status-pill ${definition.source === "system" ? "ready" : "waiting"}`}>
+              {definition.source === "system" ? "系统预设 · 只读" : definition.enabled ? "企业自定义" : "已停用"}
+            </span>
+          </div>
+          <p>{definition.description || "暂无说明"}</p>
+        </div>
+        {definition.source === "custom" ? (
+          <div className="brief-card-actions">
+            <button className="secondary compact" onClick={() => toggleBrief(definition)}>
+              {definition.enabled ? "停用" : "启用"}
+            </button>
+            <button className="danger compact" onClick={() => deleteBrief(definition)}><Trash2 size={14} />删除</button>
+          </div>
+        ) : null}
+      </div>
+      <div className="brief-dimension-chips">
+        {definition.dimensionIds.map((id) => <span key={id}>{dimensionById.get(id)?.name ?? id}</span>)}
+      </div>
+      <details>
+        <summary>查看提示词</summary>
+        <p className="brief-prompt-preview">{definition.prompt}</p>
+      </details>
+    </article>
+  );
+
+  return (
+    <div className="data-platform management-brief-settings">
+      <header className="brief-settings-header">
+        <button className="secondary" onClick={onBack}><ChevronLeft size={16} />返回数据接入</button>
+        <div>
+          <small>管理后台 / 数据接入 / 管理简报设置</small>
+          <h2>管理简报设置</h2>
+          <p>系统预设不可修改；如需不同观察角度，请新增一份企业自定义简报。</p>
+        </div>
+      </header>
+      {notice ? <div className="import-notice">{notice}</div> : null}
+
+      <section className="data-section brief-dimension-catalog">
+        <div className="records-heading">
+          <div><h3>可选数据维度</h3><p>当前经营数据库能够提供的全部简报数据范围。</p></div>
+          <span>{dimensions.length} 类</span>
+        </div>
+        <div className="brief-dimension-grid">
+          {dimensions.map((dimension) => (
+            <article key={dimension.id}>
+              <h4>{dimension.name}</h4>
+              <p>{dimension.description}</p>
+              <small>{dimension.fields.join(" · ")}</small>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="data-section">
+        <div className="records-heading">
+          <div><h3>系统预设简报</h3><p>作为管理驾驶舱的基础简报，固定保留且不允许修改。</p></div>
+          <span>{systemDefinitions.length} 份</span>
+        </div>
+        <div className="brief-definition-list">{systemDefinitions.map(renderBrief)}</div>
+      </section>
+
+      <section className="data-section">
+        <div className="records-heading">
+          <div><h3>企业自定义简报</h3><p>新增独立简报，不影响系统预设内容。</p></div>
+          <button className="primary" onClick={() => setShowCreate((value) => !value)}>
+            {showCreate ? <X size={16} /> : <Plus size={16} />}{showCreate ? "取消新增" : "新增简报"}
+          </button>
+        </div>
+
+        {showCreate ? (
+          <form className="brief-create-form" onSubmit={createBrief}>
+            <label>简报名称<input required maxLength={40} placeholder="例如：重点店铺周末复盘" value={name} onChange={(event) => setName(event.target.value)} /></label>
+            <label>简报说明（选填）<input maxLength={160} placeholder="说明这份简报给谁看、解决什么问题" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+            <fieldset>
+              <legend>数据维度</legend>
+              <p>每次点击小加号增加一个维度；同一维度不会重复出现。</p>
+              <div className="brief-dimension-selectors">
+                {selectedDimensions.map((selected, index) => (
+                  <div className="brief-dimension-selector" key={index}>
+                    <select required value={selected} onChange={(event) => updateDimension(index, event.target.value)}>
+                      <option value="">请选择数据维度</option>
+                      {dimensions.map((dimension) => (
+                        <option key={dimension.id} value={dimension.id} disabled={selectedDimensions.includes(dimension.id) && selected !== dimension.id}>
+                          {dimension.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="button" className="secondary icon-only" title="增加一个数据维度" disabled={selectedDimensions.length >= dimensions.length} onClick={addDimensionRow}><Plus size={16} /></button>
+                    <button type="button" className="secondary icon-only" title="移除这个数据维度" onClick={() => removeDimensionRow(index)}><X size={16} /></button>
+                  </div>
+                ))}
+              </div>
+            </fieldset>
+            <label>提示词<textarea required minLength={20} maxLength={4000} rows={8} placeholder="告诉 AI 应该关注什么、如何比较、用什么结构输出。数据会由系统按上方维度准备，无需在提示词里写 SQL。" value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
+            <div className="brief-form-footer">
+              <span>{prompt.length}/4000</span>
+              <button className="primary" disabled={saving}><Save size={16} />{saving ? "正在保存..." : "保存并启用"}</button>
+            </div>
+          </form>
+        ) : null}
+
+        <div className="brief-definition-list">
+          {customDefinitions.length ? customDefinitions.map(renderBrief) : <p className="hint">还没有企业自定义简报。</p>}
         </div>
       </section>
     </div>
