@@ -10,7 +10,8 @@
     "build": "tsc --noEmit && vite build",
     "test:management-briefs": "tsx --test server/managementBriefs.test.ts",
     "test:wanliniu": "tsx --test server/data-connectors/wanliniu/*.test.ts",
-    "start": "NODE_ENV=production tsx server/index.ts"
+    "start": "NODE_ENV=production tsx server/index.ts",
+    "test:operations": "tsx --test server/operations*.test.ts"
   },
   "dependencies": {
     "@alicloud/bailian20231229": "^2.12.0",

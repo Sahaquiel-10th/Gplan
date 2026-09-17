@@ -41,6 +41,8 @@ export class MemorySyncScheduler {
       const db = await this.store.read();
       const conversations = db.conversations.slice().sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
       for (const conversation of conversations) {
+        const agent = db.agents.find(a => a.id === conversation.agentId);
+        if (conversation.agentId && (!agent || agent.operations || agent.access?.mode === "members")) continue;
         const state = db.memorySyncStates.find((item) => item.conversationId === conversation.id);
         const allMessages = db.messages
           .filter((message) => message.conversationId === conversation.id)
@@ -59,6 +61,9 @@ export class MemorySyncScheduler {
 
   async submitConversation(conversationId: string, limit = memoryConfig.maxMessagesPerBatch) {
     const db = await this.store.read();
+    const conversation = db.conversations.find(c => c.id === conversationId);
+    const agent = db.agents.find(a => a.id === conversation?.agentId);
+    if (conversation?.agentId && (!agent || agent.operations || agent.access?.mode === "members")) throw new Error("受限智能体对话不能保存到通用记忆");
     const messages = db.messages
       .filter((message) => message.conversationId === conversationId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))

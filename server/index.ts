@@ -1,3 +1,5 @@
+import { canUseAgent } from "./operationsPolicy.js";
+import { createOperationsRouter, startOperationsNotifications } from "./operationsRoutes.js";
 import express, { Request, RequestHandler, Response } from "express";
 import "dotenv/config";
 import fs from "node:fs";
@@ -141,6 +143,7 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.use("/api/open/v1", clientDataApiRouter);
+app.use("/api", createOperationsRouter(store, jwtSecret));
 
 function handleDingTalkEvent(req: Request, res: Response) {
   const expectedToken = process.env.DINGTALK_EVENT_VERIFY_TOKEN?.trim();
@@ -292,10 +295,20 @@ function uniqueAgentSlug(agents: Agent[]) {
   return slug;
 }
 
+function normalizeAgentAccess(value: unknown, user: User, users: User[]): Agent["access"] {
+  if (value === undefined) return undefined;
+  if (user.role !== "admin") throw new Error("仅管理员可配置成员可见范围");
+  const input = value as { mode?: string; userIds?: unknown };
+  if (!input || !["company", "members"].includes(input.mode || "") || !Array.isArray(input.userIds) || input.userIds.some(id => typeof id !== "string" || !users.some(u => u.id === id && u.companyId === user.companyId && u.enabled))) throw new Error("成员可见范围无效");
+  return { mode: input.mode as "company" | "members", userIds: [...new Set(input.userIds as string[])] };
+}
+
 function publicAgent(agent: Agent, users: User[], viewerId = "") {
   const owner = users.find((user) => user.id === agent.ownerId);
   return {
     id: agent.id,
+    operationKind: agent.operations?.kind,
+    access: agent.access ? { mode: agent.access.mode, userIds: users.some(u => u.id === viewerId && (u.role === "admin" || u.id === agent.ownerId)) ? agent.access.userIds : [] } : undefined,
     name: agent.name,
     description: agent.description,
     prompt: agent.prompt,
@@ -536,6 +549,11 @@ async function createUserMemory(params: {
   if (content.length > userMemoryMaxChars) throw new Error(`单条记忆不能超过 ${userMemoryMaxChars} 字`);
   const createdAt = now();
   return store.mutate((db) => {
+    if (params.conversationId) {
+      const conversation = db.conversations.find(c => c.id === params.conversationId && c.userId === params.user.id);
+      const agent = db.agents.find(a => a.id === conversation?.agentId);
+      if (!conversation || (conversation.agentId && (!agent || agent.operations || agent.access?.mode === "members" || !canUseAgent(agent, params.user, db.users)))) throw new Error("此对话不能保存到通用记忆");
+    }
     const active = db.userSavedMemories.filter(
       (memory) =>
         memory.companyId === params.user.companyId &&
@@ -691,6 +709,8 @@ app.get("/api/attachments/:id/content", auth(jwtSecret), asyncRoute(async (req, 
     (item.userId === req.user!.id || (req.user!.role === "admin" && item.companyId === req.user!.companyId))
   );
   if (!attachment || !fs.existsSync(attachment.storagePath)) return res.status(404).json({ error: "附件不存在" });
+  const attachmentConversation = db.conversations.find(c => c.id === attachment.conversationId);
+  if (attachmentConversation?.agentId && !db.agents.some(a => a.id === attachmentConversation.agentId && canUseAgent(a, req.user!, db.users))) return res.status(404).json({ error: "附件不存在或无权访问" });
   res.setHeader("Content-Type", attachment.mimeType);
   res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(attachment.originalName)}`);
   res.setHeader("Cache-Control", "private, max-age=3600");
@@ -713,7 +733,7 @@ app.delete("/api/attachments/:id", auth(jwtSecret), asyncRoute(async (req, res) 
 app.get("/api/conversations", auth(jwtSecret), asyncRoute(async (req, res) => {
   const db = await store.read();
   const conversations = db.conversations
-    .filter((conversation) => conversation.userId === req.user!.id)
+    .filter((conversation) => conversation.userId === req.user!.id && (!conversation.agentId || db.agents.some(a => a.id === conversation.agentId && canUseAgent(a, req.user!, db.users))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   if (req.query.summary !== "1") return res.json({ conversations });
 
@@ -743,7 +763,7 @@ app.get("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) =
   const conversation = db.conversations.find(
     (item) => item.id === req.params.id && item.userId === req.user!.id
   );
-  if (!conversation) return res.status(404).json({ error: "对话不存在" });
+  if (!conversation || (conversation.agentId && !db.agents.some(a => a.id === conversation.agentId && canUseAgent(a, req.user!, db.users)))) return res.status(404).json({ error: "对话不存在或无权访问" });
   res.json({ conversation });
 }));
 
@@ -774,11 +794,7 @@ app.get("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
   const db = await store.read();
   const agents = db.agents
     .filter((agent) =>
-      agent.companyId === req.user!.companyId &&
-      (
-        agent.ownerId === req.user!.id ||
-        (agent.published && db.users.find((user) => user.id === agent.ownerId)?.role === "admin")
-      )
+      canUseAgent(agent, req.user!, db.users)
     )
     .sort((a, b) => Number(b.published) - Number(a.published) || b.updatedAt.localeCompare(a.updatedAt))
     .map((agent) => publicAgent(agent, db.users, req.user!.id));
@@ -799,6 +815,7 @@ app.post("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
       id: uid("agt"),
       companyId: req.user!.companyId,
       ownerId: req.user!.id,
+      access: normalizeAgentAccess(req.body.access, req.user!, db.users),
       name: name.slice(0, 40),
       description: description.slice(0, 220),
       prompt: prompt.slice(0, agentPromptMaxChars),
@@ -827,7 +844,9 @@ app.patch("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
   const agent = await store.mutate((db) => {
     const target = db.agents.find((item) => item.id === req.params.id && item.companyId === req.user!.companyId);
     if (!target) throw new Error("智能体不存在");
+    if (target.operations) throw new Error("请在管理员后台的经营助手中配置");
     if (target.ownerId !== req.user!.id && req.user!.role !== "admin") throw new Error("没有权限修改这个智能体");
+    if (req.body.access !== undefined) target.access = normalizeAgentAccess(req.body.access, req.user!, db.users);
     if (typeof req.body.name === "string" && req.body.name.trim()) target.name = req.body.name.trim().slice(0, 40);
     if (typeof req.body.description === "string" && req.body.description.trim()) target.description = req.body.description.trim().slice(0, 220);
     if (typeof req.body.prompt === "string") target.prompt = req.body.prompt.trim().slice(0, agentPromptMaxChars);
@@ -858,8 +877,7 @@ app.patch("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
 app.post("/api/agents/:id/favorite", auth(jwtSecret), asyncRoute(async (req, res) => {
   const agent = await store.mutate((db) => {
     const target = db.agents.find((item) =>
-      item.id === req.params.id && item.companyId === req.user!.companyId &&
-      (item.ownerId === req.user!.id || (item.published && db.users.find((user) => user.id === item.ownerId)?.role === "admin"))
+      item.id === req.params.id && canUseAgent(item, req.user!, db.users)
     );
     if (!target) throw new Error("智能体不存在");
     const index = target.favoriteUserIds.indexOf(req.user!.id);
@@ -894,7 +912,7 @@ app.delete("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
     if (agent.ownerId !== req.user!.id && req.user!.role !== "admin") throw new Error("没有权限删除这个智能体");
     db.agents.splice(index, 1);
     for (const conversation of db.conversations) {
-      if (conversation.agentId === agent.id) delete conversation.agentId;
+      if (conversation.agentId === agent.id && !agent.operations && agent.access?.mode !== "members") delete conversation.agentId;
     }
   });
   res.json({ ok: true });
@@ -902,7 +920,7 @@ app.delete("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
 
 app.get("/api/public/agents/:slug", asyncRoute(async (req, res) => {
   const db = await store.read();
-  const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published);
+  const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published && !item.operations && item.access?.mode !== "members");
   if (!agent) return res.status(404).json({ error: "智能体不存在或未发布" });
   const { prompt, ...safe } = publicAgent(agent, db.users);
   res.json({ agent: safe });
@@ -922,7 +940,7 @@ app.post("/api/public/agents/:slug/chat", asyncRoute(async (req, res) => {
   const content = requiredString(req.body.content, "消息");
   const incomingMessages = Array.isArray(req.body.messages) ? req.body.messages : [];
   const db = await store.read();
-  const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published);
+  const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published && !item.operations && item.access?.mode !== "members");
   if (!agent) return res.status(404).json({ error: "智能体不存在或未发布" });
   const model = db.models.find((item) => item.id === agent.modelId && item.enabled && item.apiKey && item.kind === "chat");
   if (!model) return res.status(404).json({ error: "没有可用聊天模型" });
@@ -983,12 +1001,11 @@ app.post(
     const lockedAgentId = existing?.agentId || requestedAgentId;
     const agent = lockedAgentId
       ? db.agents.find((item) =>
-          item.id === lockedAgentId &&
-          item.companyId === req.user!.companyId &&
-          (item.ownerId === req.user!.id || (item.published && db.users.find((user) => user.id === item.ownerId)?.role === "admin"))
+          item.id === lockedAgentId && canUseAgent(item, req.user!, db.users)
         )
       : undefined;
     if (lockedAgentId && !agent) return res.status(404).json({ error: "智能体不存在或无权使用" });
+    if (agent?.operations) return res.status(403).json({ error: "请从经营助手的授权报表入口使用，不支持普通聊天访问" });
     const lockedModelId = existing?.modelId || agent?.modelId || modelId;
     const model = db.models.find((item) => item.id === lockedModelId && item.enabled);
     if (!model) return res.status(404).json({ error: "模型不存在或未启用" });
@@ -1076,7 +1093,8 @@ app.post(
       return created;
     });
 
-    const [implicitMemories, companyKnowledge]: [RetrievedMemory[], RetrievedItem[]] = executionModel.kind === "chat"
+    const isolatedAgent = Boolean(agent?.operations || agent?.access?.mode === "members");
+    const [implicitMemories, companyKnowledge]: [RetrievedMemory[], RetrievedItem[]] = executionModel.kind === "chat" && !isolatedAgent
       ? await Promise.all([
           memoryService.searchMemory({ companyId: req.user!.companyId, userId: req.user!.id, query: content }).catch(() => []),
           companyKnowledgeService.retrieveCompanyKnowledge({ companyId: req.user!.companyId, userId: req.user!.id, query: content }).catch(() => [])
@@ -1084,7 +1102,7 @@ app.post(
       : [[], []];
 
     const latestDb = await store.read();
-    const explicitMemories: RetrievedMemory[] = latestDb.userSavedMemories
+    const explicitMemories: RetrievedMemory[] = (isolatedAgent ? [] : latestDb.userSavedMemories)
       .filter(
         (memory) =>
           memory.companyId === req.user!.companyId &&
@@ -1204,6 +1222,8 @@ app.post(
       savedConversation = await store.mutate((mutableDb) => {
         const target = mutableDb.conversations.find((item) => item.id === conversation.id && item.userId === req.user!.id);
         if (!target) throw new Error("对话不存在");
+        const currentUser = mutableDb.users.find(u => u.id === req.user!.id && u.enabled);
+        if (!currentUser || (target.agentId && !mutableDb.agents.some(a => a.id === target.agentId && canUseAgent(a, currentUser, mutableDb.users)))) throw new Error("权限已变更，本次回答不再显示");
         target.messages.push(assistantMessage);
         target.updatedAt = assistantMessage.createdAt;
         mutableDb.messages.push(messageRecord(assistantMessage, {
@@ -1239,7 +1259,7 @@ app.post(
     }
 
     let memoryNotice = "";
-    if (executionModel.kind === "chat" && hasExplicitMemoryIntent(content)) {
+    if (executionModel.kind === "chat" && !isolatedAgent && hasExplicitMemoryIntent(content)) {
       try {
         await createUserMemory({
           user: req.user!,
@@ -1260,7 +1280,7 @@ app.post(
 app.patch("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
   const conversation = await store.mutate((db) => {
     const target = db.conversations.find((item) => item.id === req.params.id && item.userId === req.user!.id);
-    if (!target) throw new Error("对话不存在");
+    if (!target || (target.agentId && !db.agents.some(a => a.id === target.agentId && canUseAgent(a, req.user!, db.users)))) throw new Error("对话不存在或无权访问");
     if (typeof req.body.archived === "boolean") target.archived = req.body.archived;
     if (typeof req.body.workspaceId === "string") target.workspaceId = req.body.workspaceId || undefined;
     target.updatedAt = now();
@@ -2479,5 +2499,6 @@ app.listen(port, () => {
 });
 
 memorySyncScheduler.start();
+startOperationsNotifications(store);
 knowledgeSyncScheduler.start();
 wanliniuSyncScheduler.start();

@@ -78,6 +78,8 @@ export type IntegrationToken = {
 };
 
 export type Agent = {
+  access?: { mode: "company" | "members"; userIds: string[] };
+  operations?: import("./operationsPolicy.js").OperationsConfig;
   id: string;
   companyId: string;
   ownerId: string;
@@ -270,6 +272,9 @@ export type ManagementBriefReport = {
 };
 
 export type Database = {
+  operationsChecks?: string[];
+  operationsNotifications?: import("./operationsPolicy.js").OperationsNotification[];
+  operationsAudit?: Array<{ at: string; companyId: string; userId: string; agentId: string; action: string; revision: number }>;
   users: User[];
   models: ModelConfig[];
   conversations: Conversation[];
