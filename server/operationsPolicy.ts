@@ -273,3 +273,6 @@ export function inventoryMetrics(
     targetGap: Math.max(0, Math.ceil((sales7 / 7) * rules.targetDays - stock)),
   };
 }
+
+export const defaultOperationsPrompt =
+  "先用简洁中文概括经营结论，再列出最多3项优先关注事项及对应数据，最后给出可执行的人工核查建议。区分已知事实、可能原因和数据缺口；使用清晰的小标题，避免重复铺陈明细。";

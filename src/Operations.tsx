@@ -11,6 +11,7 @@ import type {
   OperationsReport,
   OperationsCatalog,
 } from "../server/operationsData";
+import type { OperationsAnalysis } from "../server/operationsArchive";
 import "./operations.css";
 
 type Api = <T>(url: string, options?: RequestInit) => Promise<T>;
@@ -18,6 +19,7 @@ type AdminAgent = {
   id: string;
   name: string;
   modelId: string;
+  prompt: string;
   operations: OperationsConfig;
 };
 type AdminData = {
@@ -53,6 +55,25 @@ function Choices({
         value={query}
         onChange={(e) => setQuery(e.target.value)}
       />
+      <div className="op-choice-actions">
+        <button
+          type="button"
+          onClick={() => onChange(options.map((o) => o.id))}
+        >
+          全选
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            onChange([...new Set([...values, ...filtered.map((o) => o.id)])])
+          }
+        >
+          选择搜索结果
+        </button>
+        <button type="button" onClick={() => onChange([])}>
+          清空
+        </button>
+      </div>
       <div className="op-choice-list">
         {filtered.map((o) => (
           <label key={o.id}>
@@ -150,6 +171,7 @@ export function OperationsAdmin({
           },
           revision: draft.operations.revision,
           modelId: draft.modelId,
+          prompt: draft.prompt,
         }),
       });
       await load();
@@ -266,7 +288,48 @@ export function OperationsAdmin({
                   授权范围；不接入通用知识库、个人记忆、联网搜索或公开分享。亏损助手的成本、利润随该助手授权开放。
                 </p>
               </div>
-              <h4>成员与数据范围</h4>
+              <details className="op-method">
+                <summary>分析提示词 · 可修改</summary>
+                <p className="op-muted">
+                  控制表达方式和分析重点，不能改变数据权限。保存后旧版本的分析将失效。
+                </p>
+                <textarea
+                  aria-label="分析提示词"
+                  rows={6}
+                  maxLength={6000}
+                  value={draft.prompt}
+                  onChange={(e) =>
+                    setDraft({ ...draft, prompt: e.target.value })
+                  }
+                />
+              </details>
+              <h4>成员与数据范围 · {draft.operations.grants.length} 人</h4>
+              <div className="op-choice-actions">
+                <button
+                  disabled={!data.catalog}
+                  onClick={() =>
+                    update({
+                      ...draft.operations,
+                      grants: data.users.map(
+                        (u) =>
+                          draft.operations.grants.find(
+                            (g) => g.userId === u.id,
+                          ) || {
+                            userId: u.id,
+                            shopIds: [],
+                            brands: [],
+                            warehouseIds: [],
+                          },
+                      ),
+                    })
+                  }
+                >
+                  添加全部成员
+                </button>
+                <span className="op-muted">
+                  全选成员后仍需逐人配置数据范围；店铺和品牌全选仅包含当前选项。
+                </span>
+              </div>
               <select
                 aria-label="添加内测成员"
                 value=""
@@ -300,7 +363,20 @@ export function OperationsAdmin({
                   ))}
               </select>
               {draft.operations.grants.map((g, index) => (
-                <div className="op-grant" key={g.userId}>
+                <details
+                  className="op-grant"
+                  key={g.userId}
+                  open={!g.shopIds.length || !g.brands.length}
+                >
+                  <summary>
+                    {data.users.find((u) => u.id === g.userId)?.name ||
+                      "成员已停用"}
+                    <span className="op-muted">
+                      {" "}
+                      · {g.shopIds.length} 店铺 / {g.brands.length} 品牌 /{" "}
+                      {g.warehouseIds.length} 仓库
+                    </span>
+                  </summary>
                   <div className="op-heading">
                     <strong>
                       {data.users.find((u) => u.id === g.userId)?.name ||
@@ -353,7 +429,7 @@ export function OperationsAdmin({
                       }
                     />
                   </div>
-                </div>
+                </details>
               ))}
               {!draft.operations.grants.length && (
                 <p className="op-muted">尚未授权任何成员，包括管理员自己。</p>
@@ -450,6 +526,13 @@ export function OperationsAdmin({
   );
 }
 
+const shortcuts = [
+  ["summary", "帮我看重点"],
+  ["method", "解释计算口径"],
+  ["next", "接下来查什么"],
+];
+const analysisLabel = (a: OperationsAnalysis) =>
+  a.question || shortcuts.find(([id]) => id === a.action)?.[1] || "经营分析";
 export function OperationsWorkspace({
   api,
   agent,
@@ -465,36 +548,65 @@ export function OperationsWorkspace({
 }) {
   const [date, setDate] = useState(initialDate || "");
   const [report, setReport] = useState<OperationsReport>();
+  const [snapshotId, setSnapshotId] = useState("");
+  const [analyses, setAnalyses] = useState<OperationsAnalysis[]>([]);
+  const [activeId, setActiveId] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [answer, setAnswer] = useState("");
   const [explaining, setExplaining] = useState(false);
   const [canExplain, setCanExplain] = useState(false);
+  const [error, setError] = useState("");
   const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const generation = useRef(0);
   const accessVersion = useRef("");
-  async function load(value = date) {
+  const explainingRef = useRef(false);
+  const active = analyses.find((a) => a.id === activeId);
+  function clear() {
+    setReport(undefined);
+    setAnalyses([]);
+    setActiveId("");
+    setSnapshotId("");
+    setQuestion("");
+  }
+  async function load(value = date, refresh = false) {
     const run = ++generation.current;
     accessVersion.current = "";
     setLoading(true);
-    setReport(undefined);
-    setAnswer("");
+    clear();
     setError("");
     setExplaining(false);
+    explainingRef.current = false;
+    setFilter("all");
+    setSearch("");
+    setPage(1);
+    setExpanded(false);
     try {
+      if (refresh)
+        await api(`/api/operations/${agent.id}/refresh`, {
+          method: "POST",
+          body: JSON.stringify({ date: value }),
+        });
       const result = await api<{
         report: OperationsReport;
+        snapshotId: string;
+        analyses: OperationsAnalysis[];
         accessVersion: string;
         canExplain: boolean;
       }>(
         `/api/operations/${agent.id}/report${value ? "?date=" + encodeURIComponent(value) : ""}`,
       );
-      if (run === generation.current) {
-        accessVersion.current = result.accessVersion;
-        setCanExplain(result.canExplain);
-        setReport(result.report);
-        setDate(result.report.date);
-      }
+      if (run !== generation.current) return;
+      accessVersion.current = result.accessVersion;
+      setCanExplain(result.canExplain);
+      setReport(result.report);
+      setDate(result.report.date);
+      setSnapshotId(result.snapshotId);
+      setAnalyses(result.analyses);
+      setActiveId(result.analyses.at(-1)?.id || "");
     } catch (e) {
       if (run === generation.current) setError((e as Error).message);
     } finally {
@@ -502,33 +614,32 @@ export function OperationsWorkspace({
     }
   }
   useEffect(() => {
-    load(initialDate || "");
+    void load(initialDate || "");
     return () => {
       generation.current++;
     };
   }, [agent.id, initialDate]);
-  // Revalidate permission on focus and periodically; never retain a report after a failed check.
   useEffect(() => {
     const validate = async () => {
       if (document.visibilityState !== "visible" || !accessVersion.current)
         return;
       const run = generation.current;
       try {
-        const response = await api<{ accessVersion: string }>(
+        const r = await api<{ accessVersion: string }>(
           `/api/operations/${agent.id}/access`,
         );
         if (run !== generation.current) return;
-        if (response.accessVersion !== accessVersion.current)
-          throw new Error("授权或口径已变更，请重新查看结果");
-      } catch (error) {
+        if (r.accessVersion !== accessVersion.current)
+          throw new Error("授权或配置已变更，请重新查看结果");
+      } catch (e) {
         if (run !== generation.current) return;
         generation.current++;
         accessVersion.current = "";
-        setReport(undefined);
-        setAnswer("");
+        clear();
         setExplaining(false);
+        explainingRef.current = false;
         setLoading(false);
-        setError((error as Error).message);
+        setError((e as Error).message);
       }
     };
     window.addEventListener("focus", validate);
@@ -538,42 +649,71 @@ export function OperationsWorkspace({
       clearInterval(timer);
     };
   }, [agent.id]);
-  async function explain(action: string) {
+  async function explain(action: string, text = "", regenerate = false) {
+    if (explainingRef.current || !report) return;
     const run = generation.current;
+    explainingRef.current = true;
     setExplaining(true);
-    setAnswer("");
     setError("");
     try {
-      const result = await api<{ content: string }>(
+      const a = await api<OperationsAnalysis>(
         `/api/operations/${agent.id}/explain`,
         {
           method: "POST",
-          body: JSON.stringify({ action, date: report?.date || date }),
+          body: JSON.stringify({
+            action,
+            question: text,
+            date: report.date,
+            snapshotId,
+            regenerate,
+          }),
         },
       );
-      if (run === generation.current) setAnswer(result.content);
+      if (run !== generation.current) return;
+      setAnalyses((old) =>
+        [
+          ...old.filter(
+            (x) => !(x.action === a.action && x.question === a.question),
+          ),
+          a,
+        ].slice(-20),
+      );
+      setActiveId(a.id);
+      setExpanded(false);
+      if (action === "custom") setQuestion("");
     } catch (e) {
-      if (run === generation.current) {
-        const message = (e as Error).message;
-        setError(message);
-        if (/权限|未授权|不存在|停用|未登录/.test(message))
-          setReport(undefined);
-      }
+      if (run !== generation.current) return;
+      const message = (e as Error).message;
+      setError(message);
+      if (/权限|授权|不存在|停用|未登录|数据已刷新/.test(message)) clear();
     } finally {
-      if (run === generation.current) setExplaining(false);
+      if (run === generation.current) {
+        setExplaining(false);
+        explainingRef.current = false;
+      }
     }
   }
-  const rows = (report?.rows || []).filter((r) => {
+  function matches(r: OperationsReport["rows"][number], kind: string) {
     const status = String(r.status || "");
-    if (filter === "pending") return /待|缺失/.test(status);
-    if (filter === "spike") return /放大|上升/.test(status);
-    if (filter === "risk")
-      return (
-        /关注|缺货/.test(status) ||
-        (typeof r.profit === "number" && r.profit < 0)
-      );
-    return true;
-  });
+    return kind === "pending"
+      ? /待|缺失/.test(status)
+      : kind === "spike"
+        ? /放大|上升/.test(status)
+        : kind === "risk"
+          ? /关注|缺货/.test(status) ||
+            (typeof r.profit === "number" && r.profit < 0)
+          : true;
+  }
+  const rows = (report?.rows || []).filter(
+    (r) =>
+      matches(r, filter) &&
+      Object.values(r)
+        .join(" ")
+        .toLowerCase()
+        .includes(search.trim().toLowerCase()),
+  );
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const currentPage = Math.min(page, pages);
   return (
     <section className="op-workspace">
       <header className="op-heading">
@@ -594,16 +734,6 @@ export function OperationsWorkspace({
         </div>
       </header>
       <div className="op-toolbar">
-        <button
-          className="secondary"
-          disabled={loading}
-          onClick={() => {
-            setDate("");
-            load("");
-          }}
-        >
-          昨日
-        </button>
         <label>
           统计截止日
           <input
@@ -613,16 +743,34 @@ export function OperationsWorkspace({
           />
         </label>
         <button className="primary" disabled={loading} onClick={() => load()}>
-          <RefreshCw size={15} />
           {loading ? "读取中…" : "查看结果"}
         </button>
+        <button
+          className="secondary"
+          disabled={loading}
+          onClick={() => load("")}
+        >
+          昨日
+        </button>
+        {report && (
+          <button
+            className="secondary"
+            disabled={loading || explaining}
+            onClick={() => load(report.date, true)}
+          >
+            <RefreshCw size={15} />
+            刷新数据（清空分析）
+          </button>
+        )}
       </div>
       {error && (
         <div className="error" role="alert">
           {error}
         </div>
       )}
-      {loading && <div className="op-empty">正在读取授权范围内的数据…</div>}
+      {loading && (
+        <div className="op-empty">正在读取授权数据；已有快照将直接打开…</div>
+      )}
       {report && (
         <>
           <div className="op-stats">
@@ -633,76 +781,277 @@ export function OperationsWorkspace({
               </div>
             ))}
           </div>
+          <p className="op-muted">
+            数据快照：{new Date(report.generatedAt).toLocaleString("zh-CN")} ·
+            再次打开直接读取已保存结果。刷新数据会清空本日旧分析；历史日期的库存仍为抓取时快照。
+          </p>
           {report.incomplete && (
-            <div className="op-warning">
-              部分数据待核实或结果不完整。请展开计算说明；当前结果不代表全部异常。
-            </div>
+            <details className="op-warning">
+              <summary>数据有待核实或结果不完整 · 查看说明</summary>
+              <p>当前结果不代表全部异常。请查看下方计算口径中的范围与限制。</p>
+              {report.methodology.notes.map((n, i) => (
+                <p key={i}>{n}</p>
+              ))}
+            </details>
           )}
-          <div className="op-tabs">
-            {[
-              ["all", "全部结果"],
-              [
-                "risk",
-                agent.operationKind === "loss" ? "预估亏损" : "库存需关注",
-              ],
-              ["pending", "待核实"],
-              ["spike", "销量放大"],
-            ]
-              .filter(([id]) =>
-                agent.operationKind === "inventory" ||
-                agent.operationKind === "loss"
-                  ? agent.operationKind !== "loss" || id !== "spike"
-                  : id === "all" || id === "spike" || id === "pending",
-              )
-              .map(([id, label]) => (
+          <section className="op-explain">
+            <div className="op-heading">
+              <div>
+                <h3>经营分析 · {report.date}</h3>
+                <p>
+                  基于本日授权数据，最多提供前200行给模型。下方筛选不改变分析范围。
+                </p>
+              </div>
+              {active && (
+                <small className="op-muted">
+                  已保存 · {new Date(active.createdAt).toLocaleString("zh-CN")}
+                </small>
+              )}
+            </div>
+            <div className="op-tabs">
+              {shortcuts.map(([action, label]) => (
                 <button
-                  key={id}
-                  className={filter === id ? "active" : ""}
-                  onClick={() => setFilter(id)}
+                  key={action}
+                  disabled={explaining || !canExplain}
+                  onClick={() => explain(action)}
                 >
                   {label}
+                  {analyses.some((a) => a.action === action) ? " ✓" : ""}
                 </button>
               ))}
-          </div>
-          <div className="op-table">
-            <table>
-              <thead>
-                <tr>
-                  {report.columns.map((c) => (
-                    <th key={c.key}>{c.label}</th>
+            </div>
+            {analyses.length > 0 && (
+              <label className="op-history">
+                已保存的分析
+                <select
+                  aria-label="已保存的分析"
+                  value={activeId}
+                  onChange={(e) => {
+                    setActiveId(e.target.value);
+                    setExpanded(false);
+                  }}
+                >
+                  {analyses.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {analysisLabel(a).slice(0, 80)}
+                    </option>
                   ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i}>
+                </select>
+                <small>保留近90天，每日最近20份</small>
+              </label>
+            )}
+            {explaining && (
+              <p role="status">正在分析当前授权数据，完成后自动保存…</p>
+            )}
+            {active ? (
+              <>
+                <div
+                  className={`markdown-body op-answer ${expanded ? "is-expanded" : ""}`}
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {active.content}
+                  </ReactMarkdown>
+                </div>
+                <div className="op-answer-actions">
+                  <button
+                    className="secondary"
+                    onClick={() => setExpanded(!expanded)}
+                  >
+                    {expanded ? "收起分析" : "展开完整分析"}
+                  </button>
+                  <button
+                    className="secondary"
+                    disabled={explaining || !canExplain}
+                    onClick={() =>
+                      explain(active.action, active.question, true)
+                    }
+                  >
+                    <RefreshCw size={14} />
+                    重新生成这份分析
+                  </button>
+                </div>
+              </>
+            ) : (
+              !explaining && (
+                <p className="op-muted">
+                  还没有分析。点击常用问题或输入问题，生成后会自动保存。
+                </p>
+              )
+            )}
+            <form
+              className="op-question"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void explain("custom", question.trim());
+              }}
+            >
+              <textarea
+                aria-label="经营分析问题"
+                placeholder="例如：哪些商品需要优先补货？请结合当前库存说明理由。"
+                rows={2}
+                maxLength={2000}
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                disabled={!canExplain}
+              />
+              <button
+                className="primary"
+                disabled={!canExplain || explaining || !question.trim()}
+                type="submit"
+              >
+                分析并保存
+              </button>
+            </form>
+            {!canExplain && (
+              <p className="op-muted">
+                尚未启用智能解读，请管理员配置模型。已保存分析仍可查看。
+              </p>
+            )}
+          </section>
+          <details className="op-data-section" open>
+            <summary>
+              数据明细{" "}
+              <span className="op-muted">
+                · 本次报表 {report.rows.length} 条 · 可收起
+              </span>
+            </summary>
+            <div className="op-tabs">
+              {[
+                ["all", "全部结果"],
+                [
+                  "risk",
+                  agent.operationKind === "loss" ? "预估亏损" : "库存需关注",
+                ],
+                ["pending", "待核实"],
+                ["spike", "销量放大"],
+              ]
+                .filter(
+                  ([id]) =>
+                    agent.operationKind === "inventory" ||
+                    (agent.operationKind === "loss"
+                      ? id !== "spike"
+                      : id !== "risk"),
+                )
+                .map(([id, label]) => (
+                  <button
+                    key={id}
+                    className={filter === id ? "active" : ""}
+                    onClick={() => {
+                      setFilter(id);
+                      setPage(1);
+                    }}
+                  >
+                    {label}{" "}
+                    <span>
+                      {report.rows.filter((r) => matches(r, id)).length}
+                    </span>
+                  </button>
+                ))}
+            </div>
+            <div className="op-data-tools">
+              <input
+                aria-label="查询数据明细"
+                placeholder="搜索商品、SKU、店铺或单号"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
+              />
+              <span className="op-muted">
+                报表 {report.rows.length} 条 / 当前匹配 {rows.length} 条
+              </span>
+            </div>
+            <div className="op-table">
+              <table>
+                <thead>
+                  <tr>
                     {report.columns.map((c) => (
-                      <td
-                        key={c.key}
-                        className={
-                          c.key === "profit" &&
-                          typeof r[c.key] === "number" &&
-                          Number(r[c.key]) < 0
-                            ? "op-negative"
-                            : undefined
-                        }
-                      >
-                        {r[c.key] ?? "—"}
-                      </td>
+                      <th key={c.key}>{c.label}</th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-            {!rows.length && (
-              <div className="op-empty">
-                当前范围内没有符合筛选条件的记录。数据完整性请查看计算说明。
-              </div>
-            )}
-          </div>
+                </thead>
+                <tbody>
+                  {rows
+                    .slice((currentPage - 1) * pageSize, currentPage * pageSize)
+                    .map((r, i) => (
+                      <tr key={i}>
+                        {report.columns.map((c) => (
+                          <td
+                            key={c.key}
+                            className={
+                              c.key === "profit" && Number(r[c.key]) < 0
+                                ? "op-negative"
+                                : undefined
+                            }
+                          >
+                            {r[c.key] ?? "—"}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+              {!rows.length && (
+                <div className="op-empty">
+                  {report.rows.length
+                    ? `本次报表有 ${report.rows.length} 条数据，当前筛选或搜索无匹配记录。`
+                    : "本次授权范围和日期没有可展示的记录，请检查计算口径与同步情况。"}
+                  {report.rows.length > 0 && (
+                    <button
+                      className="secondary"
+                      onClick={() => {
+                        setFilter("all");
+                        setSearch("");
+                        setPage(1);
+                      }}
+                    >
+                      查看全部结果
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="op-pagination">
+              <label>
+                每页{" "}
+                <select
+                  aria-label="每页条数"
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setPage(1);
+                  }}
+                >
+                  {[10, 20, 50].map((n) => (
+                    <option key={n} value={n}>
+                      {n} 条
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <span>
+                {currentPage} / {pages} 页
+              </span>
+              <button
+                className="secondary"
+                disabled={currentPage <= 1}
+                onClick={() => setPage(currentPage - 1)}
+              >
+                上一页
+              </button>
+              <button
+                className="secondary"
+                disabled={currentPage >= pages}
+                onClick={() => setPage(currentPage + 1)}
+              >
+                下一页
+              </button>
+            </div>
+          </details>
           <details className="op-method">
             <summary>
-              计算说明 · 口径 v{report.revision} · {report.date}
+              计算口径与数据来源 · v{report.revision} · {report.date}
             </summary>
             <p>{report.methodology.formula}</p>
             {[
@@ -726,39 +1075,7 @@ export function OperationsWorkspace({
                 {s.resource}：{s.at}
               </p>
             ))}
-            <small>
-              本次生成：{new Date(report.generatedAt).toLocaleString("zh-CN")}
-            </small>
           </details>
-          <div className="op-explain">
-            <h3>继续了解</h3>
-            {!canExplain && (
-              <p className="op-muted">尚未启用智能解读，报表可以正常查看。</p>
-            )}
-            <div className="op-tabs">
-              {[
-                ["summary", "帮我看重点"],
-                ["method", "解释计算口径"],
-                ["next", "接下来查什么"],
-              ].map(([action, label]) => (
-                <button
-                  key={action}
-                  disabled={explaining || loading || !canExplain}
-                  onClick={() => explain(action)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            {explaining && <p>正在解释当前授权报表…</p>}
-            {answer && (
-              <div className="markdown-body">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {answer}
-                </ReactMarkdown>
-              </div>
-            )}
-          </div>
         </>
       )}
     </section>
@@ -778,74 +1095,202 @@ export function OperationsBell({
   onOpen,
 }: {
   api: Api;
+  onOpen: () => void;
+}) {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      api<{ notifications: Notice[] }>("/api/operations-notifications")
+        .then((r) => {
+          if (live) setCount(r.notifications.filter((n) => !n.readAt).length);
+        })
+        .catch(() => {
+          if (live) setCount(0);
+        });
+    void load();
+    const timer = setInterval(load, 60000);
+    window.addEventListener("operations-notices-read", load);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      window.removeEventListener("operations-notices-read", load);
+    };
+  }, []);
+  return (
+    <button className="nav-item" onClick={onOpen}>
+      <Bell size={16} />
+      经营通知 {count > 0 && <span className="op-badge">{count}</span>}
+    </button>
+  );
+}
+export function OperationsNotifications({
+  api,
+  onOpen,
+  onBack,
+  onOpenSidebar,
+}: {
+  api: Api;
   onOpen: (id: string, date: string) => void;
+  onBack: () => void;
+  onOpenSidebar: () => void;
 }) {
   const [items, setItems] = useState<Notice[]>([]);
-  const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [unread, setUnread] = useState(false);
+  const [page, setPage] = useState(1);
+  const request = useRef(0);
   async function load() {
+    const run = ++request.current;
     try {
       const r = await api<{ notifications: Notice[] }>(
         "/api/operations-notifications",
       );
+      if (run !== request.current) return;
       setItems(r.notifications);
       setError("");
-    } catch {
-      setItems([]);
-      setError("通知暂不可用");
+    } catch (e) {
+      if (run === request.current) {
+        setItems([]);
+        setError((e as Error).message);
+      }
+    } finally {
+      if (run === request.current) setLoading(false);
     }
   }
   useEffect(() => {
-    load();
+    void load();
     const timer = setInterval(load, 60000);
-    return () => clearInterval(timer);
+    window.addEventListener("focus", load);
+    return () => {
+      request.current++;
+      clearInterval(timer);
+      window.removeEventListener("focus", load);
+    };
   }, []);
   async function select(n: Notice) {
     try {
       await api(`/api/operations-notifications/${n.id}/read`, {
         method: "POST",
       });
-      setOpen(false);
+      window.dispatchEvent(new Event("operations-notices-read"));
       onOpen(n.agentId, n.date);
-      await load();
     } catch (e) {
+      setItems([]);
       setError((e as Error).message);
-      await load();
     }
   }
-  const count = items.filter((n) => !n.readAt).length;
+  const visible = items.filter((n) => !unread || !n.readAt),
+    pages = Math.max(1, Math.ceil(visible.length / 10)),
+    current = Math.min(page, pages);
   return (
-    <div className="op-bell">
-      <button
-        className="nav-item"
-        aria-expanded={open}
-        onClick={() => {
-          setOpen(!open);
-          load();
-        }}
-      >
-        <Bell size={16} />
-        经营通知 {count > 0 && <span className="op-badge">{count}</span>}
-      </button>
-      {open && (
-        <div className="op-notices">
-          <strong>经营通知</strong>
-          {error && <p role="alert">{error}</p>}
-          {!items.length && !error && <p>暂无需要关注的通知</p>}
-          {items.map((n) => (
+    <section className="op-workspace">
+      <header className="op-heading">
+        <button
+          className="mobile-menu"
+          aria-label="打开导航"
+          onClick={onOpenSidebar}
+        >
+          <Menu size={20} />
+        </button>
+        <button className="secondary" onClick={onBack}>
+          <ChevronLeft size={16} />
+          智能体
+        </button>
+        <div>
+          <h2>经营通知</h2>
+          <p>授权范围内的每日关注事项</p>
+        </div>
+      </header>
+      <details className="op-method">
+        <summary>通知是如何产生的？</summary>
+        <p>
+          每天北京时间08:00之后，系统每15分钟检查一次昨日数据。发现需关注事项或数据待核实时生成站内通知；同一成员、助手、日期和权限版本不会重复提醒。点击通知进入对应日期的报表和已保存分析。通知本身不自动生成AI分析，不发送钉钉消息。
+        </p>
+      </details>
+      <div className="op-tabs">
+        <button
+          className={!unread ? "active" : ""}
+          onClick={() => {
+            setUnread(false);
+            setPage(1);
+          }}
+        >
+          全部 {items.length}
+        </button>
+        <button
+          className={unread ? "active" : ""}
+          onClick={() => {
+            setUnread(true);
+            setPage(1);
+          }}
+        >
+          未读 {items.filter((n) => !n.readAt).length}
+        </button>
+        <button
+          onClick={() => {
+            setLoading(true);
+            void load();
+          }}
+        >
+          <RefreshCw size={14} />
+          刷新
+        </button>
+      </div>
+      {error && (
+        <div className="error" role="alert">
+          {error}
+        </div>
+      )}
+      {loading ? (
+        <div className="op-empty">正在读取通知…</div>
+      ) : !visible.length ? (
+        <div className="op-empty op-notification-empty">
+          <Bell size={30} />
+          <h3>{unread ? "暂无未读通知" : "暂无需要关注的通知"}</h3>
+          <p>助手开放并获得数据授权后，符合条件的提醒会显示在这里。</p>
+        </div>
+      ) : (
+        <div className="op-notice-list">
+          {visible.slice((current - 1) * 10, current * 10).map((n) => (
             <button key={n.id} onClick={() => select(n)}>
-              <strong>
-                {!n.readAt ? "● " : ""}
-                {n.agentName}
-              </strong>
               <span>
-                {n.date} ·{" "}
-                {n.status === "alert" ? "发现需关注事项" : "数据有待核实"}
+                <strong>
+                  {!n.readAt && <i className="op-dot" />}
+                  {n.agentName}
+                </strong>
+                <small>
+                  {n.date} ·{" "}
+                  {n.status === "alert" ? "发现需关注事项" : "数据有待核实"}
+                </small>
               </span>
+              <span>查看报告 →</span>
             </button>
           ))}
         </div>
       )}
-    </div>
+      {pages > 1 && (
+        <div className="op-pagination">
+          <span>
+            {current} / {pages} 页
+          </span>
+          <button
+            className="secondary"
+            disabled={current === 1}
+            onClick={() => setPage(current - 1)}
+          >
+            上一页
+          </button>
+          <button
+            className="secondary"
+            disabled={current === pages}
+            onClick={() => setPage(current + 1)}
+          >
+            下一页
+          </button>
+        </div>
+      )}
+    </section>
   );
 }

@@ -136,6 +136,7 @@ export async function operationsReport(
   agent: Agent,
   user: User,
   date: string,
+  refresh = false,
 ): Promise<OperationsReport> {
   const key = scopeKey(agent, user);
   if (!key) throw new Error("智能体不可用或未授权数据范围");
@@ -143,7 +144,7 @@ export async function operationsReport(
   for (const [id, entry] of reportCache)
     if (entry.expires <= Date.now()) reportCache.delete(id);
   const cached = reportCache.get(cacheKey);
-  if (cached) return structuredClone(cached.report);
+  if (cached && !refresh) return structuredClone(cached.report);
   let pending = pendingReports.get(cacheKey);
   if (!pending) {
     if (pendingReports.size >= 4)

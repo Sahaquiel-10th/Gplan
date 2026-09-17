@@ -272,6 +272,7 @@ export type ManagementBriefReport = {
 };
 
 export type Database = {
+  operationsSnapshots?: import("./operationsArchive.js").OperationsSnapshot[];
   operationsChecks?: string[];
   operationsNotifications?: import("./operationsPolicy.js").OperationsNotification[];
   operationsAudit?: Array<{ at: string; companyId: string; userId: string; agentId: string; action: string; revision: number }>;

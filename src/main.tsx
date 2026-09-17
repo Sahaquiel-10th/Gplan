@@ -45,7 +45,7 @@ import {
   X
 } from "lucide-react";
 import "./styles.css";
-import { OperationsAdmin, OperationsWorkspace, OperationsBell } from "./Operations";
+import { OperationsAdmin, OperationsWorkspace, OperationsBell, OperationsNotifications } from "./Operations";
 
 type Role = "admin" | "user";
 
@@ -486,7 +486,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "dashboard" | "memories" | "account" | "agents" | "agentEditor" | "operations">("chat");
+  const [view, setView] = useState<"chat" | "admin" | "dashboard" | "memories" | "account" | "agents" | "agentEditor" | "operations" | "operationsNotifications">("chat");
   const [operationDate, setOperationDate] = useState("");
   const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
@@ -929,7 +929,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <Bot size={16} />
           智能体
         </button>
-        <OperationsBell api={api} onOpen={(id, date) => { setDraftAgentId(id); setOperationDate(date); setView("operations"); setSidebarOpen(false); }} />
+        <OperationsBell api={api} onOpen={() => { setView("operationsNotifications"); setSidebarOpen(false); }} />
         {user.role === "admin" ? (
           <>
             <button className={`nav-item ${view === "dashboard" ? "active" : ""}`} onClick={() => { setView("dashboard"); setActiveId(""); setSidebarOpen(false); }}>
@@ -1062,6 +1062,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <AdminPanel refreshModels={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "dashboard" && user.role === "admin" ? (
         <ManagementDashboardPage onOpenSidebar={() => setSidebarOpen(true)} />
+      ) : view === "operationsNotifications" ? (
+        <OperationsNotifications api={api} onBack={() => setView("agents")} onOpenSidebar={() => setSidebarOpen(true)} onOpen={(id, date) => { setDraftAgentId(id); setOperationDate(date); setView("operations"); }} />
       ) : view === "operations" ? (
         <OperationsWorkspace key={draftAgentId} api={api} agent={agents.find(a => a.id === draftAgentId) || { id: draftAgentId, name: "经营助手" }} initialDate={operationDate} onBack={() => setView("agents")} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "memories" ? (
