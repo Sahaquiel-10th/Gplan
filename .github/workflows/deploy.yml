@@ -57,6 +57,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key \
             -p "$DEPLOY_PORT" \
             -o BatchMode=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=12 \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
