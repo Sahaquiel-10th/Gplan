@@ -78,6 +78,7 @@ export type IntegrationToken = {
 };
 
 export type Agent = {
+  skill?: import("./agentSkills.js").AgentSkill;
   access?: { mode: "company" | "members"; userIds: string[] };
   operations?: import("./operationsPolicy.js").OperationsConfig;
   id: string;
@@ -272,6 +273,8 @@ export type ManagementBriefReport = {
 };
 
 export type Database = {
+  dashboardDefaults?: Record<string, import("./dashboardPreferences.js").DashboardView>;
+  dashboardPresets?: import("./dashboardPreferences.js").DashboardPreset[];
   operationsSnapshots?: import("./operationsArchive.js").OperationsSnapshot[];
   operationsChecks?: string[];
   operationsNotifications?: import("./operationsPolicy.js").OperationsNotification[];

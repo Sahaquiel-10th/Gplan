@@ -1,3 +1,6 @@
+import { DashboardWorkspace, DashboardSettings } from "./Dashboard";
+import { SkillImport } from "./SkillImport";
+import type { AgentSkill } from "../server/agentSkills";
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
@@ -127,6 +130,7 @@ type Workspace = {
 };
 
 type Agent = {
+  skill?: AgentSkill;
   operationKind?: "loss" | "inventory" | "product";
   access?: { mode: "company" | "members"; userIds: string[] };
   id: string;
@@ -930,12 +934,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           智能体
         </button>
         <OperationsBell api={api} onOpen={() => { setView("operationsNotifications"); setSidebarOpen(false); }} />
-        {user.role === "admin" ? (
-          <>
+        <>
             <button className={`nav-item ${view === "dashboard" ? "active" : ""}`} onClick={() => { setView("dashboard"); setActiveId(""); setSidebarOpen(false); }}>
               <LayoutDashboard size={16} />
               经营驾驶舱
             </button>
+        </>
+        {user.role === "admin" ? (
+          <>
             <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => { setView("admin"); setSidebarOpen(false); }}>
               <Settings size={16} />
               管理后台
@@ -1060,8 +1066,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       {view === "admin" && user.role === "admin" ? (
         <AdminPanel refreshModels={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
-      ) : view === "dashboard" && user.role === "admin" ? (
-        <ManagementDashboardPage onOpenSidebar={() => setSidebarOpen(true)} />
+      ) : view === "dashboard" ? (
+        <DashboardWorkspace api={api} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "operationsNotifications" ? (
         <OperationsNotifications api={api} onBack={() => setView("agents")} onOpenSidebar={() => setSidebarOpen(true)} onOpen={(id, date) => { setDraftAgentId(id); setOperationDate(date); setView("operations"); }} />
       ) : view === "operations" ? (
@@ -1419,6 +1425,8 @@ function AgentEditorPage({ user, agent, agents, models, onCancel, onSaved }: {
     allowImageInput: agent?.allowImageInput ?? true,
     allowWebSearch: agent?.allowWebSearch ?? false
   });
+  const [mode, setMode] = useState<"prompt"|"skill">(agent?.skill ? "skill" : "prompt");
+  const [skill, setSkill] = useState<AgentSkill|undefined>(agent?.skill);
   const [access, setAccess] = useState(agent?.access || { mode: "company" as "company" | "members", userIds: [] as string[] });
   const [accessUsers, setAccessUsers] = useState<User[]>([]);
   useEffect(() => { if (user.role === "admin") api<{users: User[]}>("/api/admin/users").then(r => setAccessUsers(r.users.filter(u => u.enabled))).catch(() => undefined); }, []);
@@ -1440,11 +1448,12 @@ function AgentEditorPage({ user, agent, agents, models, onCancel, onSaved }: {
   async function save(event: FormEvent) {
     event.preventDefault();
     if (!draft.name.trim() || !draft.description.trim() || !draft.modelId) return;
+    if (mode === "skill" && !skill) { setError("请先上传 Skill"); return; }
     setSaving(true); setError("");
     try {
       await api(agent ? `/api/agents/${agent.id}` : "/api/agents", {
         method: agent ? "PATCH" : "POST",
-        body: JSON.stringify({ ...draft, ...(user.role === "admin" ? { access } : {}), name: draft.name.trim(), description: draft.description.trim(), prompt: draft.prompt.trim(), published: true })
+        body: JSON.stringify({ ...draft, ...(user.role === "admin" ? { access, skill: mode === "skill" ? skill : null } : {}), name: draft.name.trim(), description: draft.description.trim(), prompt: draft.prompt.trim(), published: true })
       });
       await onSaved();
     } catch (err) { setError(err instanceof Error ? err.message : "保存失败"); }
@@ -1458,7 +1467,7 @@ function AgentEditorPage({ user, agent, agents, models, onCancel, onSaved }: {
     const userMessage: Message = { role: "user", content, modelId: draft.modelId, createdAt: new Date().toISOString() };
     setDebugMessages((items) => [...items, userMessage]); setDebugInput(""); setDebugging(true); setError("");
     try {
-      const result = await api<{ message: Message }>("/api/agents/debug", { method: "POST", body: JSON.stringify({ content, prompt: draft.prompt, modelId: draft.modelId }) });
+      const result = await api<{ message: Message }>("/api/agents/debug", { method: "POST", body: JSON.stringify({ content, prompt: draft.prompt, modelId: draft.modelId, skill: mode === "skill" ? skill : undefined }) });
       setDebugMessages((items) => [...items, result.message]);
     } catch (err) { setError(err instanceof Error ? err.message : "调试失败"); }
     finally { setDebugging(false); }
@@ -1472,6 +1481,7 @@ function AgentEditorPage({ user, agent, agents, models, onCancel, onSaved }: {
     </header>
     <div className="agent-workbench-body">
       <form id="agent-config" className="agent-config" onSubmit={save}>
+        {user.role === "admin" && <><div className="op-tabs" role="tablist" aria-label="智能体创建方式"><button type="button" role="tab" aria-selected={mode === "prompt"} className={mode === "prompt" ? "active" : ""} onClick={() => setMode("prompt")}>提示词 + 配置</button><button type="button" role="tab" aria-selected={mode === "skill"} className={mode === "skill" ? "active" : ""} onClick={() => setMode("skill")}>上传 Skill + 配置</button></div>{mode === "skill" && <SkillImport api={api} value={skill} onChange={s => { setSkill(s); setDraft(d => ({...d,name:d.name || s.name,description:d.description || s.description})); }} />}</>}
         <section><h3>基本信息</h3><div className="agent-identity-preview"><span style={{ background: draft.color }}>{draft.avatar}</span><div><strong>{draft.name || "未命名智能体"}</strong><small>{draft.group || "未分组"}</small></div></div>
           <label>名称<input maxLength={40} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="例如：详情页策划助手" /></label>
           <label>描述<textarea maxLength={220} rows={3} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} placeholder="告诉使用者它擅长什么、该怎么用" /></label>
@@ -1510,7 +1520,7 @@ function AgentEditorPage({ user, agent, agents, models, onCancel, onSaved }: {
         </section>
         {user.role === "admin" && <section className="op-member-access"><h3>成员可见范围</h3><select value={access.mode} onChange={e => setAccess({ ...access, mode: e.target.value as "company" | "members" })}><option value="company">企业全部成员</option><option value="members">指定成员内测</option></select>{access.mode === "members" && accessUsers.map(u => <label key={u.id}><input type="checkbox" checked={access.userIds.includes(u.id)} onChange={e => setAccess({ ...access, userIds: e.target.checked ? [...access.userIds, u.id] : access.userIds.filter(id => id !== u.id) })} />{u.username}</label>)}<small>指定成员的智能体不开放公开分享链接。经营助手的数据范围请在管理后台配置。</small></section>}
         <section><h3>外观</h3><div className="appearance-options"><div>{emojis.map((emoji) => <button type="button" key={emoji} className={draft.avatar === emoji ? "active" : ""} onClick={() => setDraft({ ...draft, avatar: emoji })}>{emoji}</button>)}</div><div>{colors.map((color) => <button type="button" aria-label={color} key={color} className={draft.color === color ? "active" : ""} style={{ background: color }} onClick={() => setDraft({ ...draft, color })} />)}</div></div></section>
-        <section><h3>指令</h3><label>系统提示词<textarea rows={10} maxLength={6000} value={draft.prompt} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} placeholder="定义角色、工作流程、边界和输出格式。右侧可随时调试。" /><small>{draft.prompt.length} / 6000</small></label></section>
+        <section><h3>{mode === "skill" ? "补充要求（可选）" : "指令"}</h3><label>{mode === "skill" ? "在 Skill 基础上的补充提示词" : "系统提示词"}<textarea rows={10} maxLength={6000} value={draft.prompt} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} placeholder="定义角色、工作流程、边界和输出格式。右侧可随时调试。" /><small>{draft.prompt.length} / 6000</small></label></section>
         <fieldset className="agent-tool-settings"><legend>可用能力</legend><label><input type="checkbox" checked={draft.allowFileUpload} onChange={(e) => setDraft({ ...draft, allowFileUpload: e.target.checked, allowImageInput: e.target.checked ? draft.allowImageInput : false })} /><span><Paperclip size={16} />文件上传</span></label><label><input type="checkbox" checked={draft.allowImageInput} disabled={!draft.allowFileUpload} onChange={(e) => setDraft({ ...draft, allowImageInput: e.target.checked })} /><span><Image size={16} />图片理解</span></label><label><input type="checkbox" checked={draft.allowWebSearch} onChange={(e) => setDraft({ ...draft, allowWebSearch: e.target.checked })} /><span><Globe2 size={16} />联网搜索</span></label></fieldset>
         {error ? <div className="error">{error}</div> : null}
       </form>
@@ -1888,7 +1898,7 @@ function ManagementDashboardPage({ onOpenSidebar }: { onOpenSidebar: () => void 
 }
 
 function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
-  const [tab, setTab] = useState<"settings" | "users" | "tokens" | "aiQuery" | "data" | "secure" | "operations">("settings");
+  const [tab, setTab] = useState<"settings" | "users" | "tokens" | "aiQuery" | "data" | "secure" | "operations" | "dashboard">("settings");
   const [users, setUsers] = useState<User[]>([]);
   const [tokens, setTokens] = useState<IntegrationToken[]>([]);
   const [settings, setSettings] = useState<SystemSettings>({ safetyRules: "" });
@@ -1925,6 +1935,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={16} />账号</button>
           <button className={tab === "tokens" ? "active" : ""} onClick={() => setTab("tokens")}><KeyRound size={16} />外接机器人设置</button>
           <button className={tab === "aiQuery" ? "active" : ""} onClick={() => setTab("aiQuery")}><BarChart3 size={16} />AI问数测试</button>
+          <button className={tab === "dashboard" ? "active" : ""} onClick={() => setTab("dashboard")}><LayoutDashboard size={16} />驾驶舱默认</button>
           <button className={tab === "operations" ? "active" : ""} onClick={() => setTab("operations")}><Bot size={16} />经营助手</button>
           <button className={tab === "data" ? "active" : ""} onClick={() => setTab("data")}><FileSpreadsheet size={16} />数据接入</button>
           <button className={`secure-tab ${tab === "secure" ? "active" : ""}`} onClick={() => setTab("secure")}><Lock size={16} />模型充值后台</button>
@@ -1936,6 +1947,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           {tab === "tokens" ? <TokensTab tokens={tokens} reload={load} setNotice={setNotice} /> : null}
           {tab === "aiQuery" ? <AiQueryTestTab /> : null}
           {tab === "data" ? <DataPlatformTab /> : null}
+          {tab === "dashboard" ? <DashboardSettings api={api} /> : null}
           {tab === "operations" ? <OperationsAdmin api={api} onChanged={refreshModels} /> : null}
           {tab === "secure" ? <SecureAdminTab users={users} refreshModels={refreshModels} /> : null}
         </div>

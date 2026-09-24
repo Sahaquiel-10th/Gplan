@@ -11,7 +11,8 @@
     "test:management-briefs": "tsx --test server/managementBriefs.test.ts",
     "test:wanliniu": "tsx --test server/data-connectors/wanliniu/*.test.ts",
     "start": "NODE_ENV=production tsx server/index.ts",
-    "test:operations": "tsx --test server/operations*.test.ts"
+    "test:operations": "tsx --test server/operations*.test.ts",
+    "test:workspace": "tsx --test server/agentSkills.test.ts server/dashboardPreferences.test.ts"
   },
   "dependencies": {
     "@alicloud/bailian20231229": "^2.12.0",

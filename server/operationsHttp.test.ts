@@ -449,6 +449,30 @@ test(
         ).status,
         400,
       );
+      const pref = await request("/api/dashboard/preferences", "allowed");
+      assert.equal(pref.status,200);assert.equal(pref.data.sources.length,1);
+      const view = {...pref.data.defaults,widgets:["overview","raw"],sourceAgentId:"ops"};
+      const preset = await request("/api/dashboard/presets", "allowed", {name:"个人库存",view});
+      assert.equal(preset.status,200);
+      assert.equal((await request("/api/dashboard/preferences", "denied")).data.presets.length,0);
+      assert.notEqual((await request("/api/dashboard/presets", "denied", {id:preset.data.preset.id,name:"越权",view})).status,200);
+      assert.notEqual((await request("/api/dashboard/presets/"+preset.data.preset.id,"denied",undefined,"DELETE")).status,200);
+      assert.equal((await request("/api/dashboard/default","allowed",{view},"PUT")).status,403);
+      assert.equal((await request("/api/dashboard/default","admin",{view:{...view,widgets:["raw"]}},"PUT")).status,200);
+      assert.deepEqual((await request("/api/dashboard/preferences","allowed")).data.defaults.widgets,["raw"]);
+      assert.notDeepEqual((await request("/api/dashboard/preferences","other")).data.defaults.widgets,["raw"]);
+      assert.equal((await request("/api/dashboard/table","allowed",{view})).status,403);
+      assert.equal((await request("/api/dashboard/catalog","allowed")).status,403);
+      assert.equal((await request("/api/dashboard/scoped-report?agentId=ops","allowed")).status,200);
+      assert.equal((await request("/api/dashboard/scoped-report?agentId=ops","denied")).status,403);
+      const upload = new FormData();upload.append("file",new Blob(["---\nname: Imported Skill\n---\n# Skill workflow\nOnly use authorized data."]),"SKILL.md");
+      const imported = await fetch(baseUrl+"/api/admin/agent-skills/import",{method:"POST",headers:{Authorization:"Bearer "+signToken({sub:"admin"},secret)},body:upload});
+      assert.equal(imported.status,200);const skill=(await imported.json()).skill;
+      assert.equal((await fetch(baseUrl+"/api/admin/agent-skills/import",{method:"POST",headers:{Authorization:"Bearer "+signToken({sub:"allowed"},secret)},body:upload})).status,403);
+      const createdSkill = await request("/api/agents","admin",{name:"Skill agent",description:"Skill example",modelId:"model",prompt:"extra",skill});
+      assert.equal(createdSkill.status,200);assert.equal(createdSkill.data.agent.skill.entry,"SKILL.md");
+      assert.equal((await request("/api/agents","allowed")).data.agents.find((a:{id:string})=>a.id===createdSkill.data.agent.id).skill,undefined);
+      assert.equal((await request("/api/agents/"+createdSkill.data.agent.id,"admin",{skill:null},"PATCH")).status,200);
       const revoke = { ...op.operations!, grants: [], state: "disabled" };
       assert.equal(
         (
@@ -485,6 +509,7 @@ test(
         (await request("/api/admin/operations/install", "admin", {})).status,
         200,
       );
+      assert.equal((await request("/api/dashboard/scoped-report?agentId=ops","allowed")).status,403);
       const admin = await request("/api/admin/operations", "admin");
       assert.equal(admin.data.agents.length, 3);
       assert.equal(

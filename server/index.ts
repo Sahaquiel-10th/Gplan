@@ -1,3 +1,5 @@
+import { createDashboardRouter } from "./dashboardRoutes.js";
+import { parseSkill, validateSkill, agentInstructions } from "./agentSkills.js";
 import { canUseAgent } from "./operationsPolicy.js";
 import { createOperationsRouter, startOperationsNotifications } from "./operationsRoutes.js";
 import express, { Request, RequestHandler, Response } from "express";
@@ -144,6 +146,7 @@ app.get("/api/health", (_req, res) => {
 
 app.use("/api/open/v1", clientDataApiRouter);
 app.use("/api", createOperationsRouter(store, jwtSecret));
+app.use("/api", createDashboardRouter(store, jwtSecret));
 
 function handleDingTalkEvent(req: Request, res: Response) {
   const expectedToken = process.env.DINGTALK_EVENT_VERIFY_TOKEN?.trim();
@@ -312,6 +315,7 @@ function publicAgent(agent: Agent, users: User[], viewerId = "") {
     name: agent.name,
     description: agent.description,
     prompt: agent.prompt,
+    skill: users.some(u => u.id === viewerId && u.companyId === agent.companyId && (u.role === "admin" || u.id === agent.ownerId)) ? agent.skill : undefined,
     modelId: agent.modelId,
     group: agent.group,
     avatar: agent.avatar,
@@ -801,6 +805,11 @@ app.get("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
   res.json({ agents });
 }));
 
+app.post("/api/admin/agent-skills/import", auth(jwtSecret), requireRole("admin"), multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } }).single("file"), asyncRoute(async (req, res) => {
+ if (!req.file) throw new Error("请选择 Skill 文件");
+ res.json({ skill: await parseSkill(normalizeUploadFilename(req.file.originalname), req.file.buffer) });
+}));
+
 app.post("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
   const name = requiredString(req.body.name, "智能体名字");
   const description = requiredString(req.body.description, "功能描述");
@@ -816,6 +825,7 @@ app.post("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
       companyId: req.user!.companyId,
       ownerId: req.user!.id,
       access: normalizeAgentAccess(req.body.access, req.user!, db.users),
+      skill: req.user!.role === "admin" ? validateSkill(req.body.skill) : undefined,
       name: name.slice(0, 40),
       description: description.slice(0, 220),
       prompt: prompt.slice(0, agentPromptMaxChars),
@@ -846,6 +856,7 @@ app.patch("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
     if (!target) throw new Error("智能体不存在");
     if (target.operations) throw new Error("请在管理员后台的经营助手中配置");
     if (target.ownerId !== req.user!.id && req.user!.role !== "admin") throw new Error("没有权限修改这个智能体");
+    if (req.body.skill !== undefined) { if (req.user!.role !== "admin") throw new Error("仅管理员可导入 Skill"); target.skill = validateSkill(req.body.skill); }
     if (req.body.access !== undefined) target.access = normalizeAgentAccess(req.body.access, req.user!, db.users);
     if (typeof req.body.name === "string" && req.body.name.trim()) target.name = req.body.name.trim().slice(0, 40);
     if (typeof req.body.description === "string" && req.body.description.trim()) target.description = req.body.description.trim().slice(0, 220);
@@ -896,8 +907,10 @@ app.post("/api/agents/debug", auth(jwtSecret), asyncRoute(async (req, res) => {
   const model = db.models.find((item) => item.id === modelId && item.enabled && item.kind === "chat");
   if (!model) throw new Error("模型不存在或未启用");
   const prompt = typeof req.body.prompt === "string" ? req.body.prompt.trim().slice(0, agentPromptMaxChars) : "";
+  const skill = req.user!.role === "admin" ? validateSkill(req.body.skill) : undefined;
+  const instruction = agentInstructions({ prompt, skill });
   const messages: Message[] = [
-    ...(prompt ? [{ role: "assistant" as const, content: prompt, modelId, createdAt: now() }] : []),
+    ...(instruction ? [{ role: "assistant" as const, content: instruction, modelId, createdAt: now() }] : []),
     { role: "user", content, modelId, createdAt: now() }
   ];
   const result = await callModel(model, messages, db.settings.safetyRules, res.locals.requestId);
@@ -963,7 +976,7 @@ app.post("/api/public/agents/:slug/chat", asyncRoute(async (req, res) => {
     }));
   const messages: Message[] = [
     ...(searchContext ? [{ role: "system" as const, content: searchContext, modelId: model.id, createdAt: now() }] : []),
-    ...(agent.prompt ? [{ role: "assistant" as const, content: agent.prompt, modelId: model.id, createdAt: now() }] : []),
+    ...(agentInstructions(agent) ? [{ role: "assistant" as const, content: agentInstructions(agent), modelId: model.id, createdAt: now() }] : []),
     ...history,
     { role: "user", content, modelId: model.id, createdAt: now() }
   ];
@@ -1167,7 +1180,7 @@ app.post(
           ...(injectedContext ? [{ role: "system" as const, content: injectedContext, modelId: model.id, createdAt: now() }] : []),
           ...(attachmentContext ? [{ role: "system" as const, content: attachmentContext, modelId: model.id, createdAt: now() }] : []),
           ...(searchContext ? [{ role: "system" as const, content: searchContext, modelId: model.id, createdAt: now() }] : []),
-          ...(agent?.prompt ? [{ role: "assistant" as const, content: agent.prompt, modelId: model.id, createdAt: now() }] : []),
+          ...(agent && agentInstructions(agent) ? [{ role: "assistant" as const, content: agentInstructions(agent), modelId: model.id, createdAt: now() }] : []),
           ...historyMessages,
           {
             ...userMessage,

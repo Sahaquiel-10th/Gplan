@@ -75,7 +75,7 @@ function connection() {
   });
   return pool;
 }
-async function query(
+export async function query(
   sql: string,
   params: (string | number)[],
 ): Promise<RowDataPacket[]> {
