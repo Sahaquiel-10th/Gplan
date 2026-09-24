@@ -187,6 +187,82 @@ function RawTable({
     [note, setNote] = useState(""),
     [query, setQuery] = useState(view.search),
     [reload, setReload] = useState(0);
+  const resize = useRef<{
+    x: number;
+    y: number;
+    size: number;
+    key: string;
+    row: boolean;
+  } | null>(null);
+  const width = (c: string) =>
+    view.columnWidths?.[view.table + ":" + c] ?? (c === "name" ? 260 : 160);
+  function resizeHandle(
+    key: string,
+    row: boolean,
+    size: number,
+    label: string,
+  ) {
+    const update = (next: number) =>
+      onChange({
+        ...view,
+        [row ? "rowHeights" : "columnWidths"]: {
+          ...(row ? view.rowHeights : view.columnWidths),
+          [key]: Math.round(
+            Math.max(row ? 36 : 80, Math.min(row ? 400 : 800, next)),
+          ),
+        },
+      });
+    return (
+      <span
+        role="separator"
+        tabIndex={0}
+        aria-label={label}
+        aria-orientation={row ? "horizontal" : "vertical"}
+        aria-valuenow={size}
+        aria-valuemin={row ? 36 : 80}
+        aria-valuemax={row ? 400 : 800}
+        title={label + "（拖动或方向键调整）"}
+        className={row ? "dash-row-resize" : "dash-col-resize"}
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          e.currentTarget.setPointerCapture(e.pointerId);
+          resize.current = { x: e.clientX, y: e.clientY, size, key, row };
+        }}
+        onPointerMove={(e) => {
+          const r = resize.current;
+          if (r?.key === key && r.row === row)
+            update(r.size + (row ? e.clientY - r.y : e.clientX - r.x));
+        }}
+        onPointerUp={(e) => {
+          resize.current = null;
+          if (e.currentTarget.hasPointerCapture(e.pointerId))
+            e.currentTarget.releasePointerCapture(e.pointerId);
+        }}
+        onLostPointerCapture={() => {
+          resize.current = null;
+        }}
+        onPointerCancel={() => {
+          resize.current = null;
+        }}
+        onKeyDown={(e) => {
+          if (
+            (row
+              ? ["ArrowUp", "ArrowDown"]
+              : ["ArrowLeft", "ArrowRight"]
+            ).includes(e.key)
+          ) {
+            e.preventDefault();
+            update(
+              size + (["ArrowUp", "ArrowLeft"].includes(e.key) ? -10 : 10),
+            );
+          }
+        }}
+      />
+    );
+  }
   const generation = useRef(0);
   const key = JSON.stringify([
     date,
@@ -270,6 +346,15 @@ function RawTable({
   return (
     <section className="dash-panel dash-raw">
       <h3>原始明细表</h3>
+      <p className="dash-muted">
+        拖动表头右侧调整列宽，拖动左侧行号下边缘调整行高。尺寸可随个人方案保存；行高按每页行位置应用。
+      </p>
+      <button
+        className="secondary"
+        onClick={() => onChange({ ...view, columnWidths: {}, rowHeights: {} })}
+      >
+        重置表格尺寸
+      </button>
       <div className="dash-tools">
         <label>
           数据表
@@ -337,9 +422,19 @@ function RawTable({
         </div>
       )}
       <div className="dash-table">
-        <table>
+        <table
+          className="dash-resizable"
+          style={{ width: 48 + columns.reduce((sum, c) => sum + width(c), 0) }}
+        >
+          <colgroup>
+            <col style={{ width: 48 }} />
+            {columns.map((c) => (
+              <col key={c} style={{ width: width(c) }} />
+            ))}
+          </colgroup>
           <thead>
             <tr>
+              <th className="dash-row-number">#</th>
               {columns.map((c) => (
                 <th
                   key={c}
@@ -374,34 +469,64 @@ function RawTable({
                         : ""}
                     </button>
                   )}
+                  {resizeHandle(
+                    view.table + ":" + c,
+                    false,
+                    width(c),
+                    "调整" + labels[c] + "列宽",
+                  )}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {rows.map((r, i) => (
-              <tr key={i}>
+              <tr
+                key={i}
+                style={{
+                  height: view.rowHeights?.[view.table + ":" + (i + 1)] ?? 48,
+                }}
+              >
+                <td className="dash-row-number">
+                  {(page - 1) * view.pageSize + i + 1}
+                  {resizeHandle(
+                    view.table + ":" + (i + 1),
+                    true,
+                    view.rowHeights?.[view.table + ":" + (i + 1)] ?? 48,
+                    "调整第" + (i + 1) + "行高度",
+                  )}
+                </td>
                 {columns.map((c) => (
                   <td key={c}>
-                    {c === "brand" ? (
-                      <button
-                        className="dash-link"
-                        onClick={() =>
-                          onChange({
-                            ...view,
-                            table: "products",
-                            brand: String(r.brand),
-                            search: "",
-                          })
-                        }
-                      >
-                        {String(r[c] ?? "—")}
-                      </button>
-                    ) : r[c] == null ? (
-                      "—"
-                    ) : (
-                      String(r[c])
-                    )}
+                    <div
+                      className="dash-cell-content"
+                      title={String(r[c] ?? "—")}
+                      style={{
+                        maxHeight:
+                          (view.rowHeights?.[view.table + ":" + (i + 1)] ??
+                            48) - 16,
+                      }}
+                    >
+                      {c === "brand" ? (
+                        <button
+                          className="dash-link"
+                          onClick={() =>
+                            onChange({
+                              ...view,
+                              table: "products",
+                              brand: String(r.brand),
+                              search: "",
+                            })
+                          }
+                        >
+                          {String(r[c] ?? "—")}
+                        </button>
+                      ) : r[c] == null ? (
+                        "—"
+                      ) : (
+                        String(r[c])
+                      )}
+                    </div>
                   </td>
                 ))}
               </tr>

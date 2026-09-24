@@ -17,6 +17,8 @@ export type DashboardView = {
   direction: "asc" | "desc";
   pageSize: number;
   columns: string[];
+  columnWidths?: Record<string, number>;
+  rowHeights?: Record<string, number>;
 };
 export const dashboardColumns = [
   "brand",
@@ -83,7 +85,36 @@ export function normalizeDashboardView(value: unknown): DashboardView {
     v.columns.some((c) => !dashboardColumns.includes(c))
   )
     throw new Error("请选择有效数据列");
+  function sizes(input: unknown, row: boolean): Record<string, number> {
+    if (input === undefined) return {};
+    if (!input || typeof input !== "object" || Array.isArray(input))
+      throw new Error("表格尺寸无效");
+    const entries = Object.entries(input);
+    if (entries.length > (row ? 300 : 100)) throw new Error("表格尺寸过多");
+    return Object.fromEntries(
+      entries.map(([key, size]) => {
+        const [table, field] = key.split(":");
+        const valid =
+          ["products", "brands", "lines"].includes(table) &&
+          key.split(":").length === 2 &&
+          (row
+            ? /^(?:[1-9]|[1-9][0-9]|100)$/.test(field)
+            : [...dashboardColumns, "products"].includes(field));
+        if (
+          !valid ||
+          typeof size !== "number" ||
+          !Number.isFinite(size) ||
+          size < (row ? 36 : 80) ||
+          size > (row ? 400 : 800)
+        )
+          throw new Error("表格尺寸无效");
+        return [key, Math.round(size)];
+      }),
+    );
+  }
   return {
+    columnWidths: sizes(v.columnWidths, false),
+    rowHeights: sizes(v.rowHeights, true),
     widgets: [...new Set(v.widgets)],
     sourceAgentId: String(v.sourceAgentId || "").slice(0, 100),
     table: v.table!,
