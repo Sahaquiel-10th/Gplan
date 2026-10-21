@@ -1,4 +1,6 @@
 import { createDashboardRouter } from "./dashboardRoutes.js";
+import { createCommerceRouter } from "./commerceRoutes.js";
+import { ensureCommerceAgent, commerceJobUsesAttachment } from "./commerce.js";
 import { parseSkill, validateSkill, agentInstructions } from "./agentSkills.js";
 import { canUseAgent } from "./operationsPolicy.js";
 import { createOperationsRouter, startOperationsNotifications } from "./operationsRoutes.js";
@@ -147,6 +149,7 @@ app.get("/api/health", (_req, res) => {
 app.use("/api/open/v1", clientDataApiRouter);
 app.use("/api", createOperationsRouter(store, jwtSecret));
 app.use("/api", createDashboardRouter(store, jwtSecret));
+app.use("/api", createCommerceRouter(store, jwtSecret, uploadDir));
 
 function handleDingTalkEvent(req: Request, res: Response) {
   const expectedToken = process.env.DINGTALK_EVENT_VERIFY_TOKEN?.trim();
@@ -311,6 +314,7 @@ function publicAgent(agent: Agent, users: User[], viewerId = "") {
   return {
     id: agent.id,
     operationKind: agent.operations?.kind,
+    commerceKind: agent.commerce?.kind,
     access: agent.access ? { mode: agent.access.mode, userIds: users.some(u => u.id === viewerId && (u.role === "admin" || u.id === agent.ownerId)) ? agent.access.userIds : [] } : undefined,
     name: agent.name,
     description: agent.description,
@@ -526,7 +530,8 @@ async function cleanupOrphanAttachments() {
   const removedPaths = await store.mutate((db) => {
     const paths: string[] = [];
     db.attachments = db.attachments.filter((attachment) => {
-      const stale = !attachment.messageId && new Date(attachment.createdAt).getTime() < cutoff;
+      const usedByCreative = db.commerceJobs?.some(j => commerceJobUsesAttachment(j, attachment.id));
+      const stale = !usedByCreative && !attachment.messageId && new Date(attachment.createdAt).getTime() < cutoff;
       if (stale) paths.push(attachment.storagePath);
       return !stale;
     });
@@ -713,10 +718,12 @@ app.get("/api/attachments/:id/content", auth(jwtSecret), asyncRoute(async (req, 
     (item.userId === req.user!.id || (req.user!.role === "admin" && item.companyId === req.user!.companyId))
   );
   if (!attachment || !fs.existsSync(attachment.storagePath)) return res.status(404).json({ error: "附件不存在" });
+  const creativeJobs = db.commerceJobs?.filter(j => commerceJobUsesAttachment(j, attachment.id)) || [];
+  if (creativeJobs.length && !creativeJobs.some(j => db.agents.some(a => a.id === j.agentId && a.commerce && canUseAgent(a, req.user!, db.users)))) return res.status(404).json({ error: "附件不存在或无权访问" });
   const attachmentConversation = db.conversations.find(c => c.id === attachment.conversationId);
   if (attachmentConversation?.agentId && !db.agents.some(a => a.id === attachmentConversation.agentId && canUseAgent(a, req.user!, db.users))) return res.status(404).json({ error: "附件不存在或无权访问" });
   res.setHeader("Content-Type", attachment.mimeType);
-  res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(attachment.originalName)}`);
+  res.setHeader("Content-Disposition", `${req.query.download === "1" ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(attachment.originalName)}`);
   res.setHeader("Cache-Control", "private, max-age=3600");
   fs.createReadStream(attachment.storagePath).pipe(res);
 }));
@@ -727,6 +734,7 @@ app.delete("/api/attachments/:id", auth(jwtSecret), asyncRoute(async (req, res) 
     const index = db.attachments.findIndex((item) => item.id === req.params.id && item.userId === req.user!.id);
     if (index === -1) throw new Error("附件不存在");
     if (db.attachments[index].messageId) throw new Error("对话中的附件不能删除");
+    if (db.commerceJobs?.some(j => commerceJobUsesAttachment(j, String(req.params.id)))) throw new Error("创作任务使用的图片不能单独删除");
     storagePath = db.attachments[index].storagePath;
     db.attachments.splice(index, 1);
   });
@@ -795,6 +803,8 @@ app.post("/api/workspaces", auth(jwtSecret), asyncRoute(async (req, res) => {
 }));
 
 app.get("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const snapshot = await store.read();
+  if (!snapshot.agents.some(a => a.companyId === req.user!.companyId && a.commerce)) await store.mutate(db => ensureCommerceAgent(db, req.user!.companyId));
   const db = await store.read();
   const agents = db.agents
     .filter((agent) =>
@@ -855,6 +865,7 @@ app.patch("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
     const target = db.agents.find((item) => item.id === req.params.id && item.companyId === req.user!.companyId);
     if (!target) throw new Error("智能体不存在");
     if (target.operations) throw new Error("请在管理员后台的经营助手中配置");
+    if (target.commerce) throw new Error("商品创作助手使用专用流程，请从智能体入口使用");
     if (target.ownerId !== req.user!.id && req.user!.role !== "admin") throw new Error("没有权限修改这个智能体");
     if (req.body.skill !== undefined) { if (req.user!.role !== "admin") throw new Error("仅管理员可导入 Skill"); target.skill = validateSkill(req.body.skill); }
     if (req.body.access !== undefined) target.access = normalizeAgentAccess(req.body.access, req.user!, db.users);
@@ -922,6 +933,7 @@ app.delete("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
     const index = db.agents.findIndex((item) => item.id === req.params.id && item.companyId === req.user!.companyId);
     if (index === -1) throw new Error("智能体不存在");
     const agent = db.agents[index];
+    if (agent.commerce) throw new Error("内置商品创作助手不能从普通智能体编辑器删除");
     if (agent.ownerId !== req.user!.id && req.user!.role !== "admin") throw new Error("没有权限删除这个智能体");
     db.agents.splice(index, 1);
     for (const conversation of db.conversations) {
@@ -933,7 +945,7 @@ app.delete("/api/agents/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
 
 app.get("/api/public/agents/:slug", asyncRoute(async (req, res) => {
   const db = await store.read();
-  const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published && !item.operations && item.access?.mode !== "members");
+  const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published && !item.operations && !item.commerce && item.access?.mode !== "members");
   if (!agent) return res.status(404).json({ error: "智能体不存在或未发布" });
   const { prompt, ...safe } = publicAgent(agent, db.users);
   res.json({ agent: safe });
@@ -953,7 +965,7 @@ app.post("/api/public/agents/:slug/chat", asyncRoute(async (req, res) => {
   const content = requiredString(req.body.content, "消息");
   const incomingMessages = Array.isArray(req.body.messages) ? req.body.messages : [];
   const db = await store.read();
-  const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published && !item.operations && item.access?.mode !== "members");
+  const agent = db.agents.find((item) => item.publicSlug === req.params.slug && item.published && !item.operations && !item.commerce && item.access?.mode !== "members");
   if (!agent) return res.status(404).json({ error: "智能体不存在或未发布" });
   const model = db.models.find((item) => item.id === agent.modelId && item.enabled && item.apiKey && item.kind === "chat");
   if (!model) return res.status(404).json({ error: "没有可用聊天模型" });
@@ -1018,7 +1030,7 @@ app.post(
         )
       : undefined;
     if (lockedAgentId && !agent) return res.status(404).json({ error: "智能体不存在或无权使用" });
-    if (agent?.operations) return res.status(403).json({ error: "请从经营助手的授权报表入口使用，不支持普通聊天访问" });
+    if (agent?.operations || agent?.commerce) return res.status(403).json({ error: "请从该智能体的专用工作页使用" });
     const lockedModelId = existing?.modelId || agent?.modelId || modelId;
     const model = db.models.find((item) => item.id === lockedModelId && item.enabled);
     if (!model) return res.status(404).json({ error: "模型不存在或未启用" });

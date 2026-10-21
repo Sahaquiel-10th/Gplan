@@ -78,6 +78,7 @@ export type IntegrationToken = {
 };
 
 export type Agent = {
+  commerce?: { kind: "product_creative" };
   skill?: import("./agentSkills.js").AgentSkill;
   access?: { mode: "company" | "members"; userIds: string[] };
   operations?: import("./operationsPolicy.js").OperationsConfig;
@@ -273,6 +274,7 @@ export type ManagementBriefReport = {
 };
 
 export type Database = {
+  commerceJobs?: import("./commerceTypes.js").CommerceJob[];
   dashboardDefaults?: Record<string, import("./dashboardPreferences.js").DashboardView>;
   dashboardPresets?: import("./dashboardPreferences.js").DashboardPreset[];
   operationsSnapshots?: import("./operationsArchive.js").OperationsSnapshot[];

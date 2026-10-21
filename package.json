@@ -12,7 +12,8 @@
     "test:wanliniu": "tsx --test server/data-connectors/wanliniu/*.test.ts",
     "start": "NODE_ENV=production tsx server/index.ts",
     "test:operations": "tsx --test server/operations*.test.ts",
-    "test:workspace": "tsx --test server/agentSkills.test.ts server/dashboardPreferences.test.ts"
+    "test:workspace": "tsx --test server/agentSkills.test.ts server/dashboardPreferences.test.ts",
+    "test:commerce": "tsx --test server/commerce*.test.ts"
   },
   "dependencies": {
     "@alicloud/bailian20231229": "^2.12.0",
