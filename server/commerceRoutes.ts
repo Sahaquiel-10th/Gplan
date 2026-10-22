@@ -37,6 +37,18 @@ export function createCommerceRouter(store: Store, secret: string, uploadDir: st
     finally { recognitionActive.delete(req.user!.id); }
   }));
 
+  // Share the per-member guard across all auxiliary AI calls.
+  router.post(["/commerce/reference/recognize", "/commerce/modules/suggest"], asyncRoute(async (req, res) => {
+    if (recognitionActive.has(req.user!.id)) return res.status(429).json({ error: "正在识别或整理建议，请稍等" });
+    recognitionActive.add(req.user!.id);
+    try {
+      if (req.path === "/commerce/reference/recognize") {
+        if (typeof req.body.imageId !== "string") throw new Error("请选择主要参考图");
+        res.json({ reference: await service.recognizeReference(req.user!, req.body.imageId) });
+      } else res.json({ suggestions: await service.suggestModule(req.user!, req.body) });
+    } finally { recognitionActive.delete(req.user!.id); }
+  }));
+
   router.get("/commerce/jobs", asyncRoute(async (req, res) => {
     const db = await store.read();
     const jobs = (db.commerceJobs || []).filter(j => j.userId === req.user!.id && j.companyId === req.user!.companyId && db.agents.some(a => a.id === j.agentId && canUseAgent(a, req.user!, db.users)))

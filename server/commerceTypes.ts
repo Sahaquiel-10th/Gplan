@@ -31,6 +31,34 @@ export type CommerceBrief = {
   goal: string;
   count: 4 | 5;
   notes: string;
+  composition?: CommerceComposition;
+};
+
+export const commerceModuleTypes = {
+  product: "商品主体", brand: "品牌标识", benefit: "主要卖点", activity: "活动",
+  price: "价格", offer: "优惠", gift: "赠品", service: "服务信息", badge: "身份或排行标识", other: "其他内容",
+} as const;
+export type CommerceModuleType = keyof typeof commerceModuleTypes;
+export type CommerceReferenceModule = {
+  id: string; type: CommerceModuleType; name: string; location: string;
+  bbox?: [number, number, number, number]; texts: string[]; appearance: string;
+  confidence: "high" | "medium" | "low"; uncertainties: string[];
+};
+export type CommerceReference = {
+  imageId: string;
+  overall: { layout: string; background: string; palette: string; visualStyle: string };
+  modules: CommerceReferenceModule[];
+};
+export type CommerceModule = {
+  id: string; type: CommerceModuleType; name: string; enabled: boolean;
+  content: string; location: string; appearance: string;
+  emphasis: "primary" | "normal" | "secondary"; assetId: string;
+  source?: CommerceReferenceModule & { imageId: string };
+};
+export type CommerceComposition = {
+  primaryReferenceId: string; reference?: CommerceReference;
+  overall: CommerceReference["overall"];
+  modules: CommerceModule[];
 };
 
 export type CommerceRecognition = {

@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, Copy, Download, History, ImagePlus, LoaderCircle, Menu, Plus, RefreshCw, Sparkles, X } from "lucide-react";
 import { commerceOptions as options, defaultCommerceBrief, type CommerceBrief, type CommercePublicJob, type CommerceRecognition } from "../server/commerceTypes";
 import "./commerce.css";
+import { CommerceModules, CompositionSummary } from "./CommerceModules";
+import { defaultComposition, normalizeComposition } from "../server/commerceComposition";
 
 type Api = <T>(url: string, options?: RequestInit) => Promise<T>;
 type HistoryItem = { id: string; productName: string; platform: string; status: CommercePublicJob["status"]; phase: string; createdAt: string; completed: number; count: number };
@@ -67,6 +69,7 @@ export function CommerceWorkspace({ api, userId, agentId, onBack, onOpenSidebar 
   const [recognition, setRecognition] = useState<CommerceRecognition>();
   const [uploading, setUploading] = useState(false);
   const [recognizing, setRecognizing] = useState(false);
+  const [moduleBusy, setModuleBusy] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -82,7 +85,14 @@ export function CommerceWorkspace({ api, userId, agentId, onBack, onOpenSidebar 
   const mounted = useRef(true);
 
   const change = <K extends keyof CommerceBrief>(key: K, value: CommerceBrief[K]) => {
-    setBrief(b => ({ ...b, [key]: value })); requestKey.current = crypto.randomUUID();
+    setBrief(b => {
+      const next = { ...b, [key]: value };
+      if (key === "referenceImageIds" && b.composition && !next.referenceImageIds.includes(b.composition.primaryReferenceId)) {
+        next.composition = { ...b.composition, primaryReferenceId: next.referenceImageIds[0] || "", reference: undefined,
+          overall: { layout: "", background: "", palette: "", visualStyle: "" }, modules: b.composition.modules.map(m => ({ ...m, source: undefined, location: m.source ? "" : m.location, appearance: m.source ? "" : m.appearance })) };
+      }
+      return next;
+    }); requestKey.current = crypto.randomUUID();
   };
   const toggle = (key: "facts" | "keywords", value: string) => {
     setBrief(b => ({ ...b, [key]: b[key].includes(value) ? b[key].filter(v => v !== value) : [...b[key], value].slice(0, key === "facts" ? 10 : 5) }));
@@ -164,7 +174,10 @@ export function CommerceWorkspace({ api, userId, agentId, onBack, onOpenSidebar 
   async function plan() {
     setWorking(true); setError(""); setNotice("");
     try {
-      const result = await api<{ job: CommercePublicJob }>("/api/commerce/jobs", { method: "POST", body: JSON.stringify({ brief, agentId, requestKey: requestKey.current }) });
+      const composition = normalizeComposition(brief.composition || defaultComposition(brief), brief.referenceImageIds);
+      const nextBrief = { ...brief, composition };
+      setBrief(nextBrief);
+      const result = await api<{ job: CommercePublicJob }>("/api/commerce/jobs", { method: "POST", body: JSON.stringify({ brief: nextBrief, agentId, requestKey: requestKey.current }) });
       setJob(result.job); sessionStorage.setItem(lastKey, result.job.id); void loadHistory().catch(() => undefined);
     } catch (e) { setError(e instanceof Error ? e.message : "整理方案失败"); }
     finally { setWorking(false); }
@@ -193,7 +206,7 @@ export function CommerceWorkspace({ api, userId, agentId, onBack, onOpenSidebar 
   const inProgress = !!job && busyStatuses.includes(job.status);
   const allFactOptions = [...new Set([...(recognition?.facts || []), ...brief.facts])];
   const keywordOptions = [...new Set([...(recognition?.keywords || []), brief.productName, brief.category, ...brief.keywords].filter(Boolean))];
-  const steps = ["商品资料", "顾客与场景", "表达重点"];
+  const steps = ["商品资料", "主图模块", "顾客与场景", "表达重点"];
 
   return <section className="creative-workspace">
     <header className="creative-header"><div className="creative-header-title"><button type="button" className="mobile-menu" onClick={onOpenSidebar} aria-label="打开导航"><Menu size={20} /></button><button type="button" className="creative-icon-button" onClick={onBack} aria-label="返回智能体"><ArrowLeft size={19} /></button><div><h1>电商主图与标题助手</h1><p>把思路选清楚，让每一张图都有重点。</p></div></div>
@@ -208,8 +221,8 @@ export function CommerceWorkspace({ api, userId, agentId, onBack, onOpenSidebar 
       </section>}
 
       {!job ? <>
-        <nav className="creative-steps" aria-label="制作步骤">{steps.map((label, i) => <button type="button" key={label} aria-label={label} aria-current={step === i ? "step" : undefined} disabled={i > step} onClick={() => setStep(i)}><span>{i < step ? <Check size={14} aria-hidden="true" /> : `0${i + 1}`}</span>{label}</button>)}</nav>
-        <div className="creative-layout"><div className="creative-form"><div className="creative-form-heading"><span>第 {step + 1} 步 / 共 3 步</span><h2 ref={headingRef} tabIndex={-1}>{["先认识这件商品", "这张图，要打动谁？", "让顾客先看到什么？"][step]}</h2><p>{["上传白底图，核对商品资料。参考图可以稍后添加。", "购买的人和使用的人可能不同，选择最接近的情况就好。", "有明确想法就直接选；拿不准时，让 AI 给你几个起点。"][step]}</p></div>
+        <nav className="creative-steps" aria-label="制作步骤">{steps.map((label, i) => <button type="button" key={label} aria-label={label} aria-current={step === i ? "step" : undefined} disabled={i > step || moduleBusy} onClick={() => setStep(i)}><span>{i < step ? <Check size={14} aria-hidden="true" /> : `0${i + 1}`}</span>{label}</button>)}</nav>
+        <div className={`creative-layout ${step === 1 ? "creative-layout-modules" : ""}`}><div className="creative-form"><div className="creative-form-heading"><span>第 {step + 1} 步 / 共 4 步</span><h2 ref={headingRef} tabIndex={-1}>{["先认识这件商品", "这张主图，要放哪些内容？", "这张图，要打动谁？", "让顾客先看到什么？"][step]}</h2><p>{["上传白底图，核对商品资料。参考图选传。", "对照原图，选好模块，换成自己的内容。", "购买的人和使用的人可能不同，选择最接近的情况就好。", "有明确想法就直接选；拿不准时，让 AI 给你几个起点。"][step]}</p></div>
           {step === 0 && <>
             <UploadArea title="商品白底图" ids={brief.productImageIds} disabled={uploading || recognizing} onUpload={files => void upload(files, "productImageIds")} onRemove={id => { uploadVersion.current++; setRecognizing(false); change("productImageIds", brief.productImageIds.filter(x => x !== id)); }} />
             <div aria-live="polite" className="creative-inline-status">{uploading ? <><LoaderCircle size={15} className="creative-spin" />正在上传图片…</> : recognizing ? <><LoaderCircle size={15} className="creative-spin" />正在读取包装上的商品信息…</> : brief.productImageIds.length > 0 ? <button type="button" className="creative-text-button" onClick={() => void recognize()} disabled={!ready}><RefreshCw size={14} aria-hidden="true" />重新识别商品信息</button> : "支持 PNG、JPG、WebP，每张不超过10MB"}</div>
@@ -220,7 +233,8 @@ export function CommerceWorkspace({ api, userId, agentId, onBack, onOpenSidebar 
             <details className="creative-details"><summary>{brief.facts.length ? "补充其他商品信息" : "添加可使用的商品卖点（选填）"}</summary><label className="creative-custom">品牌资料中的原文<input value={factsText} onChange={e => setFactsText(e.target.value)} maxLength={120} placeholder="一次添加一条，保留真实信息" /></label><button type="button" className="creative-secondary" disabled={!factsText.trim() || brief.facts.length >= 10} onClick={() => { if (!brief.facts.includes(factsText.trim())) change("facts", [...brief.facts, factsText.trim()]); setFactsText(""); }}><Plus size={14} />添加卖点</button></details>
             <UploadArea title="参考图" optional ids={brief.referenceImageIds} disabled={uploading || recognizing} onUpload={files => void upload(files, "referenceImageIds")} onRemove={id => change("referenceImageIds", brief.referenceImageIds.filter(x => x !== id))} />
           </>}
-          {step === 1 && <>
+          {step === 1 && <CommerceModules api={api} brief={brief} onChange={value => change("composition", value)} onBusy={setModuleBusy} />}
+          {step === 2 && <>
             <Choices title="在哪个平台使用？" values={options.platforms} selected={brief.platform} onSelect={v => change("platform", v)} />
             <Choices title="顾客从哪里看到它？" values={options.channels} selected={brief.channel} onSelect={v => change("channel", v)} />
             <Choices title="主要是谁买、给谁用？" values={options.buyers} selected={brief.buyer} onSelect={v => change("buyer", v)} />
@@ -228,22 +242,23 @@ export function CommerceWorkspace({ api, userId, agentId, onBack, onOpenSidebar 
             <Choices title={brief.channel === "搜索结果" ? "顾客可能搜索什么？" : "这次希望关联哪些商品词？"} hint="可以多选，最多5个；这些是候选词，不代表搜索热度。" values={keywordOptions} selected={brief.keywords} multi onSelect={v => toggle("keywords", v)} />
             <details className="creative-details"><summary>补充关键词（选填）</summary><label className="creative-custom">关键词<input value={keywordText} onChange={e => setKeywordText(e.target.value)} maxLength={120} placeholder="例如：日常护理、旅行便携" /></label><button type="button" className="creative-secondary" disabled={!keywordText.trim() || brief.keywords.length >= 5} onClick={() => { if (!brief.keywords.includes(keywordText.trim())) change("keywords", [...brief.keywords, keywordText.trim()]); setKeywordText(""); }}><Plus size={14} />添加关键词</button></details>
           </>}
-          {step === 2 && <>
+          {step === 3 && <>
             <div className="creative-mode-choices"><button type="button" className={brief.mode === "explore" ? "selected" : ""} aria-pressed={brief.mode === "explore"} onClick={() => change("mode", "explore")}><Sparkles size={21} aria-hidden="true" /><strong>帮我探索</strong><span>给我几个有依据的方向，从中找思路</span></button><button type="button" className={brief.mode === "direct" ? "selected" : ""} aria-pressed={brief.mode === "direct"} onClick={() => change("mode", "direct")}><Check size={21} aria-hidden="true" /><strong>我有明确方向</strong><span>围绕我选的重点，尝试不同表达</span></button></div>
             {brief.mode === "direct" && <Choices title="只选一个主要重点" values={options.focuses} selected={brief.focus} onSelect={v => change("focus", v)} />}
             <Choices title="这次为什么制作主图？" values={options.goals} selected={brief.goal} onSelect={v => change("goal", v)} />
             <Choices title="希望是什么感觉？" values={options.styles.filter(s => s !== "沿用参考图结构" || brief.referenceImageIds.length > 0)} selected={brief.style} onSelect={v => change("style", v)} />
             <fieldset className="creative-question"><legend>排版偏好</legend><div className="creative-layout-choices">{options.layouts.map((layout, i) => <button type="button" key={layout} className={brief.layout === layout ? "selected" : ""} aria-pressed={brief.layout === layout} onClick={() => change("layout", layout)}><span className={`creative-layout-sketch sketch-${i}`} aria-hidden="true"><i /><b /></span>{layout}</button>)}</div></fieldset>
             <Choices title="需要几套备选？" hint="每张主图分别制作、分别保存。" values={["4套", "5套"]} selected={`${brief.count}套`} onSelect={v => change("count", v === "4套" ? 4 : 5)} />
-            <details className="creative-details"><summary>价格、赠品与其他要求（选填）</summary><label className="creative-custom">本次真实优惠或赠品<textarea value={brief.offer} onChange={e => change("offer", e.target.value)} maxLength={300} rows={2} placeholder="没有可留空；有条件的优惠请一并写明" /></label><label className="creative-custom">其他要求<textarea value={brief.notes} onChange={e => change("notes", e.target.value)} maxLength={500} rows={2} placeholder="例如：使用人群、季节场景、保留某个文字、不要出现的内容" /></label></details>
+            <CompositionSummary value={brief.composition || defaultComposition(brief)} /><details className="creative-details"><summary>补充其他要求（选填）</summary><label className="creative-custom">其他要求<textarea value={brief.notes} onChange={e => change("notes", e.target.value)} maxLength={500} rows={2} placeholder="例如：使用人群、季节场景、保留某个文字、不要出现的内容" /></label></details>
           </>}
-          <footer className="creative-form-footer"><button type="button" className="creative-secondary" disabled={step === 0 || working} onClick={() => setStep(step - 1)}>上一步</button>{step < 2 ? <button type="button" className="creative-primary" disabled={uploading || recognizing || step === 0 && (!brief.productImageIds.length || !brief.productName.trim())} onClick={() => { setError(""); setStep(step + 1); }}>下一步<ArrowRight size={16} aria-hidden="true" /></button> : <button type="button" className="creative-primary" disabled={working || !ready} onClick={() => void plan()}>{working ? <LoaderCircle size={16} className="creative-spin" /> : <Sparkles size={16} aria-hidden="true" />}整理本次方案</button>}</footer>
-        </div><BriefSummary brief={brief} /></div>
+          <footer className="creative-form-footer"><button type="button" className="creative-secondary" disabled={step === 0 || working || moduleBusy} onClick={() => setStep(step - 1)}>上一步</button>{step < 3 ? <button type="button" className="creative-primary" disabled={uploading || recognizing || moduleBusy || step === 0 && (!brief.productImageIds.length || !brief.productName.trim())} onClick={() => { try { if (step === 1) normalizeComposition(brief.composition || defaultComposition(brief), brief.referenceImageIds); setError(""); setStep(step + 1); } catch (e) { setError(e instanceof Error ? e.message : "请核对模块配置"); } }}>下一步<ArrowRight size={16} aria-hidden="true" /></button> : <button type="button" className="creative-primary" disabled={working || !ready} onClick={() => void plan()}>{working ? <LoaderCircle size={16} className="creative-spin" /> : <Sparkles size={16} aria-hidden="true" />}整理本次方案</button>}</footer>
+        </div>{step !== 1 && <BriefSummary brief={brief} />}</div>
       </> : <>
         <div className="creative-job-heading"><div><span className="creative-eyebrow">{job.brief.platform} · {job.brief.mode === "explore" ? "帮我探索" : "明确方向"}</span><h2>{job.brief.productName}</h2><p>{job.phase}</p></div><div className="creative-job-actions">{!inProgress && <button type="button" className="creative-secondary" onClick={editJob}>修改选择</button>}{!inProgress && <button type="button" className="creative-secondary" onClick={newTask}><Plus size={15} />新建创作</button>}{complete > 0 && <a className="creative-secondary" href={`/api/commerce/jobs/${job.id}/download`}><Download size={16} aria-hidden="true" />打包下载</a>}</div></div>
         {job.error && <p className="creative-note" role="alert">{job.error}</p>}
         {job.status === "planning" ? <div className="creative-planning"><LoaderCircle size={32} className="creative-spin" /><h3>把你的选择整理成几个起点</h3><p>正在分析商品资料、人群与参考图，再安排不同的画面和标题。</p><span>可以离开页面，稍后从创作记录继续查看。</span></div> : <>
-          {job.summary && <div className="creative-plan-summary"><div><span className="creative-eyebrow">本次方案摘要</span><p>{job.summary}</p></div><details><summary>查看本次选择</summary><dl><div><dt>人群与经验</dt><dd>{job.brief.buyer} · {job.brief.familiarity}</dd></div><div><dt>渠道与关键词</dt><dd>{job.brief.channel} · {job.brief.keywords.join("、") || "未指定关键词"}</dd></div><div><dt>规格与优惠</dt><dd>{[job.brief.specification, job.brief.offer].filter(Boolean).join("；") || "未指定"}</dd></div><div><dt>商品信息</dt><dd>{job.brief.facts.join("；") || "仅使用商品名称和包装信息"}</dd></div></dl></details></div>}
+          {job.summary && <div className="creative-plan-summary"><div><span className="creative-eyebrow">本次方案摘要</span><p>{job.summary}</p></div><details><summary>查看本次选择</summary><dl><div><dt>人群与经验</dt><dd>{job.brief.buyer} · {job.brief.familiarity}</dd></div><div><dt>渠道与关键词</dt><dd>{job.brief.channel} · {job.brief.keywords.join("、") || "未指定关键词"}</dd></div><div><dt>规格与优惠</dt><dd>{[job.brief.specification, job.brief.composition ? "" : job.brief.offer].filter(Boolean).join("；") || "未指定"}</dd></div><div><dt>商品信息</dt><dd>{job.brief.facts.join("；") || "仅使用商品名称和包装信息"}</dd></div></dl></details></div>}
+          <CompositionSummary value={job.brief.composition} />
           {job.status === "review" && <div className="creative-generate-bar"><p>下面是准备尝试的 {job.variants.length} 个方向。主图将依次、逐张制作。</p><button type="button" className="creative-primary" disabled={working || !ready} onClick={() => void jobAction("generate")}><ImagePlus size={17} aria-hidden="true" />开始生成 {job.variants.length} 张主图</button></div>}
           {inProgress && <div className="creative-progress" role="status"><LoaderCircle size={18} className="creative-spin" /><div><strong>{job.phase}</strong><span>已完成 {complete}/{job.variants.length} 张，完成的图片可以先查看和下载。</span></div><progress value={complete} max={job.variants.length || 1} aria-label="主图制作进度" /></div>}
           {!job.variants.length && ["failed", "interrupted"].includes(job.status) && <button type="button" className="creative-primary" disabled={working} onClick={() => void jobAction("retry")}><RefreshCw size={16} />重新整理方案</button>}
