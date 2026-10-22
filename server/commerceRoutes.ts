@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import type { Store } from "./db.js";
 import { asyncRoute, auth } from "./middleware.js";
 import { canUseAgent } from "./operationsPolicy.js";
-import { CommerceService, commerceJobAccess, commerceModels, ensureCommerceAgent, publicCommerceJob } from "./commerce.js";
+import { CommerceService, commerceJobAccess, commerceModels, imageEditModel, ensureCommerceAgent, publicCommerceJob } from "./commerce.js";
 import { readCommerceImages, saveCommerceImage } from "./commerceStorage.js";
 
 export function createCommerceRouter(store: Store, secret: string, uploadDir: string) {
@@ -23,6 +23,19 @@ export function createCommerceRouter(store: Store, secret: string, uploadDir: st
     let ready = true, message = "";
     try { commerceModels(db); } catch (e) { ready = false; message = e instanceof Error ? e.message : "模型暂不可用"; }
     res.json({ agentId: agent.id, ready, message });
+  }));
+
+  router.get("/commerce/edit-config", asyncRoute(async (req, res) => {
+    const agent = await store.mutate(db => ensureCommerceAgent(db, req.user!.companyId, "image_edit"));
+    const db = await store.read();
+    if (!agent || !canUseAgent(agent, req.user!, db.users)) return res.status(404).json({ error: "小修小改暂不可用" });
+    let ready = true, message = "";
+    try { imageEditModel(db); } catch (e) { ready = false; message = e instanceof Error ? e.message : "图片编辑模型暂不可用"; }
+    res.json({ agentId: agent.id, ready, message });
+  }));
+  router.post("/commerce/edits", asyncRoute(async (req, res) => {
+    const job = await service.createEdit(req.user!, String(req.body.agentId || ""), req.body, String(req.body.requestKey || ""));
+    res.status(202).json({ job: publicCommerceJob(job) });
   }));
 
   const recognitionActive = new Set<string>();
@@ -51,7 +64,8 @@ export function createCommerceRouter(store: Store, secret: string, uploadDir: st
 
   router.get("/commerce/jobs", asyncRoute(async (req, res) => {
     const db = await store.read();
-    const jobs = (db.commerceJobs || []).filter(j => j.userId === req.user!.id && j.companyId === req.user!.companyId && db.agents.some(a => a.id === j.agentId && canUseAgent(a, req.user!, db.users)))
+    const kind = req.query.kind === "image_edit" ? "image_edit" : "product_creative";
+    const jobs = (db.commerceJobs || []).filter(j => (j.kind || "product_creative") === kind && j.userId === req.user!.id && j.companyId === req.user!.companyId && db.agents.some(a => a.id === j.agentId && canUseAgent(a, req.user!, db.users)))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 40)
       .map(j => ({ id: j.id, productName: j.brief.productName, platform: j.brief.platform, status: j.status, phase: j.phase, createdAt: j.createdAt, completed: j.variants.filter(v => v.status === "completed").length, count: j.brief.count }));
     res.json({ jobs });

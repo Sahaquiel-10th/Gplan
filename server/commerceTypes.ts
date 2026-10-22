@@ -29,7 +29,7 @@ export type CommerceBrief = {
   style: string;
   layout: string;
   goal: string;
-  count: 4 | 5;
+  count: 1 | 4 | 5;
   notes: string;
   composition?: CommerceComposition;
 };
@@ -89,6 +89,7 @@ export type CommerceVariant = {
 };
 
 export type CommerceJob = {
+  kind?: "product_creative" | "image_edit";
   id: string;
   companyId: string;
   userId: string;

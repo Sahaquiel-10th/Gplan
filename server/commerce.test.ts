@@ -214,3 +214,68 @@ test("edited modules and asset mapping reach every independent image call; unsel
   c.modules.find(m => m.type === "brand")!.assetId = "missing";
   await assert.rejects(service.create(owner, agent.id, { ...brief, composition: c, referenceImageIds: ["reference"] }, "invalid-asset-key"), /无权/);
 });
+
+test("small edits use one owned input and one image call with no chat; duplicate submissions, versions and continuation are safe", async () => {
+  const { db, store, owner, peer, other, brief } = fixture();
+  const agent = ensureCommerceAgent(db, owner.companyId, "image_edit")!;
+  assert.equal(agent.name, "小修小改");
+  assert.equal(ensureCommerceAgent(db, owner.companyId, "image_edit")!.id, agent.id);
+  db.models = db.models.filter(m => m.kind === "image"); // The simple workflow does not require a chat model.
+  let calls = 0, release: (() => void) | undefined;
+  const inputs: string[][] = [];
+  const service = new CommerceService(store, {
+    readImages: async a => a.map(x => `data:${x.id}`),
+    saveImage: async (_url, job) => ({ ...db.attachments[0], id: `edited-${calls}`, userId: job.userId }),
+    model: async (model, messages) => {
+      calls++; assert.equal(model.kind, "image");
+      assert.equal(messages[0].imageSize, "auto");
+      assert.match(messages[0].content, /把79元改成69元/); assert.match(messages[0].content, /只输出一张/); assert.match(messages[0].content, /其余内容尽量保留原样/);
+      inputs.push(messages[0].inputImageDataUrls!);
+      if (calls === 1) await new Promise<void>(r => { release = r; });
+      return { content: "", imageUrl: "data:fixture", usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3, source: "provider" } };
+    },
+  });
+  const input = { imageId: "original", instruction: "把79元改成69元" };
+  await assert.rejects(service.createEdit(peer, agent.id, input, "peer-edit-key"), /无权/);
+  await assert.rejects(service.createEdit(other, agent.id, input, "other-edit-key"), /不可用/);
+  await assert.rejects(service.createEdit(owner, agent.id, { ...input, instruction: " " }, "empty-edit-key"), /修改/);
+  await assert.rejects(service.createEdit(owner, agent.id, { ...input, instruction: "字".repeat(1001) }, "large-edit-key"), /1000/);
+  await assert.rejects(service.createEdit(owner, agent.id, { ...input, imageId: ["original", "extra"] }, "array-edit-key"), /一张/);
+  await assert.rejects(service.create(owner, agent.id, brief, "wrong-route-key"), /无权/);
+  const created = await service.createEdit(owner, agent.id, input, "simple-edit-key");
+  await until(() => calls === 1);
+  const duplicate = await service.createEdit(owner, agent.id, input, "simple-edit-key");
+  assert.equal(duplicate.id, created.id); assert.equal(db.commerceJobs!.length, 1);
+  release!(); await until(() => db.commerceJobs![0].status === "completed");
+  const saved = db.commerceJobs![0], originalOutput = saved.variants[0].imageAttachmentId!;
+  assert.equal(saved.brief.count, 1); assert.equal(saved.kind, "image_edit"); assert.equal(calls, 1);
+  assert.deepEqual(inputs, [["data:original"]]); assert.equal(db.modelUsageRecords.length, 1);
+  assert.ok(commerceJobUsesAttachment(saved, "original")); assert.ok(commerceJobUsesAttachment(saved, originalOutput));
+  assert.throws(() => commerceJobAccess(db, peer, saved.id));
+  await new Promise(r => setTimeout(r, 0));
+  await service.retry(owner, saved.id, saved.variants[0].id); await until(() => saved.status === "completed");
+  assert.equal(calls, 2); assert.ok(saved.variants[0].previousImageIds?.includes(originalOutput));
+  assert.deepEqual(inputs[1], ["data:original"]);
+  await new Promise(r => setTimeout(r, 0));
+  const continuation = await service.createEdit(owner, agent.id, { ...input, imageId: saved.variants[0].imageAttachmentId! }, "continue-edit-key");
+  await until(() => db.commerceJobs!.find(j => j.id === continuation.id)!.status === "completed");
+  assert.deepEqual(inputs[2], ["data:edited-2"]); assert.equal(saved.variants[0].imageAttachmentId, "edited-2");
+  assert.equal(db.commerceJobs!.length, 2);
+});
+
+test("small edit restart never silently repeats paid work, and revoked source tasks cannot be laundered through editing", async () => {
+  const { db, store, owner, agent: productAgent, brief } = fixture();
+  const editAgent = ensureCommerceAgent(db, owner.companyId, "image_edit")!;
+  const old: CommerceJob = { id: "old", kind: "image_edit", companyId: owner.companyId, userId: owner.id, agentId: editAgent.id, requestKey: "old-edit-key", brief: { ...brief, count: 1 }, status: "generating", phase: "", summary: "", analysis: "", chatModelId: "", imageModelId: "image", createdAt: timestamp, updatedAt: timestamp, variants: [{ ...parseCommercePlan(plan(), brief).variants[0], status: "generating", imageAttachmentId: "old-result" }] };
+  db.commerceJobs!.push(old);
+  const service = new CommerceService(store, { readImages: async () => [], saveImage: async () => { throw Error("unused"); }, model: async () => { throw Error("must not repeat"); } });
+  await service.recover(); await service.tick();
+  assert.equal(old.status, "interrupted"); assert.equal(old.variants[0].imageAttachmentId, "old-result");
+  const restricted = { ...old, id: "restricted", agentId: productAgent.id, brief: { ...brief, productImageIds: ["restricted-source"] }, status: "completed" as const };
+  db.commerceJobs!.push(restricted);
+  db.attachments.push({ ...db.attachments[0], id: "restricted-source" });
+  productAgent.published = false;
+  productAgent.ownerId = "not-owner";
+  productAgent.access = { mode: "members", userIds: [] };
+  await assert.rejects(service.createEdit(owner, editAgent.id, { imageId: "restricted-source", instruction: "修改背景" }, "restricted-source-key"), /无权/);
+});

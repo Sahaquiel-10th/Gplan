@@ -33,6 +33,7 @@ export type Message = {
   attachments?: AttachmentSummary[];
   sources?: SearchSource[];
   inputImageDataUrls?: string[];
+  imageSize?: "auto";
   createdAt: string;
   modelId?: string;
 };
@@ -78,7 +79,7 @@ export type IntegrationToken = {
 };
 
 export type Agent = {
-  commerce?: { kind: "product_creative" };
+  commerce?: { kind: "product_creative" | "image_edit" };
   skill?: import("./agentSkills.js").AgentSkill;
   access?: { mode: "company" | "members"; userIds: string[] };
   operations?: import("./operationsPolicy.js").OperationsConfig;

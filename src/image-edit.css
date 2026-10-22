@@ -1,0 +1,27 @@
+.image-edit-body { max-width: 1240px; }
+.image-edit-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.image-edit-panel { padding: 24px; background: var(--creative-paper); border: 1px solid var(--creative-line); border-radius: 8px; min-width: 0; }
+.image-edit-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.image-edit-panel h2 { font-size: 20px; font-weight: 650; margin-top: 8px; line-height: 1.4; }
+.image-edit-file { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+.image-edit-file:focus-visible+.image-edit-preview, .image-edit-file:focus-visible+.image-edit-upload { outline: 2px solid var(--creative-blue); outline-offset: 3px; }
+.image-edit-preview { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 180px; height: 320px; padding: 0; overflow: hidden; border: 0; background: var(--creative-inset); cursor: zoom-in; }
+.image-edit-preview img { display: block; max-width: 100%; width: 100%; height: 100%; object-fit: contain; }
+.image-edit-upload, .image-edit-result-empty { min-height: 320px; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; gap: 12px; border: 1px dashed var(--creative-line); background: var(--creative-canvas); color: var(--creative-muted); border-radius: 6px; text-align: center; }
+.image-edit-upload { cursor: pointer; }
+.image-edit-upload:hover:not(:disabled) { border-color: var(--creative-blue); background: var(--creative-blue-paper); }
+.image-edit-upload strong, .image-edit-result-empty strong { color: var(--creative-secondary-ink); font-size: 16px; font-weight: 550; }
+.image-edit-upload span, .image-edit-result-empty p { font-size: 13px; line-height: 1.7; }
+.image-edit-instruction { display: grid; gap: 10px; margin-top: 24px; color: var(--creative-ink); font-size: 14px; font-weight: 550; }
+.image-edit-instruction textarea { width: 100%; border: 1px solid var(--creative-line); border-radius: 6px; padding: 12px; background: var(--creative-inset); color: var(--creative-ink); font: inherit; font-weight: 400; font-size: 14px; line-height: 1.7; resize: vertical; }
+.image-edit-workspace :is(button, textarea, a):focus-visible { outline: 2px solid var(--creative-blue); outline-offset: 3px; }
+.image-edit-submit { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
+.image-edit-submit>span { font-size: 12px; color: var(--creative-muted); line-height: 1.6; }
+.image-edit-result-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+.image-edit-result>.creative-help { margin-top: 16px; }
+.image-edit-versions { margin-top: 20px; font-size: 13px; color: var(--creative-secondary-ink); }
+.image-edit-versions summary { min-height: 40px; line-height: 40px; cursor: pointer; }
+.image-edit-versions a { display: inline-flex; align-items: center; min-height: 40px; margin-right: 16px; color: var(--creative-blue); }
+@media (max-width: 1000px) { .image-edit-layout { grid-template-columns: minmax(0, 1fr); gap: 20px; } .image-edit-result-empty { min-height: 220px; } }
+@media (max-width: 600px) { .image-edit-panel { padding: 20px 16px; } .image-edit-panel h2 { font-size: 18px; } .image-edit-preview { height: 280px; } .image-edit-upload { min-height: 240px; } .image-edit-submit { flex-direction: column; align-items: stretch; gap: 12px; } .image-edit-result-actions>* { flex: 1; } }
+.image-edit-result { scroll-margin-top: 16px; }

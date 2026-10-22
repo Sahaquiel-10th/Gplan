@@ -22,12 +22,22 @@ test("HTTP creative flow: private jobs, original assets retained, five separate 
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j6S8AAAAASUVORK5CYII=", "base64");
   await fs.writeFile(path.join(dir, "data/uploads/original.png"), png);
   for (const id of ["reference", "logo"]) await fs.writeFile(path.join(dir, `data/uploads/${id}.png`), png);
-  let calls = 0, plans = 0, referenceCalls = 0;
+  let calls = 0, plans = 0, referenceCalls = 0, editCalls = 0;
   const prompts: string[] = [];
   const upstream = http.createServer(async (req, res) => {
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const body = Buffer.concat(chunks).toString();
     res.setHeader("Content-Type", "application/json");
+    if (req.url === "/images/edits" && body.includes("对输入的这一张原图做小范围修改")) {
+      editCalls++;
+      assert.match(body, /name="n"\r\n\r\n1\r\n/);
+      assert.match(body, /name="size"\r\n\r\nauto\r\n/);
+      assert.equal((body.match(/name="image\[\]"/g) || []).length, 1);
+      assert.match(body, /把79元改成69元/);
+      assert.match(body, /其余内容尽量保留原样/);
+      if (editCalls === 2) { res.statusCode = 503; res.end('{"error":{"message":"fixture edit failed"}}'); return; }
+      res.end(JSON.stringify({ data: [{ b64_json: png.toString("base64") }] })); return;
+    }
     if (req.url === "/images/edits") {
       calls++;
       assert.match(body, /name="n"\r\n\r\n1\r\n/);
@@ -80,7 +90,7 @@ test("HTTP creative flow: private jobs, original assets retained, five separate 
   try {
     await waitReady();
     const agents = await request("/api/agents");
-    const agent = agents.data.agents.find((a: { commerceKind?: string }) => a.commerceKind);
+    const agent = agents.data.agents.find((a: { commerceKind?: string }) => a.commerceKind === "product_creative");
     assert.ok(agent);
     assert.equal((await request(`/api/public/agents/${agent.publicSlug}`)).response.status, 404);
     assert.equal((await request("/api/chat", "owner", { modelId: "chat", agentId: agent.id, content: "bypass" })).response.status, 403);
@@ -123,10 +133,44 @@ test("HTTP creative flow: private jobs, original assets retained, five separate 
     assert.equal(download.status, 200);
     const zip = await JSZip.loadAsync(await download.arrayBuffer()); assert.equal(Object.keys(zip.files).length, 6);
     assert.ok(Object.values(zip.files).some(f => f.name.endsWith(".txt")));
+    const editAgent = agents.data.agents.find((a: { commerceKind?: string }) => a.commerceKind === "image_edit");
+    assert.equal(editAgent.name, "小修小改");
+    assert.equal((await request("/api/commerce/edit-config")).data.ready, true);
+    assert.equal((await request(`/api/public/agents/${editAgent.publicSlug}`)).response.status, 404);
+    assert.equal((await request("/api/chat", "owner", { modelId: "image", agentId: editAgent.id, content: "bypass" })).response.status, 403);
+    const editInput = { agentId: editAgent.id, imageId: "original", instruction: "把79元改成69元", requestKey: "simple-http-edit" };
+    assert.equal((await request("/api/commerce/edits", "peer", editInput)).response.status, 400);
+    assert.equal((await request("/api/commerce/edits", "foreign", editInput)).response.status, 400);
+    assert.equal((await request("/api/commerce/edits", "owner", { ...editInput, instruction: "" })).response.status, 400);
+    assert.equal((await request("/api/commerce/edits", "owner", { ...editInput, imageId: ["original"] })).response.status, 400);
+    const edit = await request("/api/commerce/edits", "owner", editInput);
+    assert.equal(edit.response.status, 202); assert.equal(edit.data.job.kind, "image_edit");
+    const editId = edit.data.job.id;
+    let edited = await jobAt(editId, "completed");
+    assert.equal(editCalls, 1); assert.equal(edited.variants.length, 1); assert.equal(plans, 1);
+    assert.equal((await request("/api/commerce/edits", "owner", editInput)).data.job.id, editId);
+    assert.equal(editCalls, 1);
+    const source = edited.variants[0].imageAttachmentId;
+    const imageResponse = await fetch(`http://127.0.0.1:${port}/api/attachments/${source}/content?download=1`, { headers: { Authorization: `Bearer ${signToken({ sub: "owner", role: "admin" }, secret)}` } });
+    assert.equal(imageResponse.status, 200); assert.match(imageResponse.headers.get("content-disposition")!, /attachment/);
+    assert.deepEqual(Buffer.from(await imageResponse.arrayBuffer()), png);
+    assert.equal((await request(`/api/attachments/${source}/content`, "peer")).response.status, 404);
+    const editHistory = (await request("/api/commerce/jobs?kind=image_edit")).data.jobs;
+    assert.equal(editHistory.length, 1); assert.equal(editHistory[0].id, editId); assert.equal(editHistory[0].count, 1);
+    assert.equal((await request("/api/commerce/jobs")).data.jobs.length, 1);
+    assert.notEqual((await request(`/api/commerce/jobs/${editId}/retry`, "peer", { variantId: edited.variants[0].id })).response.status, 202);
+    await request(`/api/commerce/jobs/${editId}/retry`, "owner", { variantId: edited.variants[0].id });
+    edited = await jobAt(editId, "failed"); assert.equal(editCalls, 2); assert.equal(edited.variants[0].imageAttachmentId, source);
+    await request(`/api/commerce/jobs/${editId}/retry`, "owner", { variantId: edited.variants[0].id });
+    edited = await jobAt(editId, "completed"); assert.equal(editCalls, 3); assert.ok(edited.variants[0].previousImageIds.includes(source));
+    assert.equal(plans, 1);
     await new Promise<void>(r => { child.once("exit", () => r()); child.kill(); });
     child = start(); await waitReady();
     const saved = await request(`/api/commerce/jobs/${id}`); assert.equal(saved.data.job.status, "completed"); assert.equal(calls, 6); assert.equal(saved.data.job.brief.composition.modules.find((m: { type: string }) => m.type === "activity").content, "本店周年庆");
     assert.ok(prompts.every(p => p.includes("前1张输入图是唯一商品外观依据")));
+    const restoredEdit = await request(`/api/commerce/jobs/${editId}`);
+    assert.equal(restoredEdit.data.job.status, "completed"); assert.equal(editCalls, 3);
+    assert.equal(restoredEdit.data.job.brief.notes, "把79元改成69元");
   } finally {
     child.kill(); upstream.close(); await fs.rm(dir, { recursive: true, force: true });
   }

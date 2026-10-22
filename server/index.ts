@@ -804,7 +804,9 @@ app.post("/api/workspaces", auth(jwtSecret), asyncRoute(async (req, res) => {
 
 app.get("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => {
   const snapshot = await store.read();
-  if (!snapshot.agents.some(a => a.companyId === req.user!.companyId && a.commerce)) await store.mutate(db => ensureCommerceAgent(db, req.user!.companyId));
+  if (!["product_creative", "image_edit"].every(kind => snapshot.agents.some(a => a.companyId === req.user!.companyId && a.commerce?.kind === kind))) {
+    await store.mutate(db => { ensureCommerceAgent(db, req.user!.companyId); ensureCommerceAgent(db, req.user!.companyId, "image_edit"); });
+  }
   const db = await store.read();
   const agents = db.agents
     .filter((agent) =>
