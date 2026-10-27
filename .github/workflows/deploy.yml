@@ -23,6 +23,8 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci --ignore-scripts
+      - run: node scripts/check-release-contract.mjs
+      - run: npm run test:client-api
       - run: npm run build
 
   deploy:
@@ -47,6 +49,7 @@ jobs:
       - name: Package source
         run: |
           git archive --format=tar --output=/tmp/gplan-${GITHUB_SHA}.tar HEAD
+          node scripts/check-release-contract.mjs /tmp/gplan-${GITHUB_SHA}.tar
 
       - name: Deploy source package
         env:

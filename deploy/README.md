@@ -1,5 +1,27 @@
 # GPlan 上线部署
 
+## 正式数据 API 发版门禁
+
+生产发版使用仓库中的 `deploy/deploy-gplan.sh`（安装至 `/usr/local/sbin/deploy-gplan`），
+不得只手工上传未入库文件。CI 与服务端均检查正式接口文件、执行 `npm run test:client-api`。
+服务器替换前完成构建，并在 `/opt/gplan-release-backups/` 保留代码与依赖快照；保留原 `.env*` 和 `data/`。
+启动后用原客户凭证检查 JSON 类型、鉴权、日期参数、全部分页，失败自动恢复上一个快照。
+未知 `/api` 路径必须返回 JSON 404，不能落入前端页面的 HTML 200。
+
+客户验收凭证仅保存在服务器权限受控文件中，默认 `/root/winona-trial-20261015.json`，
+可通过 `CLIENT_API_CREDENTIAL_FILE` 指定；不得提交 Token 到 Git。
+
+手动复核（不会更换客户 URL 或 Token）：
+
+```bash
+cd /opt/gplan
+CLIENT_API_CREDENTIAL_FILE=/root/winona-trial-20261015.json node scripts/check-client-api.mjs
+```
+
+HTTP 服务收到 PM2 停止信号后最多等待 65 秒完成在途请求，PM2 等待上限 70 秒。
+这能降低正常重启时的连接重置风险，但不能保证网络、进程崩溃或强制终止绝不发生；
+调用方仍应对幂等 GET 做有限重试，分页携带首个响应的 `batch_id`，409 时从第一页重拉。
+
 ## 1. 阿里云控制台准备
 
 ### RDS MySQL

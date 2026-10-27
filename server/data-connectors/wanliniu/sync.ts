@@ -1,6 +1,7 @@
 import { dataPlatformStore, type DataPlatformStore, type DataResource, type SyncCursor, type SyncMode } from "../../dataPlatformDb.js";
 import { uid } from "../../security.js";
 import { wanliniuClient, type WanliniuClient, type WanliniuRecord } from "./client.js";
+import { publishLatestClientReport } from '../../clientReportPublication.js';
 import {
   mysqlDateInShanghai,
   normalizeInbound,
@@ -74,6 +75,12 @@ export class WanliniuSyncService {
       }
       if (failures.length) {
         throw new Error(`万里牛同步有 ${failures.length} 类资源失败：${failures.join("；")}`);
+      }
+      try {
+        if(this.dataStore===dataPlatformStore)await publishLatestClientReport(companyId);
+      } catch(error) {
+        // API reads retry publication; an export failure must not discard successful ODS synchronization.
+        console.error(JSON.stringify({event:'client_report_publication_failed',error:error instanceof Error?error.message:String(error)}));
       }
       return {
         resources: summaries,

@@ -1,7 +1,9 @@
 import "dotenv/config";
 import { Router, type NextFunction, type Request, type Response } from "express";
-import mysql, { type RowDataPacket } from "mysql2/promise";
+import mysql, { type Pool, type RowDataPacket } from "mysql2/promise";
 import { hashToken, uid } from "./security.js";
+import { reportDate } from "./clientDailyReport.js";
+import { ensurePublishedReport, ReportNotAvailable } from './clientReportPublication.js';
 
 type DataApiClient = {
   id: string;
@@ -39,11 +41,12 @@ const pool = configured ? mysql.createPool({
   decimalNumbers: true
 }) : null;
 
+export function createClientDataApiRouter(database: Pool | null = pool) {
 const router = Router();
 
 function requirePool() {
-  if (!pool) throw new Error("数据服务暂不可用");
-  return pool;
+  if (!database) throw new Error("数据服务暂不可用");
+  return database;
 }
 
 function bearerToken(req: Request) {
@@ -159,6 +162,31 @@ router.get("/ping", authenticate(), (req, res) => {
   });
 });
 
+router.get('/daily-report', authenticate('daily-report:read'), async (req,res,next) => {
+  const startedAt=Date.now();
+  try {
+    let date: string;
+    try { date=reportDate(req.query.date); } catch(error) { throw new ClientInputError((error as Error).message); }
+    const client=req.dataApiClient!;
+    let batch: RowDataPacket;
+    try { batch=await ensurePublishedReport(requirePool(),client.companyId,client.clientCode,date); }
+    catch(error){
+      if(error instanceof ReportNotAvailable)return void res.status(404).json({code:40401,message:error.message,request_id:res.locals.requestId});
+      throw error;
+    }
+    const expectedBatch=optionalFilter(req,'batch_id');
+    if(expectedBatch && expectedBatch!==batch.batch_id)return void res.status(409).json({code:40901,message:'数据批次已更新，请从第一页重新读取',request_id:res.locals.requestId});
+    let rows: RowDataPacket[]=typeof batch.rows_json==='string'?JSON.parse(batch.rows_json):batch.rows_json;
+    const product=optionalFilter(req,'product_code');
+    if(product)rows=rows.filter(row=>row.product_code===product);
+    const {page,pageSize,offset}=paging(req);
+    res.json({code:0,message:'success',request_id:res.locals.requestId,business_date:date,
+      batch_id:batch.batch_id,data_updated_at:batch.prepared_at,
+      data:rows.slice(offset,offset+pageSize),pagination:{page,page_size:pageSize,total:rows.length,has_more:offset+pageSize<rows.length}});
+    await recordRequest(client.id,res,'/daily-report',Math.min(pageSize,Math.max(0,rows.length-offset)),startedAt);
+  }catch(error){next(error);}
+});
+
 router.get("/shipments", authenticate("shipments:read"), async (req, res, next) => {
   const startedAt = Date.now();
   try {
@@ -265,6 +293,10 @@ router.get("/inbounds", authenticate("inbounds:read"), async (req, res, next) =>
   } catch (error) { next(error); }
 });
 
+router.use((_req, res) => {
+  res.status(404).json({ code: 40401, message: "接口不存在", request_id: res.locals.requestId });
+});
+
 router.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
   const expected = error instanceof ClientInputError;
   if (!expected) {
@@ -283,4 +315,7 @@ router.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-export const clientDataApiRouter = router;
+return router;
+}
+
+export const clientDataApiRouter = createClientDataApiRouter();

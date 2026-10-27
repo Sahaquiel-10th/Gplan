@@ -25,6 +25,8 @@ import {
 import { DingTalkKnowledgeService } from "./dingtalk.js";
 import { dataPlatformStore, type DataPlatformStatus } from "./dataPlatformDb.js";
 import { clientDataApiRouter } from "./clientDataApi.js";
+import { apiNotFound } from './apiNotFound.js';
+import { drainHttpServer } from './gracefulShutdown.js';
 import { missingWanliniuSyncConfig, wanliniuClient } from "./data-connectors/wanliniu/client.js";
 import { WanliniuSyncScheduler, wanliniuSyncService, type WanliniuSyncSummary } from "./data-connectors/wanliniu/sync.js";
 import { store } from "./db.js";
@@ -2506,6 +2508,8 @@ app.use((err: Error, req: Request, res: Response, _next: unknown) => {
   res.status(status).json({ error: message, requestId: res.locals.requestId });
 });
 
+app.use('/api', apiNotFound);
+
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(path.join(root, "dist"), {
     setHeaders(res, filePath) {
@@ -2521,9 +2525,22 @@ if (process.env.NODE_ENV === "production") {
   app.get(/.*/, (_req, res) => res.sendFile(path.join(root, "dist", "index.html")));
 }
 
-app.listen(port, () => {
+const httpServer = app.listen(port, () => {
   console.log(`API server listening on http://localhost:${port}`);
 });
+
+let shuttingDown = false;
+function shutdownHttp() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(JSON.stringify({ event: 'http_draining', timeoutMs: 65000 }));
+  void drainHttpServer(httpServer).then(() => process.exit(0), error => {
+    console.error(JSON.stringify({ event: 'http_drain_failed', error: error.message }));
+    process.exit(1);
+  });
+}
+process.once('SIGINT', shutdownHttp);
+process.once('SIGTERM', shutdownHttp);
 
 memorySyncScheduler.start();
 startOperationsNotifications(store);

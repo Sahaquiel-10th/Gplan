@@ -10,6 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "test:management-briefs": "tsx --test server/managementBriefs.test.ts",
     "test:wanliniu": "tsx --test server/data-connectors/wanliniu/*.test.ts",
+    "test:client-api": "DATA_DB_PROVIDER=disabled tsx --test server/clientDailyReport.test.ts server/clientReportPublication.test.ts server/clientDataApi.test.ts server/gracefulShutdown.test.ts",
     "start": "NODE_ENV=production tsx server/index.ts",
     "test:operations": "tsx --test server/operations*.test.ts",
     "test:workspace": "tsx --test server/agentSkills.test.ts server/dashboardPreferences.test.ts",

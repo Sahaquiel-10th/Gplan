@@ -11,6 +11,7 @@ module.exports = {
         PORT: "3001"
       },
       max_memory_restart: "700M",
+      kill_timeout: 70000,
       instances: 1,
       exec_mode: "fork",
       autorestart: true,
