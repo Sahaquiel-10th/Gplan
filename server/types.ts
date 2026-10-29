@@ -276,6 +276,8 @@ export type ManagementBriefReport = {
 
 export type Database = {
   commerceJobs?: import("./commerceTypes.js").CommerceJob[];
+  commerceProducts?: import("./commerceTypes.js").CommerceSavedProduct[];
+  commerceTemplates?: import("./commerceTypes.js").CommerceSavedTemplate[];
   dashboardDefaults?: Record<string, import("./dashboardPreferences.js").DashboardView>;
   dashboardPresets?: import("./dashboardPreferences.js").DashboardPreset[];
   operationsSnapshots?: import("./operationsArchive.js").OperationsSnapshot[];

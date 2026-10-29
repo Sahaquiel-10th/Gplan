@@ -63,8 +63,13 @@ test("plan first, make five sequential independent images, preserve successes an
   assert.throws(() => commerceJobAccess(db, other, initial.id));
   assert.ok(!("analysis" in publicCommerceJob(db.commerceJobs![0])));
   assert.ok(!("imagePrompt" in publicCommerceJob(db.commerceJobs![0]).variants[0]));
-  await Promise.all([service.generate(owner, initial.id), service.generate(owner, initial.id)]);
-  await until(() => db.commerceJobs![0].status === "partial");
+  await assert.rejects(service.generate(owner, initial.id), /选择/);
+  for (const variant of db.commerceJobs![0].variants) {
+    await new Promise(r => setTimeout(r, 0));
+    await Promise.all([service.generate(owner, initial.id, variant.id), service.generate(owner, initial.id, variant.id)]);
+    await until(() => !["queued", "generating"].includes(db.commerceJobs![0].status));
+  }
+  assert.equal(db.commerceJobs![0].status, "partial");
   assert.equal(imageCalls, 5); assert.equal(maximum, 1); assert.equal(checks, 4);
   assert.equal(new Set(prompts).size, 5);
   for (const images of inputs) assert.deepEqual(images, ["data:original"]);
@@ -101,7 +106,8 @@ test("ownership and restart recovery preserve results without repeating charged 
   db.commerceJobs!.push(job);
   await service.recover();
   assert.equal(job.status, "interrupted"); assert.equal(job.variants[0].imageAttachmentId, "saved-image");
-  assert.ok(job.variants.slice(1).every(v => v.status === "failed"));
+  assert.equal(job.variants[1].status, "failed");
+  assert.ok(job.variants.slice(2).every(v => v.status === "pending"), "unselected ideas must remain available after restart");
   await service.tick(); assert.equal(job.status, "interrupted");
   db.users[0].enabled = false;
   assert.throws(() => commerceJobAccess(db, owner, job.id));
@@ -196,20 +202,25 @@ test("edited modules and asset mapping reach every independent image call; unsel
         inflight++; maximum = Math.max(maximum, inflight); imagePrompts.push(p); imageInputs.push(messages[0].inputImageDataUrls!);
         await new Promise(r => setTimeout(r, 1)); inflight--; return { content: "", imageUrl: "data:fixture" };
       }
-      if (p.startsWith("检查最后")) { assert.match(p, /本店周年庆/); assert.deepEqual(messages[0].inputImageDataUrls!.slice(0, 4), ["data:original", "data:reference", "data:secondary", "data:logo"]); assert.equal(messages[0].inputImageDataUrls!.length, 5); return { content: '{"passed":true,"note":"fixture"}' }; }
+      if (p.startsWith("检查最后")) { assert.match(p, /本店周年庆/); assert.deepEqual(messages[0].inputImageDataUrls!.slice(0, 4), ["data:original", "data:reference", "data:logo"]); assert.equal(messages[0].inputImageDataUrls!.length, 5); return { content: '{"passed":true,"note":"fixture"}' }; }
       analysisPrompts.push(p); return { content: p.startsWith("根据商品资料") ? plan() : "比较五种未指定的背景光线" };
     },
   });
   const job = await service.create(owner, agent.id, { ...brief, composition: c, referenceImageIds: ["secondary", "reference"], offer: "不再使用的优惠", notes: "保持包装清晰" }, "module-request-123");
   await until(() => db.commerceJobs![0].status === "review");
-  await service.generate(owner, job.id); await until(() => db.commerceJobs![0].status === "completed");
+  for (const variant of db.commerceJobs![0].variants) {
+    await new Promise(r => setTimeout(r, 0));
+    await service.generate(owner, job.id, variant.id, "reference");
+    await until(() => !["queued", "generating"].includes(db.commerceJobs![0].status));
+  }
+  assert.equal(db.commerceJobs![0].status, "completed");
   assert.equal(imagePrompts.length, 5); assert.equal(maximum, 1);
   for (const p of imagePrompts) {
-    assert.match(p, /本店周年庆/); assert.match(p, /蓝底白字/); assert.match(p, /右上角/); assert.match(p, /输入第4张/); assert.match(p, /保持包装清晰/);
+    assert.match(p, /本店周年庆/); assert.match(p, /蓝底白字/); assert.match(p, /右上角/); assert.match(p, /输入第3张/); assert.match(p, /保持包装清晰/);
     assert.ok(!p.includes("竞品")); assert.ok(!p.includes("不再使用的优惠"));
   }
   assert.ok(analysisPrompts.every(p => !p.includes("竞品节日满999减888") && !p.includes("竞品未确认功效") && !p.includes("不再使用的优惠")));
-  assert.ok(imageInputs.every(ids => JSON.stringify(ids) === JSON.stringify(["data:original", "data:reference", "data:secondary", "data:logo"])));
+  assert.ok(imageInputs.every(ids => JSON.stringify(ids) === JSON.stringify(["data:original", "data:reference", "data:logo"])));
   assert.ok(commerceJobUsesAttachment(db.commerceJobs![0], "logo"));
   c.modules.find(m => m.type === "brand")!.assetId = "missing";
   await assert.rejects(service.create(owner, agent.id, { ...brief, composition: c, referenceImageIds: ["reference"] }, "invalid-asset-key"), /无权/);

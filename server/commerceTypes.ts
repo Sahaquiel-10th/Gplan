@@ -13,6 +13,10 @@ export const commerceOptions = {
 export type CommerceBrief = {
   productImageIds: string[];
   referenceImageIds: string[];
+  detailImageIds?: string[];
+  detailText?: string;
+  keywordCandidates?: CommerceKeyword[];
+  outputFormat?: "square" | "portrait";
   productName: string;
   brand: string;
   specification: string;
@@ -29,9 +33,18 @@ export type CommerceBrief = {
   style: string;
   layout: string;
   goal: string;
-  count: 1 | 4 | 5;
+  count: number;
   notes: string;
   composition?: CommerceComposition;
+};
+
+export type CommerceKeyword = { text: string; heat?: string; source: "report" | "detail" | "manual" | "packaging" };
+export type CommerceSavedProduct = { id: string; name: string; brief: CommerceBrief; companyId: string; userId: string; agentId: string; createdAt: string; updatedAt: string };
+export type CommerceSavedTemplate = { id: string; name: string; composition: CommerceComposition; referenceImageIds: string[]; companyId: string; userId: string; agentId: string; createdAt: string; updatedAt: string };
+export type CommerceDeriveRequest = {
+  variantId: string; kind: "portrait" | "sku" | "revision"; requestKey: string;
+  instruction?: string;
+  items?: { name: string; specification: string; imageIds: string[] }[];
 };
 
 export const commerceModuleTypes = {
@@ -80,6 +93,15 @@ export type CommerceVariant = {
   title: string;
   titleReason: string;
   status: "pending" | "generating" | "completed" | "failed";
+  selected?: boolean;
+  referenceImageId?: string;
+  sourceImageId?: string;
+  productImageIds?: string[];
+  specification?: string;
+  outputWidth?: number;
+  outputHeight?: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
   imageAttachmentId?: string;
   previousImageIds?: string[];
   error?: string;
@@ -90,6 +112,9 @@ export type CommerceVariant = {
 
 export type CommerceJob = {
   kind?: "product_creative" | "image_edit";
+  taskType?: "main" | "portrait" | "sku" | "revision";
+  sourceJobId?: string;
+  sourceVariantId?: string;
   id: string;
   companyId: string;
   userId: string;

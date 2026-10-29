@@ -4,8 +4,10 @@ import JSZip from "jszip";
 import type { Store } from "./db.js";
 import { asyncRoute, auth } from "./middleware.js";
 import { canUseAgent } from "./operationsPolicy.js";
-import { CommerceService, commerceJobAccess, commerceModels, imageEditModel, ensureCommerceAgent, publicCommerceJob } from "./commerce.js";
+import { CommerceService, commerceAttachments, commerceJobAccess, commerceModels, imageEditModel, ensureCommerceAgent, publicCommerceJob } from "./commerce.js";
+import { compositionAssetIds } from "./commerceComposition.js";
 import { readCommerceImages, saveCommerceImage } from "./commerceStorage.js";
+import { createCommerceMaterialsRouter } from "./commerceMaterials.js";
 
 export function createCommerceRouter(store: Store, secret: string, uploadDir: string) {
   const router = express.Router();
@@ -39,6 +41,7 @@ export function createCommerceRouter(store: Store, secret: string, uploadDir: st
   }));
 
   const recognitionActive = new Set<string>();
+  router.use("/commerce", createCommerceMaterialsRouter(store, service, recognitionActive));
   router.post("/commerce/recognize", asyncRoute(async (req, res) => {
     const db = await store.read();
     if (!db.agents.some(a => a.commerce && canUseAgent(a, req.user!, db.users))) return res.status(403).json({ error: "智能体暂不可用" });
@@ -79,27 +82,37 @@ export function createCommerceRouter(store: Store, secret: string, uploadDir: st
     res.json({ job: publicCommerceJob(commerceJobAccess(db, req.user!, String(req.params.id))) });
   }));
   router.post("/commerce/jobs/:id/generate", asyncRoute(async (req, res) => {
-    await service.generate(req.user!, String(req.params.id));
+    await service.generate(req.user!, String(req.params.id), typeof req.body.variantId === "string" ? req.body.variantId : undefined, typeof req.body.referenceImageId === "string" ? req.body.referenceImageId : undefined);
     res.status(202).json({ ok: true });
   }));
   router.post("/commerce/jobs/:id/retry", asyncRoute(async (req, res) => {
-    await service.retry(req.user!, String(req.params.id), typeof req.body.variantId === "string" ? req.body.variantId : undefined);
+    await service.retry(req.user!, String(req.params.id), typeof req.body.variantId === "string" ? req.body.variantId : undefined, typeof req.body.referenceImageId === "string" ? req.body.referenceImageId : undefined);
     res.status(202).json({ ok: true });
+  }));
+  router.post("/commerce/jobs/:id/derive", asyncRoute(async (req, res) => {
+    const job = await service.derive(req.user!, String(req.params.id), req.body);
+    res.status(202).json({ job: publicCommerceJob(job) });
   }));
   router.get("/commerce/jobs/:id/download", asyncRoute(async (req, res) => {
     const db = await store.read();
     const job = commerceJobAccess(db, req.user!, String(req.params.id));
     const zip = new JSZip();
     let count = 0;
-    const titleLines = [`${job.brief.productName} · ${job.brief.platform}`, job.summary, ""];
+    const titleLines = [`${job.brief.productName} · ${job.brief.platform}`, job.summary, `规格：${job.brief.specification}`, `确认卖点：${job.brief.facts.join("、")}`, `标题关键词：${job.brief.keywords.join("、")}`, `其他要求：${job.brief.notes}`, ""];
+    for (const module of job.brief.composition?.modules.filter(m => m.enabled) || []) titleLines.push(`模块「${module.name}」：${module.content}；位置：${module.location || "自动安排"}；样式：${module.appearance || "自动安排"}`);
     for (const [index, variant] of job.variants.entries()) {
-      titleLines.push(`${index + 1}. ${variant.name}`, variant.title, `标题说明：${variant.titleReason}`, `方案说明：${variant.reason}`, `图片检查：${variant.qualityNote || "待检查"}`, "");
+      titleLines.push(`${index + 1}. ${variant.name}`, variant.title, `标题说明：${variant.titleReason}`, `方案说明：${variant.reason}`, `本张参考：${variant.referenceImageId ? `参考图${job.brief.referenceImageIds.indexOf(variant.referenceImageId) + 1}` : "无参考或沿用底图"}`, `导出尺寸：${variant.outputWidth || "待确认"}×${variant.outputHeight || "待确认"}`, `图片检查：${variant.qualityNote || "待检查"}`, "");
       const a = db.attachments.find(a => a.id === variant.imageAttachmentId && a.userId === req.user!.id && a.companyId === req.user!.companyId);
       if (!a) continue;
       const ext = a.mimeType === "image/jpeg" ? "jpg" : a.mimeType === "image/webp" ? "webp" : "png";
       zip.file(`${index + 1}-${variant.name.replace(/[^\p{L}\p{N}_-]/gu, "_")}.${ext}`, await fs.readFile(a.storagePath)); count++;
     }
     if (!count) throw new Error("还没有可下载的主图");
+    if (req.query.handoff === "1") {
+      const ids = [...new Set([...job.brief.productImageIds, ...job.brief.referenceImageIds, ...compositionAssetIds(job.brief, true), ...job.variants.flatMap(v => [...(v.productImageIds || []), ...(v.sourceImageId ? [v.sourceImageId] : [])])])];
+      for (const [index, asset] of commerceAttachments(db, req.user!, ids).entries()) zip.file(`原始素材/${index + 1}-${asset.originalName.replace(/[^\p{L}\p{N}_.-]/gu, "_")}`, await fs.readFile(asset.storagePath));
+      titleLines.push("交付说明：包含选定效果图、确认文案和原始素材。请对照图片检查商品包装、文字、规格与赠品；需要完善的位置可在方案说明后补充。");
+    }
     zip.file("标题与方案说明.txt", titleLines.join("\n"));
     // Recheck immediately before serving saved company assets.
     commerceJobAccess(await store.read(), req.user!, job.id);

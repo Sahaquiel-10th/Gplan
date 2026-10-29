@@ -5,6 +5,7 @@ import { isIP } from "node:net";
 import { decodeGeneratedImageDataUrl } from "./generatedImage.js";
 import { parseAttachment } from "./attachmentParser.js";
 import { uid } from "./security.js";
+import sharp from "sharp";
 import type { Attachment } from "./types.js";
 import type { CommerceJob, CommerceVariant } from "./commerceTypes.js";
 
@@ -56,8 +57,31 @@ async function downloadImage(raw: string, maxBytes: number): Promise<{ data: Buf
 
 export async function saveCommerceImage(raw: string, job: CommerceJob, variant: CommerceVariant, uploadDir: string): Promise<Attachment> {
   const maxBytes = 25 * 1024 * 1024;
-  const { data, mimeType, extension } = raw.startsWith("data:") ? decodeGeneratedImageDataUrl(raw, maxBytes) : await downloadImage(raw, maxBytes);
+  let { data, mimeType, extension } = raw.startsWith("data:") ? decodeGeneratedImageDataUrl(raw, maxBytes) : await downloadImage(raw, maxBytes);
   await parseAttachment(data, `image${extension}`, mimeType);
+  const metadata = await sharp(data, { limitInputPixels: 60_000_000 }).metadata();
+  if (!metadata.width || !metadata.height || (metadata.pages || 1) > 1) throw new Error("生成的图片尺寸无效");
+  const swapDimensions = [5, 6, 7, 8].includes(metadata.orientation || 1);
+  variant.sourceWidth = swapDimensions ? metadata.height : metadata.width;
+  variant.sourceHeight = swapDimensions ? metadata.width : metadata.height;
+  if (job.kind === "image_edit") {
+    variant.outputWidth = variant.sourceWidth;
+    variant.outputHeight = variant.sourceHeight;
+  } else {
+    const portrait = job.taskType === "portrait" || job.brief.outputFormat === "portrait";
+    variant.outputWidth = 1440;
+    variant.outputHeight = portrait ? 1920 : 1440;
+    data = await sharp(data, { limitInputPixels: 60_000_000 }).rotate().resize(variant.outputWidth, variant.outputHeight, {
+      fit: "contain", position: "centre", background: { r: 255, g: 255, b: 255, alpha: 1 },
+    }).png().toBuffer();
+    mimeType = "image/png";
+    extension = ".png";
+    if (variant.sourceWidth !== variant.outputWidth || variant.sourceHeight !== variant.outputHeight) {
+      const ratioChanged = Math.abs(variant.sourceWidth / variant.sourceHeight - variant.outputWidth / variant.outputHeight) > .001;
+      const note = `已从${variant.sourceWidth}×${variant.sourceHeight}适配为${variant.outputWidth}×${variant.outputHeight}${ratioChanged ? "，为保留完整画面按比例留白" : ""}；导出像素已达到要求，请核对放大后的细节清晰度。`;
+      variant.qualityNote = [variant.qualityNote, note].filter(Boolean).join(" ");
+    }
+  }
   const id = uid("att");
   const attachment: Attachment = {
     id, companyId: job.companyId, userId: job.userId, originalName: `${job.brief.productName.slice(0, 50)}-${variant.name.slice(0, 30)}${extension}`,

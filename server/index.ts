@@ -1,6 +1,7 @@
 import { createDashboardRouter } from "./dashboardRoutes.js";
 import { createCommerceRouter } from "./commerceRoutes.js";
 import { ensureCommerceAgent, commerceJobUsesAttachment } from "./commerce.js";
+import { commerceLibraryUsesAttachment } from "./commerceMaterials.js";
 import { parseSkill, validateSkill, agentInstructions } from "./agentSkills.js";
 import { canUseAgent } from "./operationsPolicy.js";
 import { createOperationsRouter, startOperationsNotifications } from "./operationsRoutes.js";
@@ -532,7 +533,7 @@ async function cleanupOrphanAttachments() {
   const removedPaths = await store.mutate((db) => {
     const paths: string[] = [];
     db.attachments = db.attachments.filter((attachment) => {
-      const usedByCreative = db.commerceJobs?.some(j => commerceJobUsesAttachment(j, attachment.id));
+      const usedByCreative = db.commerceJobs?.some(j => commerceJobUsesAttachment(j, attachment.id)) || commerceLibraryUsesAttachment(db, attachment.id);
       const stale = !usedByCreative && !attachment.messageId && new Date(attachment.createdAt).getTime() < cutoff;
       if (stale) paths.push(attachment.storagePath);
       return !stale;
@@ -737,6 +738,7 @@ app.delete("/api/attachments/:id", auth(jwtSecret), asyncRoute(async (req, res) 
     if (index === -1) throw new Error("附件不存在");
     if (db.attachments[index].messageId) throw new Error("对话中的附件不能删除");
     if (db.commerceJobs?.some(j => commerceJobUsesAttachment(j, String(req.params.id)))) throw new Error("创作任务使用的图片不能单独删除");
+    if (commerceLibraryUsesAttachment(db, String(req.params.id))) throw new Error("商品资料或模板使用的素材不能单独删除");
     storagePath = db.attachments[index].storagePath;
     db.attachments.splice(index, 1);
   });
