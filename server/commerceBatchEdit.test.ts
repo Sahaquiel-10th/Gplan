@@ -9,10 +9,10 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import JSZip from "jszip";
 import sharp from "sharp";
-import { CommerceService, commerceJobUsesAttachment, ensureCommerceAgent, publicCommerceJob } from "./commerce.js";
+import { CommerceService, commerceAttachments, commerceJobUsesAttachment, ensureCommerceAgent, publicCommerceJob } from "./commerce.js";
 import { signToken } from "./security.js";
 import type { Store } from "./db.js";
-import type { Attachment, Database, ModelConfig, User } from "./types.js";
+import type { Attachment, Conversation, Database, ModelConfig, User } from "./types.js";
 
 const at = new Date().toISOString();
 function fixture(count = 3) {
@@ -27,6 +27,55 @@ function fixture(count = 3) {
 }
 async function until(fn: () => boolean) { const end = Date.now() + 5000; while (!fn()) { if (Date.now() > end) throw Error("batch job timed out"); await new Promise(r => setTimeout(r, 5)); } }
 const terminal = (status: string) => !["queued", "generating", "planning"].includes(status);
+
+test("downgraded admins cannot edit or recognize enterprise-conversation images; ordinary images still work", async () => {
+  const { db, store, owner, agent } = fixture(2);
+  db.models.push({ ...db.models[0], id: "chat", kind: "chat" });
+  const conversation: Conversation = { id: "enterprise-source", userId: owner.id, modelId: "chat", archived: false, title: "企业数据", messages: [], createdAt: at, updatedAt: at, enterpriseData: { companyId: owner.companyId } };
+  db.conversations = [conversation]; db.attachments[0].conversationId = conversation.id;
+  assert.equal(commerceAttachments(db, owner, ["source-0"])[0].id, "source-0");
+  conversation.enterpriseData!.companyId = "another-company";
+  assert.throws(() => commerceAttachments(db, owner, ["source-0"]), /所属对话已无权/);
+  conversation.enterpriseData!.companyId = owner.companyId; owner.role = "user";
+  let modelCalls = 0, imageReads = 0;
+  const service = new CommerceService(store, {
+    readImages: async attachments => { imageReads++; return attachments.map(a => a.id); },
+    saveImage: async () => ({ ...db.attachments[1], id: "ordinary-edited-image" }),
+    model: async () => { modelCalls++; return { content: "", imageUrl: "data:fixture" }; },
+  });
+  await assert.rejects(service.createEdit(owner, agent.id, { imageId: "source-0", instruction: "修改价格" }, "enterprise-legacy-edit"), /所属对话已无权/);
+  await assert.rejects(service.createEdit(owner, agent.id, { items: [{ imageId: "source-1" }, { imageId: "source-0" }], instruction: "修改价格" }, "enterprise-batch-edit"), /所属对话已无权/);
+  await assert.rejects(service.recognize(owner, ["source-0"]), /所属对话已无权/);
+  await assert.rejects(service.recognizeDetails(owner, { imageIds: ["source-0"], text: "" }), /所属对话已无权/);
+  await assert.rejects(service.recognizeReference(owner, "source-0"), /所属对话已无权/);
+  assert.equal(modelCalls, 0); assert.equal(imageReads, 0); assert.equal(db.commerceJobs!.length, 0);
+  assert.equal(commerceAttachments(db, owner, ["source-1"])[0].id, "source-1");
+  await service.createEdit(owner, agent.id, { imageId: "source-1", instruction: "修改价格" }, "ordinary-image-edit");
+  await until(() => terminal(db.commerceJobs![0].status));
+  assert.equal(db.commerceJobs![0].status, "completed"); assert.equal(modelCalls, 1); assert.equal(imageReads, 1);
+});
+
+test("conversation-bound source images also respect the source agent's current access", async () => {
+  const { db, store, owner, peer, agent } = fixture(1);
+  db.models.push({ ...db.models[0], id: "chat", kind: "chat" });
+  peer.role = "admin";
+  const sourceAgent = { ...agent, id: "source-agent", ownerId: peer.id, commerce: undefined, access: { mode: "members" as const, userIds: [] as string[] } };
+  db.agents.push(sourceAgent);
+  const conversation: Conversation = { id: "restricted-source", userId: owner.id, modelId: "chat", agentId: sourceAgent.id, archived: false, title: "受限来源", messages: [], createdAt: at, updatedAt: at };
+  db.conversations = [conversation]; db.attachments[0].conversationId = conversation.id;
+  let modelCalls = 0;
+  const service = new CommerceService(store, { readImages: async () => { throw Error("must not read"); }, saveImage: async () => { throw Error("unused"); }, model: async () => { modelCalls++; throw Error("must not call"); } });
+  await assert.rejects(service.createEdit(owner, agent.id, { imageId: "source-0", instruction: "修改背景" }, "restricted-agent-edit"), /所属对话已无权/);
+  await assert.rejects(service.recognize(owner, ["source-0"]), /所属对话已无权/);
+  await assert.rejects(service.recognizeReference(owner, "source-0"), /所属对话已无权/);
+  assert.equal(modelCalls, 0); assert.equal(db.commerceJobs!.length, 0);
+  sourceAgent.access.userIds = [owner.id];
+  assert.equal(commerceAttachments(db, owner, ["source-0"])[0].id, "source-0");
+  sourceAgent.published = false;
+  assert.throws(() => commerceAttachments(db, owner, ["source-0"]), /所属对话已无权/);
+  conversation.agentId = "missing-agent";
+  assert.throws(() => commerceAttachments(db, owner, ["source-0"]), /所属对话已无权/);
+});
 
 test("only the legacy built-in small-edit description migrates to the batch wording", () => {
   const { db, owner, agent } = fixture();

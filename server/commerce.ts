@@ -3,6 +3,7 @@ import type { Agent, Attachment, Database, ModelConfig, User } from "./types.js"
 import { callModel } from "./modelGateway.js";
 import { uid } from "./security.js";
 import { canUseAgent } from "./operationsPolicy.js";
+import { canReadEnterpriseConversation } from "./enterpriseDataPolicy.js";
 import { defaultCommerceBrief, commerceOptions, type CommerceBrief, type CommerceJob, type CommercePublicJob, type CommerceRecognition, type CommerceVariant } from "./commerceTypes.js";
 
 import { commerceReferencePrompt, parseCommerceReference, normalizeComposition, compositionAssetIds, commerceInputIds, compositionInstructions, commercePlanningBrief, commerceVariantBrief } from "./commerceComposition.js";
@@ -96,6 +97,8 @@ export function commerceAttachments(db: Database, user: User, ids: string[]): At
   return ids.map(id => {
     const a = db.attachments.find(a => a.id === id && a.companyId === user.companyId && a.userId === user.id);
     if (!a || a.kind !== "image" || !["image/png", "image/jpeg", "image/webp"].includes(a.mimeType)) throw new Error("图片不存在或无权使用，请重新上传 PNG、JPG 或 WebP 图片");
+    const conversation = db.conversations?.find(c => c.id === a.conversationId);
+    if (conversation && (!canReadEnterpriseConversation(conversation, user) || (conversation.agentId && !db.agents.some(agent => agent.id === conversation.agentId && canUseAgent(agent, user, db.users))))) throw new Error("原图片所属对话已无权访问，请重新上传可使用的图片");
     const jobs = db.commerceJobs?.filter(j => commerceJobUsesAttachment(j, id)) || [];
     if (jobs.length && !jobs.some(j => db.agents.some(agent => agent.id === j.agentId && canUseAgent(agent, user, db.users)))) throw new Error("原图片所属任务已无权访问，请重新上传可使用的图片");
     return a;
