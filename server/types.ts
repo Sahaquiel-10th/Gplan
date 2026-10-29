@@ -83,6 +83,7 @@ export type IntegrationToken = {
 };
 
 export type Agent = {
+  reviewReply?: boolean;
   commerce?: { kind: "product_creative" | "image_edit" };
   skill?: import("./agentSkills.js").AgentSkill;
   access?: { mode: "company" | "members"; userIds: string[] };
@@ -279,6 +280,8 @@ export type ManagementBriefReport = {
 };
 
 export type Database = {
+  reviewReplyProfiles?: import("./reviewReplyTypes.js").ReviewProfile[];
+  reviewReplyRuns?: import("./reviewReplyTypes.js").ReviewRun[];
   commerceProducts?: import("./commerceTypes.js").CommerceSavedProduct[];
   commerceTemplates?: import("./commerceTypes.js").CommerceSavedTemplate[];
   commerceJobs?: import("./commerceTypes.js").CommerceJob[];

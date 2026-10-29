@@ -313,6 +313,8 @@ function migrateDatabase(db: Database): boolean {
   db.userSavedMemories ??= [];
   db.ragRetrievalLogs ??= [];
   db.modelUsageRecords ??= [];
+  db.reviewReplyProfiles ??= [];
+  db.reviewReplyRuns ??= [];
   db.dataConnectors ??= defaultDataConnectors();
   db.dataSyncLogs ??= [];
   db.dataMetricDefinitions ??= defaultDataMetricDefinitions();

@@ -293,11 +293,12 @@ test(
         assert.match(r.data.error, /未授权|不存在/);
       }
       const allowed = await request("/api/agents", "allowed");
-      assert.equal(allowed.data.agents.filter((a: { commerceKind?: string }) => !a.commerceKind).length, 2);
+      assert.equal(allowed.data.agents.filter((a: { commerceKind?: string; reviewReply?: boolean }) => !a.commerceKind && !a.reviewReply).length, 2);
+      assert.equal(allowed.data.agents.filter((a: { reviewReply?: boolean }) => a.reviewReply).length, 1);
       assert.equal(allowed.data.agents.filter((a: { commerceKind?: string }) => a.commerceKind === "product_creative").length, 1);
       assert.equal(allowed.data.agents[0].operations, undefined);
       assert.equal(
-        (await request("/api/agents", "denied")).data.agents.filter((a: { commerceKind?: string }) => !a.commerceKind).length,
+        (await request("/api/agents", "denied")).data.agents.filter((a: { commerceKind?: string; reviewReply?: boolean }) => !a.commerceKind && !a.reviewReply).length,
         0,
       );
       assert.equal(

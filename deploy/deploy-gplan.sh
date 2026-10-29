@@ -29,6 +29,7 @@ node scripts/check-release-contract.mjs "$archive"
 npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
 npm run test:client-api
 npm run test:enterprise-data
+npm run test:review-replies
 npm run build
 
 # Keep recoverable code, build and dependency snapshots outside the rsync target.

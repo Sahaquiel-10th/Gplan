@@ -15,6 +15,7 @@
     "test:operations": "tsx --test server/operations*.test.ts",
     "test:workspace": "tsx --test server/agentSkills.test.ts server/dashboardPreferences.test.ts",
     "test:commerce": "tsx --test server/commerce*.test.ts",
+    "test:review-replies": "DATA_DB_PROVIDER=disabled tsx --test server/reviewReply*.test.ts",
     "test:enterprise-data": "DATA_DB_PROVIDER=disabled tsx --test server/enterpriseData.test.ts server/enterpriseDataHttp.test.ts server/enterpriseDataGateway.test.ts"
   },
   "dependencies": {

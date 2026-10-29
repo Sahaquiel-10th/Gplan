@@ -4,6 +4,7 @@ import { DashboardWorkspace, DashboardSettings } from "./Dashboard";
 import { SkillImport } from "./SkillImport";
 import { CommerceWorkspace } from "./Commerce";
 import { ImageEditWorkspace } from "./ImageEdit";
+import { ReviewRepliesWorkspace } from "./ReviewReplies";
 import type { AgentSkill } from "../server/agentSkills";
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -138,6 +139,7 @@ type Workspace = {
 };
 
 type Agent = {
+  reviewReply?: boolean;
   commerceKind?: "product_creative" | "image_edit";
   skill?: AgentSkill;
   operationKind?: "loss" | "inventory" | "product";
@@ -499,7 +501,7 @@ function ChatApp({ user, onLogout, onUserChange }: { user: User; onLogout: () =>
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "dashboard" | "memories" | "account" | "agents" | "agentEditor" | "operations" | "operationsNotifications" | "commerce" | "imageEdit">("chat");
+  const [view, setView] = useState<"chat" | "admin" | "dashboard" | "memories" | "account" | "agents" | "agentEditor" | "operations" | "operationsNotifications" | "commerce" | "imageEdit" | "reviewReplies">("chat");
   const [operationDate, setOperationDate] = useState("");
   const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
@@ -673,6 +675,7 @@ function ChatApp({ user, onLogout, onUserChange }: { user: User; onLogout: () =>
   }
 
   function startAgentChat(agent: Agent) {
+    if (agent.reviewReply) { setDraftAgentId(agent.id); setView("reviewReplies"); setSidebarOpen(false); return; }
     if (agent.commerceKind === "image_edit") { setDraftAgentId(agent.id); setView("imageEdit"); setSidebarOpen(false); return; }
     if (agent.commerceKind) { setDraftAgentId(agent.id); setView("commerce"); setSidebarOpen(false); return; }
     if (agent.operationKind) { setDraftAgentId(agent.id); setOperationDate(""); setView("operations"); setSidebarOpen(false); return; }
@@ -1100,6 +1103,8 @@ function ChatApp({ user, onLogout, onUserChange }: { user: User; onLogout: () =>
         <DashboardWorkspace api={api} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "operationsNotifications" ? (
         <OperationsNotifications api={api} onBack={() => setView("agents")} onOpenSidebar={() => setSidebarOpen(true)} onOpen={(id, date) => { setDraftAgentId(id); setOperationDate(date); setView("operations"); }} />
+      ) : view === "reviewReplies" ? (
+        <ReviewRepliesWorkspace key={`${user.id}:${draftAgentId}`} api={api} userId={user.id} agentId={draftAgentId} onBack={() => setView("agents")} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "imageEdit" ? (
         <ImageEditWorkspace api={api} userId={user.id} agentId={draftAgentId} onBack={() => setView("agents")} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "commerce" ? (
@@ -1285,7 +1290,7 @@ function AgentCard({
   return (
     <article className={`agent-card ${official ? "official" : ""}`}>
       <div className="agent-card-top">
-        <span className="agent-mark" style={{ background: agent.color }}>{agent.commerceKind ? <Image size={25} aria-hidden="true" /> : agent.avatar || "🤖"}</span>
+        <span className="agent-mark" style={{ background: agent.color }}>{agent.reviewReply ? <MessageSquare size={25} aria-hidden="true" /> : agent.commerceKind ? <Image size={25} aria-hidden="true" /> : agent.avatar || "🤖"}</span>
         <div>
           <h3>{agent.name}</h3>
           <small>{official ? "官方发布" : agent.published ? "已发布链接" : "仅自己可见"} · {agent.authorName}</small>
@@ -1299,12 +1304,12 @@ function AgentCard({
       </div>
       <div className="agent-card-actions">
         <button className="agent-action primary-action" onClick={() => onStartChat(agent)}><Send size={14} />使用</button>
-        {agent.published && !agent.operationKind && !agent.commerceKind && agent.access?.mode !== "members" ? <button className="agent-action" onClick={() => onCopyLink(agent)}><Copy size={14} />复制链接</button> : null}
-        {canEdit && !agent.operationKind && !agent.commerceKind ? <button className="agent-icon-action" title="编辑" onClick={() => onEdit(agent)}><Edit3 size={14} /></button> : null}
-        {canEdit && !agent.operationKind && !agent.commerceKind ? <button className="agent-icon-action danger-icon-action" title="删除" onClick={() => onDelete(agent)}><Trash2 size={14} /></button> : null}
+        {agent.published && !agent.operationKind && !agent.commerceKind && !agent.reviewReply && agent.access?.mode !== "members" ? <button className="agent-action" onClick={() => onCopyLink(agent)}><Copy size={14} />复制链接</button> : null}
+        {canEdit && !agent.operationKind && !agent.commerceKind && !agent.reviewReply ? <button className="agent-icon-action" title="编辑" onClick={() => onEdit(agent)}><Edit3 size={14} /></button> : null}
+        {canEdit && !agent.operationKind && !agent.commerceKind && !agent.reviewReply ? <button className="agent-icon-action danger-icon-action" title="删除" onClick={() => onDelete(agent)}><Trash2 size={14} /></button> : null}
         <button className={`agent-icon-action favorite-action ${agent.favorited ? "active" : ""}`} title={agent.favorited ? "取消收藏" : "收藏"} onClick={() => onFavorite(agent)}><Star size={14} fill={agent.favorited ? "currentColor" : "none"} /></button>
       </div>
-      <div className="agent-stats"><span><Star size={12} />{agent.favoriteCount}</span><span>{agent.commerceKind === "image_edit" ? "传图修改 · 单张下载" : agent.commerceKind ? "点选制作 · 独立主图" : agent.operationKind ? "只读 RDS · 授权范围" : <><MessageSquare size={12} />{agent.useCount} 次使用</>}</span></div>
+      <div className="agent-stats"><span><Star size={12} />{agent.favoriteCount}</span><span>{agent.reviewReply ? "店铺规则 · 评价回复" : agent.commerceKind === "image_edit" ? "批量修改 · 独立下载" : agent.commerceKind ? "点选制作 · 独立主图" : agent.operationKind ? "只读 RDS · 授权范围" : <><MessageSquare size={12} />{agent.useCount} 次使用</>}</span></div>
     </article>
   );
 }
