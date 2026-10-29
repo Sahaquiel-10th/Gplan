@@ -3977,3 +3977,25 @@ summary {
     animation-duration: 0.01ms !important;
   }
 }
+
+/* Enterprise data follows the existing composer's blue emphasis and quiet borders. */
+.enterprise-data-toggle.composer-tool { flex: 0 0 auto; width: auto; min-height: 44px; padding: 0 10px; display: inline-flex; gap: 6px; white-space: nowrap; font-size: 13px; }
+.enterprise-data-toggle.composer-tool:disabled { cursor: not-allowed; opacity: .45; }
+.enterprise-data-toggle:active:not(:disabled) { transform: scale(.98); }
+.enterprise-data-hint { display: flex; align-items: center; gap: 8px; width: min(clamp(860px, 72vw, 1120px), 100%); margin: 0 auto 8px; color: #326cad; font-size: 13px; line-height: 1.6; }
+.enterprise-data-hint svg { flex: none; }
+.enterprise-data-sources { background: transparent; border: 0; border-radius: 0; padding: 8px 0 0; margin-top: 12px; border-top: 1px solid #e3e7ed; padding-top: 8px; font-size: 13px; line-height: 1.65; color: #5c6675; }
+.enterprise-data-sources > summary { display: flex; flex-direction: row; align-items: center; gap: 6px; cursor: pointer; min-height: 44px; width: fit-content; color: #326cad; list-style: none; }
+.enterprise-data-sources > summary::-webkit-details-marker { display: none; }
+.enterprise-data-sources[open] > summary > svg:last-child { transform: rotate(180deg); }
+.enterprise-data-source-list { display: grid; gap: 12px; padding: 4px 0 8px; overflow-wrap: anywhere; }
+.enterprise-data-source strong { display: flex; flex-wrap: wrap; gap: 4px 12px; color: #394659; font-weight: 500; }
+.enterprise-data-source strong span { color: #5c6675; font-weight: 400; }
+.enterprise-data-source p { margin-top: 4px; }
+@media (max-width: 640px) {
+  .composer-row:has(.enterprise-data-toggle) { flex-wrap: wrap; }
+  .composer-row:has(.enterprise-data-toggle) .composer-tools { width: 100%; flex-direction: row; justify-content: flex-start; }
+  .composer-row:has(.enterprise-data-toggle) textarea { min-width: 0; flex: 1; }
+  .enterprise-data-hint { align-items: flex-start; }
+  .enterprise-data-hint svg { margin-top: 3px; }
+}

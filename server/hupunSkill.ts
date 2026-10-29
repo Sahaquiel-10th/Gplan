@@ -7,6 +7,17 @@ import { Message, ModelConfig } from "./types.js";
 import { callModel } from "./modelGateway.js";
 
 const execFileAsync = promisify(execFile);
+
+type HupunContextOptions = {
+  deadline?: number;
+  ensureAccess?: () => Promise<void>;
+  onUsage?: (usage: NonNullable<Awaited<ReturnType<typeof callModel>>["usage"]>) => void;
+};
+function remaining(options: HupunContextOptions, cap: number) {
+  const ms = Math.min(cap, options.deadline ? options.deadline - Date.now() : cap);
+  if (ms < 1000) throw new Error("企业数据查询时间已用完，请缩小查询范围后重试");
+  return ms;
+}
 const erpIndexUrl = "https://hpublic.hupun.com/mp/open/md/erp/_index.md";
 const maxCalls = Math.max(1, Math.min(5, Number(process.env.HUPUN_AI_SKILL_MAX_CALLS ?? 3)));
 const resultMaxChars = Math.max(4000, Number(process.env.HUPUN_AI_SKILL_RESULT_MAX_CHARS ?? 30000));
@@ -131,7 +142,8 @@ function recentConversationText(messages: Message[]) {
     .join("\n");
 }
 
-async function selectDocuments(model: ModelConfig, messages: Message[], entries: HupunApiDescriptor[], requestId: string) {
+async function selectDocuments(model: ModelConfig, messages: Message[], entries: HupunApiDescriptor[], requestId: string, options: HupunContextOptions = {}) {
+  await options.ensureAccess?.();
   const index = entries.map((entry) => `- ${entry.name} => ${entry.docUrl}`).join("\n");
   const result = await callModel(model, [
     plannerMessage(model, [
@@ -143,7 +155,8 @@ async function selectDocuments(model: ModelConfig, messages: Message[], entries:
       `对话：\n${recentConversationText(messages)}`,
       `可用只读接口：\n${index}`
     ].join("\n\n"))
-  ], "不得执行或规划任何会修改 ERP 数据的操作。", `${requestId}:hupun-select`);
+  ], "不得执行或规划任何会修改 ERP 数据的操作。", `${requestId}:hupun-select`, undefined, remaining(options, options.deadline ? 30000 : 150000));
+  if (result.usage) options.onUsage?.(result.usage);
   const selected = parseJson<Array<{ docUrl?: string }>>(result.content);
   const allowed = new Map(entries.map((entry) => [entry.docUrl, entry]));
   return (Array.isArray(selected) ? selected : [])
@@ -160,8 +173,10 @@ async function planCalls(
   model: ModelConfig,
   messages: Message[],
   documents: Array<HupunApiDescriptor & { markdown: string }>,
-  requestId: string
+  requestId: string,
+  options: HupunContextOptions = {}
 ) {
+  await options.ensureAccess?.();
   const docs = documents.map((document) => [
     `文档 URL：${document.docUrl}`,
     document.markdown.slice(0, 16000)
@@ -178,7 +193,8 @@ async function planCalls(
       `对话：\n${recentConversationText(messages)}`,
       `官方文档：\n${docs}`
     ].join("\n\n"))
-  ], "只允许规划只读查询，不得执行或规划任何写操作。", `${requestId}:hupun-plan`);
+  ], "只允许规划只读查询，不得执行或规划任何写操作。", `${requestId}:hupun-plan`, undefined, remaining(options, options.deadline ? 30000 : 150000));
+  if (result.usage) options.onUsage?.(result.usage);
   const calls = parseJson<PlannedCall[]>(result.content);
   const allowed = new Map<string, { path: string; document: HupunApiDescriptor & { markdown: string } }>();
   for (const document of documents) {
@@ -197,7 +213,7 @@ async function planCalls(
   }).slice(0, maxCalls);
 }
 
-async function executeCall(call: PlannedCall) {
+async function executeCall(call: PlannedCall, timeoutMs = 60000) {
   const appKey = process.env.WANLINIU_APP_KEY!.trim();
   const appSecret = process.env.WANLINIU_APP_SECRET!.trim();
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "gplan-hupun-"));
@@ -207,12 +223,12 @@ async function executeCall(call: PlannedCall) {
       app_key: appKey,
       app_secret: appSecret,
       host: process.env.HUPUN_API_HOST?.trim() || "https://open-api.hupun.com",
-      timeout_seconds: Math.max(5, Number(process.env.HUPUN_API_TIMEOUT_SECONDS ?? 45))
+      timeout_seconds: Math.max(1, Math.min(Math.floor(timeoutMs / 1000), Number(process.env.HUPUN_API_TIMEOUT_SECONDS ?? 45)))
     }), { mode: 0o600 });
     const { stdout, stderr } = await execFileAsync(
       configuredCliPath(),
       ["-c", configPath, call.path, JSON.stringify(call.params)],
-      { timeout: 60000, maxBuffer: 5 * 1024 * 1024 }
+      { timeout: timeoutMs, maxBuffer: 5 * 1024 * 1024 }
     );
     const raw = `${stdout || ""}${stderr ? `\n${stderr}` : ""}`.trim();
     try {
@@ -259,7 +275,8 @@ export async function buildHupunSkillContext(params: {
   model: ModelConfig;
   messages: Message[];
   requestId: string;
-}) {
+} & HupunContextOptions) {
+  await params.ensureAccess?.();
   const status = await hupunSkillStatus();
   if (!status.ready) {
     const reason = status.missingEnvVars.length
@@ -269,25 +286,27 @@ export async function buildHupunSkillContext(params: {
   }
 
   try {
+    remaining(params, 15000);
+    await params.ensureAccess?.();
     const entries = await listHupunReadOnlyApis();
-    const selected = await selectDocuments(params.model, params.messages, entries, params.requestId);
+    const selected = await selectDocuments(params.model, params.messages, entries, params.requestId, params);
     if (!selected.length) {
       return "【万里牛 AI Skill 返回结果】\n本轮没有找到需要且允许调用的万里牛只读接口。";
     }
     const documents = await Promise.all(selected.map(async (entry) => ({
       ...entry,
-      markdown: await fetchText(entry.docUrl)
+      markdown: await fetchText(entry.docUrl, remaining(params, 15000))
     })));
-    const calls = await planCalls(params.model, params.messages, documents, params.requestId);
+    const calls = await planCalls(params.model, params.messages, documents, params.requestId, params);
     if (!calls.length) {
       return "【万里牛 AI Skill 返回结果】\n已匹配相关接口，但当前信息不足以生成符合官方文档的安全查询参数。";
     }
-    const results = await Promise.all(calls.map(async (call) => ({
-      purpose: call.purpose || "",
-      path: call.path,
-      params: call.params,
-      result: await executeCall(call)
-    })));
+    const results = await Promise.all(calls.map(async (call) => {
+      await params.ensureAccess?.();
+      const result = await executeCall(call, remaining(params, 60000));
+      await params.ensureAccess?.();
+      return { purpose: call.purpose || "", path: call.path, params: call.params, result };
+    }));
     const serialized = JSON.stringify(results, null, 2);
     return [
       "【万里牛 AI Skill 返回结果】",
@@ -295,6 +314,7 @@ export async function buildHupunSkillContext(params: {
       serialized.length > resultMaxChars ? `${serialized.slice(0, resultMaxChars)}\n[结果已截断]` : serialized
     ].join("\n");
   } catch (error) {
+    if ((error as { status?: number }).status === 403) throw error;
     return `【万里牛 AI Skill 返回结果】\n调用失败：${error instanceof Error ? error.message : "未知错误"}`;
   }
 }

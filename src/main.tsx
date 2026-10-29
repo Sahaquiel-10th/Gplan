@@ -1,3 +1,5 @@
+import { EnterpriseDataSources } from "./EnterpriseDataSources";
+import type { EnterpriseDataEvidence } from "../server/enterpriseDataPolicy";
 import { DashboardWorkspace, DashboardSettings } from "./Dashboard";
 import { SkillImport } from "./SkillImport";
 import { CommerceWorkspace } from "./Commerce";
@@ -17,6 +19,7 @@ import {
   ChevronRight,
   Copy,
   Download,
+  Database,
   Edit3,
   Eye,
   EyeOff,
@@ -86,6 +89,7 @@ type Message = {
   imageUrl?: string;
   attachments?: AttachmentSummary[];
   sources?: SearchSource[];
+  enterpriseData?: EnterpriseDataEvidence;
   createdAt: string;
   modelId?: string;
 };
@@ -110,6 +114,8 @@ type AppCapabilities = {
 };
 
 type Conversation = {
+  enterpriseData?: { companyId: string };
+  enterpriseDataEnabled?: boolean;
   id: string;
   userId: string;
   modelId: string;
@@ -475,7 +481,7 @@ function Login({ onDone }: { onDone: (user: User) => void }) {
   );
 }
 
-function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
+function ChatApp({ user, onLogout, onUserChange }: { user: User; onLogout: () => void; onUserChange: (user: User) => void }) {
   const conversationPageSize = 30;
   const [models, setModels] = useState<Model[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -499,6 +505,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
+  const [enterpriseDataByConversation, setEnterpriseDataByConversation] = useState<Record<string, boolean>>({});
   const [waitIndex, setWaitIndex] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [failedMessage, setFailedMessage] = useState("");
@@ -519,6 +526,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const currentModel = models.find((model) => model.id === activeModelId);
   const activeAgentId = active?.agentId || draftAgentId;
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  const enterpriseKey = active?.id || "draft";
+  const enterpriseData = enterpriseDataByConversation[enterpriseKey] ?? active?.enterpriseDataEnabled ?? false;
+  const canUseEnterpriseData = user.role === "admin" && currentModel?.kind === "chat" && activeAgent?.access?.mode !== "members";
+  const useEnterpriseData = Boolean(canUseEnterpriseData && enterpriseData);
   const canAttach = Boolean(currentModel) && (!activeAgent || activeAgent.allowFileUpload);
   const attachmentAccept = currentModel?.kind === "image"
     ? ".png,.jpg,.jpeg,.webp"
@@ -542,15 +553,20 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   ];
 
   async function refresh() {
-    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult] = await Promise.all([
+    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, sessionResult] = await Promise.all([
       api<{ models: Model[]; defaultModelId: string }>("/api/models"),
       api<{ conversations: Conversation[]; pagination: { page: number; hasMore: boolean } }>(
         `/api/conversations?summary=1&page=1&pageSize=${conversationPageSize}&archived=${showArchived}`
       ),
       api<{ workspaces: Workspace[] }>("/api/workspaces"),
       api<{ agents: Agent[] }>("/api/agents"),
-      api<AppCapabilities>("/api/capabilities")
+      api<AppCapabilities>("/api/capabilities"),
+      api<{ user: User }>("/api/me")
     ]);
+    if (sessionResult.user.role !== user.role || sessionResult.user.companyId !== user.companyId) {
+      onUserChange(sessionResult.user);
+      return;
+    }
     setModels(modelResult.models);
     setDefaultModelId(modelResult.defaultModelId);
     setConversations((current) => {
@@ -651,6 +667,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setError("");
     setPendingAttachments([]);
     setWebSearch(false);
+    setEnterpriseDataByConversation(items => ({ ...items, draft: false }));
     setView("chat");
     setSidebarOpen(false);
   }
@@ -666,6 +683,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setError("");
     setPendingAttachments([]);
     setWebSearch(false);
+    setEnterpriseDataByConversation(items => ({ ...items, draft: false }));
     setView("chat");
     setSidebarOpen(false);
   }
@@ -714,6 +732,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const text = rawText.trim();
     const attachments = [...pendingAttachments];
     const useWebSearch = webSearch;
+    const enterpriseRequested = useEnterpriseData;
     if ((!text && !attachments.length) || !modelId) return;
     const isNewConversation = !active;
     const tempId = isNewConversation ? localId("tmp") : "";
@@ -734,6 +753,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setPendingAttachments([]);
     if (isNewConversation) {
       const optimistic: Conversation = {
+        enterpriseData: enterpriseRequested ? { companyId: user.companyId } : undefined,
+        enterpriseDataEnabled: enterpriseRequested,
         id: tempId,
         userId: user.id,
         modelId,
@@ -747,6 +768,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         updatedAt: userMessage.createdAt
       };
       setConversations((items) => [optimistic, ...items]);
+      setEnterpriseDataByConversation(items => ({ ...items, [tempId]: enterpriseRequested }));
       setActiveId(tempId);
     } else {
       setConversations((items) =>
@@ -767,13 +789,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           workspaceId: draftWorkspaceId,
           agentId: isNewConversation ? draftAgentId : active.agentId,
           attachmentIds: attachments.map((attachment) => attachment.id),
-          webSearch: useWebSearch
+          webSearch: useWebSearch,
+          enterpriseData: enterpriseRequested
         })
       });
       setConversations((items) => {
         const rest = items.filter((item) => item.id !== result.conversation.id && item.id !== tempId);
         return [{ ...result.conversation, messagesLoaded: true }, ...rest];
       });
+      setEnterpriseDataByConversation(items => ({ ...items, [result.conversation.id]: enterpriseRequested }));
       setActiveId((current) => (current === tempId || current === active?.id ? result.conversation.id : current));
       setPendingAttachments([]);
       setWebSearch(false);
@@ -795,6 +819,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       );
       if (tempId) setActiveId("");
       setError(err instanceof Error ? err.message : "发送失败");
+      if (enterpriseRequested || active?.enterpriseData) refresh().catch(() => undefined);
     } finally {
       setLoadingByConversation((items) => ({ ...items, [loadingKey]: false }));
     }
@@ -1137,13 +1162,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                         <button title="复制" onClick={() => copyMarkdown(message.content)}>
                           <Copy size={14} />
                         </button>
-                        {active ? (
+                        {active && !active.enterpriseData ? (
                           <button title="记录这句对话" onClick={() => saveMessageToMemory(active, message)}>
                             <Brain size={14} />
                           </button>
                         ) : null}
                       </div>
                       <MessageSources sources={message.sources} />
+                      <EnterpriseDataSources evidence={message.enterpriseData} />
                     </>
                   ) : (
                     <pre>{message.content}</pre>
@@ -1160,7 +1186,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               <p>{activeAgent?.description || "选择模型，开始新的对话"}</p>
             </div>
           )}
-          {activeLoading ? <div className="typing">{waitMessages[waitIndex % waitMessages.length]}</div> : null}
+          {activeLoading ? <div className="typing" role="status">{useEnterpriseData ? "正在按问题查询万里牛并整理回答…" : waitMessages[waitIndex % waitMessages.length]}</div> : null}
         </div>
 
         <form className="composer" onSubmit={send}>
@@ -1181,6 +1207,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               <AttachmentList attachments={pendingAttachments} removable onRemove={removePendingAttachment} />
             </div>
           ) : null}
+          {useEnterpriseData ? <div className="enterprise-data-hint" role="status"><Database size={14} aria-hidden="true" /><span>已开启企业数据 · 按问题查询万里牛，知识库照常召回</span></div> : null}
           <div className="composer-row">
             <div className="composer-tools">
               <label className={`composer-tool ${!canAttach || activeLoading || uploadingAttachments ? "disabled" : ""}`} title={canAttach ? (currentModel?.kind === "image" ? "上传参考图片进行图生图" : "上传图片或文件") : "当前模型或智能体不支持附件"}>
@@ -1205,6 +1232,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               >
                 <Globe2 size={18} />
               </button>
+              {user.role === "admin" ? <button
+                className={"composer-tool enterprise-data-toggle " + (useEnterpriseData ? "active" : "")}
+                type="button"
+                aria-label="企业数据"
+                aria-pressed={useEnterpriseData}
+                title={canUseEnterpriseData ? "按问题查询已接入的万里牛数据" : "企业数据仅支持普通文字对话"}
+                disabled={!canUseEnterpriseData || activeLoading}
+                onClick={() => setEnterpriseDataByConversation(items => ({ ...items, [enterpriseKey]: !enterpriseData }))}
+              ><Database size={17} aria-hidden="true" /><span>企业数据</span></button> : null}
             </div>
             <textarea
               value={content}
@@ -1216,7 +1252,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               placeholder={currentModel?.kind === "image" ? "输入修改要求，也可直接粘贴剪贴板图片" : "输入消息，Enter 发送，Shift+Enter 换行；支持粘贴附件"}
               rows={2}
             />
-            <button className="primary send" type="submit" disabled={!activeModelId || activeLoading || (!content.trim() && !pendingAttachments.length)}>
+            <button className="primary send" type="submit" aria-label="发送消息" disabled={!activeModelId || activeLoading || (!content.trim() && !pendingAttachments.length)}>
               <Send size={18} />
             </button>
           </div>
@@ -3297,6 +3333,7 @@ function RecordsTab({ records, users }: { records: (Conversation & { user: User 
               <pre>{message.content}</pre>
               {message.imageUrl ? <img className="audit-image" src={message.imageUrl} alt={message.content} /> : null}
               <MessageSources sources={message.sources} />
+                      <EnterpriseDataSources evidence={message.enterpriseData} />
             </article>
           ))}
         </details>
@@ -3376,6 +3413,7 @@ function PublicAgentPage({ slug }: { slug: string }) {
                 <>
                   <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>
                   <MessageSources sources={message.sources} />
+                      <EnterpriseDataSources evidence={message.enterpriseData} />
                 </>
               ) : <pre>{message.content}</pre>}
               <small className="message-time">{dateTime(message.createdAt)}</small>
@@ -3426,7 +3464,9 @@ function App() {
   if (!user) return <Login onDone={setUser} />;
   return (
     <ChatApp
+      key={user.id + ":" + user.companyId + ":" + user.role}
       user={user}
+      onUserChange={setUser}
       onLogout={() => {
         api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
         setUser(null);

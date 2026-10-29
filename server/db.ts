@@ -365,6 +365,7 @@ function migrateDatabase(db: Database): boolean {
             size: attachment.size
           })),
         sources: message.sources,
+        enterpriseData: message.enterpriseData,
         modelId: message.modelId,
         createdAt: message.createdAt
       }));
@@ -517,6 +518,7 @@ function migrateDatabase(db: Database): boolean {
           imageUrl: message.imageUrl,
           attachmentIds: message.attachments?.map((attachment) => attachment.id),
           sources: message.sources,
+          enterpriseData: message.enterpriseData,
           modelId: message.modelId,
           createdAt: message.createdAt
         });

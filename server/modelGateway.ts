@@ -41,13 +41,15 @@ export async function callModel(
   messages: Message[],
   safetyRules = "",
   requestId = "unknown",
-  outputTokenLimit = defaultMaxOutputTokens
+  outputTokenLimit = defaultMaxOutputTokens,
+  timeoutMs = requestTimeoutMs
 ): Promise<ChatResult> {
+  const effectiveTimeoutMs = Math.max(1000, Math.min(requestTimeoutMs, Number.isFinite(timeoutMs) ? timeoutMs : requestTimeoutMs));
   const maxOutputTokens = Math.max(128, Math.min(defaultMaxOutputTokens, Math.round(outputTokenLimit)));
   if (!model.enabled) throw new Error("模型未启用");
   if (!model.apiKey) throw new Error("模型缺少 API Key");
   if (model.kind === "image") return callImageModel(model, messages, safetyRules, requestId);
-  if (model.protocol === "anthropic") return callAnthropicModel(model, messages, safetyRules, requestId, maxOutputTokens);
+  if (model.protocol === "anthropic") return callAnthropicModel(model, messages, safetyRules, requestId, maxOutputTokens, effectiveTimeoutMs);
 
   const systemMessages: Message[] = [safetyRules, model.systemPrompt]
     .map((content) => content.trim())
@@ -91,7 +93,7 @@ export async function callModel(
         temperature: 0.7,
         max_tokens: maxOutputTokens
       })
-    }, requestTimeoutMs);
+    }, effectiveTimeoutMs);
 
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -152,9 +154,10 @@ async function callAnthropicModel(
   messages: Message[],
   safetyRules = "",
   requestId = "unknown",
-  maxOutputTokens = defaultMaxOutputTokens
+  maxOutputTokens = defaultMaxOutputTokens,
+  effectiveTimeoutMs = requestTimeoutMs
 ): Promise<ChatResult> {
-  const system = [safetyRules, model.systemPrompt].map((content) => content.trim()).filter(Boolean).join("\n\n");
+  const system = [safetyRules, model.systemPrompt, ...messages.filter(m => m.role === "system").map(m => m.content)].map((content) => content.trim()).filter(Boolean).join("\n\n");
   const endpoint = `${model.baseUrl.replace(/\/$/, "")}/messages`;
   const startedAt = Date.now();
   console.log(JSON.stringify({

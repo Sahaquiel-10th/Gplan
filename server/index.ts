@@ -1,7 +1,9 @@
+import { buildEnterpriseDataContext } from "./enterpriseData.js";
+import { assertEnterpriseAdmin, canReadEnterpriseConversation } from "./enterpriseDataPolicy.js";
 import { createDashboardRouter } from "./dashboardRoutes.js";
+import { commerceLibraryUsesAttachment } from "./commerceMaterials.js";
 import { createCommerceRouter } from "./commerceRoutes.js";
 import { ensureCommerceAgent, commerceJobUsesAttachment } from "./commerce.js";
-import { commerceLibraryUsesAttachment } from "./commerceMaterials.js";
 import { parseSkill, validateSkill, agentInstructions } from "./agentSkills.js";
 import { canUseAgent } from "./operationsPolicy.js";
 import { createOperationsRouter, startOperationsNotifications } from "./operationsRoutes.js";
@@ -455,6 +457,7 @@ function messageRecord(message: Message, params: { companyId: string; userId: st
     imageUrl: message.imageUrl,
     attachmentIds: message.attachments?.map((attachment) => attachment.id),
     sources: message.sources,
+    enterpriseData: message.enterpriseData,
     modelId: message.modelId,
     createdAt: message.createdAt
   };
@@ -564,7 +567,7 @@ async function createUserMemory(params: {
     if (params.conversationId) {
       const conversation = db.conversations.find(c => c.id === params.conversationId && c.userId === params.user.id);
       const agent = db.agents.find(a => a.id === conversation?.agentId);
-      if (!conversation || (conversation.agentId && (!agent || agent.operations || agent.access?.mode === "members" || !canUseAgent(agent, params.user, db.users)))) throw new Error("此对话不能保存到通用记忆");
+      if (!conversation || conversation.enterpriseData || (conversation.agentId && (!agent || agent.operations || agent.access?.mode === "members" || !canUseAgent(agent, params.user, db.users)))) throw new Error("此对话不能保存到通用记忆");
     }
     const active = db.userSavedMemories.filter(
       (memory) =>
@@ -724,10 +727,11 @@ app.get("/api/attachments/:id/content", auth(jwtSecret), asyncRoute(async (req, 
   const creativeJobs = db.commerceJobs?.filter(j => commerceJobUsesAttachment(j, attachment.id)) || [];
   if (creativeJobs.length && !creativeJobs.some(j => db.agents.some(a => a.id === j.agentId && a.commerce && canUseAgent(a, req.user!, db.users)))) return res.status(404).json({ error: "附件不存在或无权访问" });
   const attachmentConversation = db.conversations.find(c => c.id === attachment.conversationId);
+  if (attachmentConversation && !canReadEnterpriseConversation(attachmentConversation, req.user!)) return res.status(404).json({ error: "附件不存在或无权访问" });
   if (attachmentConversation?.agentId && !db.agents.some(a => a.id === attachmentConversation.agentId && canUseAgent(a, req.user!, db.users))) return res.status(404).json({ error: "附件不存在或无权访问" });
   res.setHeader("Content-Type", attachment.mimeType);
   res.setHeader("Content-Disposition", `${req.query.download === "1" ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(attachment.originalName)}`);
-  res.setHeader("Cache-Control", "private, max-age=3600");
+  res.setHeader("Cache-Control", attachmentConversation?.enterpriseData ? "no-store" : "private, max-age=3600");
   fs.createReadStream(attachment.storagePath).pipe(res);
 }));
 
@@ -748,8 +752,9 @@ app.delete("/api/attachments/:id", auth(jwtSecret), asyncRoute(async (req, res) 
 
 app.get("/api/conversations", auth(jwtSecret), asyncRoute(async (req, res) => {
   const db = await store.read();
+  res.setHeader("Cache-Control", "no-store");
   const conversations = db.conversations
-    .filter((conversation) => conversation.userId === req.user!.id && (!conversation.agentId || db.agents.some(a => a.id === conversation.agentId && canUseAgent(a, req.user!, db.users))))
+    .filter((conversation) => conversation.userId === req.user!.id && canReadEnterpriseConversation(conversation, req.user!) && (!conversation.agentId || db.agents.some(a => a.id === conversation.agentId && canUseAgent(a, req.user!, db.users))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   if (req.query.summary !== "1") return res.json({ conversations });
 
@@ -779,7 +784,8 @@ app.get("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) =
   const conversation = db.conversations.find(
     (item) => item.id === req.params.id && item.userId === req.user!.id
   );
-  if (!conversation || (conversation.agentId && !db.agents.some(a => a.id === conversation.agentId && canUseAgent(a, req.user!, db.users)))) return res.status(404).json({ error: "对话不存在或无权访问" });
+  if (!conversation || !canReadEnterpriseConversation(conversation, req.user!) || (conversation.agentId && !db.agents.some(a => a.id === conversation.agentId && canUseAgent(a, req.user!, db.users)))) return res.status(404).json({ error: "对话不存在或无权访问" });
+  res.setHeader("Cache-Control", "no-store");
   res.json({ conversation });
 }));
 
@@ -1015,6 +1021,7 @@ app.post(
   "/api/chat",
   auth(jwtSecret),
   asyncRoute(async (req, res) => {
+    const enterpriseDeadline = Date.now() + 165000;
     const attachmentIds = Array.isArray(req.body.attachmentIds)
       ? [...new Set(req.body.attachmentIds.filter((id: unknown): id is string => typeof id === "string" && Boolean(id.trim())).map((id: string) => id.trim()))].slice(0, attachmentMaxFiles)
       : [];
@@ -1023,11 +1030,16 @@ app.post(
     const modelId = requiredString(req.body.modelId, "模型");
     const conversationId = typeof req.body.conversationId === "string" ? req.body.conversationId : "";
     const wantsWebSearch = req.body.webSearch === true;
+    const wantsEnterpriseData = req.body.enterpriseData === true;
+    if (wantsEnterpriseData) assertEnterpriseAdmin(req.user!);
 
     const db = await store.read();
     const existing = conversationId
       ? db.conversations.find((item) => item.id === conversationId && item.userId === req.user!.id)
       : undefined;
+    if (conversationId && !existing) return res.status(404).json({ error: "对话不存在或无权访问" });
+    if (existing && !canReadEnterpriseConversation(existing, req.user!)) return res.status(403).json({ error: "只有管理员可以访问企业数据对话" });
+    const enterpriseConversation = Boolean(wantsEnterpriseData || existing?.enterpriseData);
     const requestedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : "";
     const lockedAgentId = existing?.agentId || requestedAgentId;
     const agent = lockedAgentId
@@ -1037,6 +1049,7 @@ app.post(
       : undefined;
     if (lockedAgentId && !agent) return res.status(404).json({ error: "智能体不存在或无权使用" });
     if (agent?.operations || agent?.commerce) return res.status(403).json({ error: "请从该智能体的专用工作页使用" });
+    if (wantsEnterpriseData && agent?.access?.mode === "members") return res.status(403).json({ error: "受限智能体不能扩大为企业全量数据范围，请新建普通对话" });
     const lockedModelId = existing?.modelId || agent?.modelId || modelId;
     const model = db.models.find((item) => item.id === lockedModelId && item.enabled);
     if (!model) return res.status(404).json({ error: "模型不存在或未启用" });
@@ -1053,6 +1066,7 @@ app.post(
       : undefined;
     if (autoRouteToImage && !imageModel) throw new Error("没有可用的图片模型，请联系管理员启用 Image 2");
     const executionModel = imageModel ?? model;
+    if (wantsEnterpriseData && executionModel.kind !== "chat") return res.status(400).json({ error: "企业数据仅支持文字对话，请关闭企业数据后生成图片" });
     if (selectedAttachments.some((attachment) => attachment.messageId)) throw new Error("附件已经发送，不能重复提交");
     if (agent && selectedAttachments.length && !agent.allowFileUpload) throw new Error("这个智能体没有开启文件上传");
     if (agent && selectedAttachments.some((attachment) => attachment.kind === "image") && !agent.allowImageInput) {
@@ -1080,12 +1094,16 @@ app.post(
       createdAt: now()
     };
     const conversation = await store.mutate((mutableDb) => {
+      const currentUser = mutableDb.users.find(u => u.id === req.user!.id && u.enabled);
+      if (!currentUser || (enterpriseConversation && (currentUser.role !== "admin" || currentUser.companyId !== req.user!.companyId))) throw Object.assign(new Error("权限已变更"), { status: 403 });
       if (agent && !existing) {
         const usedAgent = mutableDb.agents.find((item) => item.id === agent.id);
         if (usedAgent) usedAgent.useCount += 1;
       }
       if (existing) {
         const target = mutableDb.conversations.find((item) => item.id === existing.id && item.userId === req.user!.id)!;
+        if (wantsEnterpriseData) target.enterpriseData = { companyId: req.user!.companyId };
+        target.enterpriseDataEnabled = wantsEnterpriseData;
         const staleMessageIds: string[] = [];
         while (target.messages.at(-1)?.role === "user") {
           const stale = target.messages.pop();
@@ -1104,6 +1122,8 @@ app.post(
         return target;
       }
       const created: Conversation = {
+        enterpriseData: wantsEnterpriseData ? { companyId: req.user!.companyId } : undefined,
+        enterpriseDataEnabled: wantsEnterpriseData,
         id: uid("cnv"),
         userId: req.user!.id,
         modelId: model.id,
@@ -1127,13 +1147,13 @@ app.post(
     const isolatedAgent = Boolean(agent?.operations || agent?.access?.mode === "members");
     const [implicitMemories, companyKnowledge]: [RetrievedMemory[], RetrievedItem[]] = executionModel.kind === "chat" && !isolatedAgent
       ? await Promise.all([
-          memoryService.searchMemory({ companyId: req.user!.companyId, userId: req.user!.id, query: content }).catch(() => []),
+          enterpriseConversation ? Promise.resolve([]) : memoryService.searchMemory({ companyId: req.user!.companyId, userId: req.user!.id, query: content }).catch(() => []),
           companyKnowledgeService.retrieveCompanyKnowledge({ companyId: req.user!.companyId, userId: req.user!.id, query: content }).catch(() => [])
         ])
       : [[], []];
 
     const latestDb = await store.read();
-    const explicitMemories: RetrievedMemory[] = (isolatedAgent ? [] : latestDb.userSavedMemories)
+    const explicitMemories: RetrievedMemory[] = (isolatedAgent || enterpriseConversation ? [] : latestDb.userSavedMemories)
       .filter(
         (memory) =>
           memory.companyId === req.user!.companyId &&
@@ -1215,8 +1235,29 @@ app.post(
     let result;
     const assistantMessageId = uid("msg");
     let generatedImage: Awaited<ReturnType<typeof persistGeneratedImage>>;
+    let enterpriseResult: Awaited<ReturnType<typeof buildEnterpriseDataContext>> | undefined;
+    async function ensureEnterpriseAccess() {
+      const current = await store.read();
+      const user = current.users.find(u => u.id === req.user!.id && u.enabled && u.companyId === req.user!.companyId && u.role === "admin");
+      const target = current.conversations.find(c => c.id === conversation.id && c.userId === req.user!.id);
+      if (!user || !target || !canReadEnterpriseConversation(target, user) || (target.agentId && !current.agents.some(a => a.id === target.agentId && canUseAgent(a, user, current.users)))) throw Object.assign(new Error("权限已变更，企业数据查询已取消"), { status: 403 });
+      if (wantsEnterpriseData && !current.dataConnectors.some(c => c.id === "wanliniu" && c.enabled)) throw Object.assign(new Error("万里牛数据源已停用"), { status: 403 });
+    }
     try {
-      result = await callModel(executionModel, modelMessages, db.settings.safetyRules, res.locals.requestId);
+      if (enterpriseConversation || conversation.enterpriseData) await ensureEnterpriseAccess();
+      if (wantsEnterpriseData) {
+        const sourceCompanyId = process.env.WANLINIU_COMPANY_ID?.trim() || "company_default";
+        enterpriseResult = await buildEnterpriseDataContext({
+          user: req.user!, model, messages: [...historyMessages, userMessage], requestId: res.locals.requestId,
+          connectorEnabled: db.dataConnectors.some(c => c.id === "wanliniu" && c.enabled),
+          liveAllowed: sourceCompanyId === req.user!.companyId && missingWanliniuSyncConfig().length === 0,
+          ensureAccess: ensureEnterpriseAccess, deadline: enterpriseDeadline - 30000,
+        });
+        modelMessages.unshift({ role: "system", content: enterpriseResult.context, createdAt: now(), modelId: model.id });
+        await logRetrieval({ companyId: req.user!.companyId, userId: req.user!.id, conversationId: conversation.id, query: content, sourceType: "enterprise_data", matchedItemsJson: enterpriseResult.evidence, injectedContext: "", threshold: 0, topK: enterpriseResult.evidence.sources.length });
+      }
+      if (enterpriseConversation || conversation.enterpriseData) await ensureEnterpriseAccess();
+      result = await callModel(executionModel, modelMessages, db.settings.safetyRules, res.locals.requestId, undefined, wantsEnterpriseData ? Math.max(1000, enterpriseDeadline - Date.now()) : undefined);
       generatedImage = await persistGeneratedImage({
         imageUrl: result.imageUrl,
         companyId: req.user!.companyId,
@@ -1244,6 +1285,7 @@ app.post(
       content: autoRouteToImage ? `已调用 ${executionModel.name} 生成图片` : result.content,
       imageUrl: generatedImage?.imageUrl ?? result.imageUrl,
       sources: searchSources,
+      enterpriseData: enterpriseResult?.evidence,
       modelId: executionModel.id,
       createdAt: now()
     };
@@ -1254,7 +1296,7 @@ app.post(
         const target = mutableDb.conversations.find((item) => item.id === conversation.id && item.userId === req.user!.id);
         if (!target) throw new Error("对话不存在");
         const currentUser = mutableDb.users.find(u => u.id === req.user!.id && u.enabled);
-        if (!currentUser || (target.agentId && !mutableDb.agents.some(a => a.id === target.agentId && canUseAgent(a, currentUser, mutableDb.users)))) throw new Error("权限已变更，本次回答不再显示");
+        if (!currentUser || !canReadEnterpriseConversation(target, currentUser) || (wantsEnterpriseData && !mutableDb.dataConnectors.some(c => c.id === "wanliniu" && c.enabled)) || (target.agentId && !mutableDb.agents.some(a => a.id === target.agentId && canUseAgent(a, currentUser, mutableDb.users)))) throw Object.assign(new Error("权限已变更，本次回答不再显示"), { status: 403 });
         target.messages.push(assistantMessage);
         target.updatedAt = assistantMessage.createdAt;
         mutableDb.messages.push(messageRecord(assistantMessage, {
@@ -1268,17 +1310,17 @@ app.post(
           attachment.conversationId = target.id;
           attachment.messageId = userMessage.id;
         }
-        if (result.usage) {
+        for (const usage of [...(enterpriseResult?.usages || []), ...(result.usage ? [result.usage] : [])]) {
           mutableDb.modelUsageRecords.push({
             id: uid("use"),
             companyId: req.user!.companyId,
             userId: req.user!.id,
             conversationId: target.id,
             modelId: executionModel.id,
-            inputTokens: result.usage.inputTokens,
-            outputTokens: result.usage.outputTokens,
-            totalTokens: result.usage.totalTokens,
-            source: result.usage.source,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            totalTokens: usage.totalTokens,
+            source: usage.source,
             createdAt: assistantMessage.createdAt
           });
         }
@@ -1290,7 +1332,7 @@ app.post(
     }
 
     let memoryNotice = "";
-    if (executionModel.kind === "chat" && !isolatedAgent && hasExplicitMemoryIntent(content)) {
+    if (executionModel.kind === "chat" && !isolatedAgent && !enterpriseConversation && hasExplicitMemoryIntent(content)) {
       try {
         await createUserMemory({
           user: req.user!,
@@ -1311,7 +1353,7 @@ app.post(
 app.patch("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
   const conversation = await store.mutate((db) => {
     const target = db.conversations.find((item) => item.id === req.params.id && item.userId === req.user!.id);
-    if (!target || (target.agentId && !db.agents.some(a => a.id === target.agentId && canUseAgent(a, req.user!, db.users)))) throw new Error("对话不存在或无权访问");
+    if (!target || !canReadEnterpriseConversation(target, req.user!) || (target.agentId && !db.agents.some(a => a.id === target.agentId && canUseAgent(a, req.user!, db.users)))) throw new Error("对话不存在或无权访问");
     if (typeof req.body.archived === "boolean") target.archived = req.body.archived;
     if (typeof req.body.workspaceId === "string") target.workspaceId = req.body.workspaceId || undefined;
     target.updatedAt = now();
@@ -2498,7 +2540,7 @@ app.use((err: Error, req: Request, res: Response, _next: unknown) => {
     : uploadTooMany
       ? `每次最多上传 ${attachmentMaxFiles} 个附件`
       : err.message || "请求处理失败";
-  const status = uploadTooLarge ? 413 : /响应超时|无法连接模型服务/.test(message) ? 504 : 400;
+  const status = (err as Error & { status?: number }).status === 403 ? 403 : uploadTooLarge ? 413 : /响应超时|无法连接模型服务/.test(message) ? 504 : 400;
   console.error(JSON.stringify({
     event: "request_failed",
     requestId: res.locals.requestId,

@@ -32,6 +32,7 @@ export type Message = {
   imageUrl?: string;
   attachments?: AttachmentSummary[];
   sources?: SearchSource[];
+  enterpriseData?: import("./enterpriseDataPolicy.js").EnterpriseDataEvidence;
   inputImageDataUrls?: string[];
   imageSize?: "auto";
   createdAt: string;
@@ -42,6 +43,7 @@ export type MessageRecord = Required<Pick<Message, "id" | "role" | "content" | "
   companyId: string;
   userId: string;
   conversationId: string;
+  enterpriseData?: import("./enterpriseDataPolicy.js").EnterpriseDataEvidence;
   modelId?: string;
   imageUrl?: string;
   attachmentIds?: string[];
@@ -50,6 +52,8 @@ export type MessageRecord = Required<Pick<Message, "id" | "role" | "content" | "
 };
 
 export type Conversation = {
+  enterpriseData?: { companyId: string };
+  enterpriseDataEnabled?: boolean;
   id: string;
   userId: string;
   modelId: string;
@@ -164,7 +168,7 @@ export type RagRetrievalLog = {
   userId: string;
   conversationId: string;
   query: string;
-  sourceType: "company_kb" | "memory_library";
+  sourceType: "company_kb" | "memory_library" | "enterprise_data";
   matchedItemsJson: unknown;
   injectedContext: string;
   threshold: number;
@@ -275,9 +279,9 @@ export type ManagementBriefReport = {
 };
 
 export type Database = {
-  commerceJobs?: import("./commerceTypes.js").CommerceJob[];
   commerceProducts?: import("./commerceTypes.js").CommerceSavedProduct[];
   commerceTemplates?: import("./commerceTypes.js").CommerceSavedTemplate[];
+  commerceJobs?: import("./commerceTypes.js").CommerceJob[];
   dashboardDefaults?: Record<string, import("./dashboardPreferences.js").DashboardView>;
   dashboardPresets?: import("./dashboardPreferences.js").DashboardPreset[];
   operationsSnapshots?: import("./operationsArchive.js").OperationsSnapshot[];

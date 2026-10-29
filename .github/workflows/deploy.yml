@@ -25,6 +25,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: node scripts/check-release-contract.mjs
       - run: npm run test:client-api
+      - run: npm run test:enterprise-data
       - run: npm run test:commerce
       - run: npm run build
 
