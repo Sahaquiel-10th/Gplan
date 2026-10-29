@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Check, ImagePlus, LoaderCircle, Plus, RefreshCw, Upload, X } from "lucide-react";
+import React, { useEffect, useId, useRef, useState } from "react";
+import { Check, ChevronDown, ImagePlus, LoaderCircle, Plus, RefreshCw, Upload, X } from "lucide-react";
 import type { CommerceBrief, CommerceKeyword, CommerceRecognition, CommerceSavedProduct, CommerceSavedTemplate } from "../server/commerceTypes";
 
 type Api = <T>(url: string, options?: RequestInit) => Promise<T>;
@@ -23,6 +23,8 @@ export function CommerceMaterials({ api, brief, onChange, onRecognition, onBusy 
   onRecognition: (value: CommerceRecognition) => void; onBusy: (value: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState(!!brief.detailImageIds?.length || !!brief.detailText);
+  const panelId = useId();
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const latest = useRef(brief); latest.current = brief;
@@ -78,8 +80,13 @@ export function CommerceMaterials({ api, brief, onChange, onRecognition, onBusy 
     if (next && alive.current) void recognize(next);
   }
 
-  return <details className="creative-details creative-materials" open={!!brief.detailImageIds?.length || !!brief.detailText}>
-    <summary>添加详情资料，让 AI 帮你提炼卖点 <span className="creative-muted">选填 · 图片或文字</span></summary>
+  return <section className="creative-materials" aria-label="商品详情资料">
+    <button type="button" className="creative-materials-trigger" aria-label="添加详情资料" aria-expanded={expanded} aria-controls={panelId} onClick={() => setExpanded(value => !value)}>
+      <span className="creative-materials-trigger-icon"><Upload size={21} aria-hidden="true" /></span>
+      <span><strong>添加详情资料</strong><small>上传图片或粘贴文字，AI 帮你提炼卖点和关键词</small></span>
+      <ChevronDown size={18} className={expanded ? "is-expanded" : ""} aria-hidden="true" />
+    </button>
+    {expanded && <div id={panelId} className="creative-materials-panel">
     <p className="creative-help">放入已有详情页，不用重新写需求。详情图只提供商品信息，不会作为主图参考。</p>
     <div className="creative-detail-images">{brief.detailImageIds?.map((id, i) => <div className="creative-thumbnail" key={id}><img src={imageUrl(id)} alt={`商品详情图${i + 1}`} /><button type="button" aria-label={`移除详情图${i + 1}`} disabled={busy} onClick={() => onChange({ detailImageIds: brief.detailImageIds!.filter(x => x !== id) })}><X size={14} /></button></div>)}
       {(brief.detailImageIds?.length || 0) < 12 && <label className="creative-compact-upload"><ImagePlus size={18} />上传详情图<input aria-label="商品详情图" type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={busy} onChange={e => { void upload(Array.from(e.target.files || [])); e.target.value = ""; }} /></label>}
@@ -87,7 +94,8 @@ export function CommerceMaterials({ api, brief, onChange, onRecognition, onBusy 
     <label className="creative-custom">或粘贴详情文字<textarea aria-label="商品详情文字" value={brief.detailText || ""} disabled={busy} rows={4} maxLength={20000} placeholder="粘贴商品详情、品牌资料中的原文，AI 会整理成可以点选的卖点和关键词" onChange={e => onChange({ detailText: e.target.value })} /></label>
     <button type="button" className="creative-secondary" disabled={busy || !(brief.detailImageIds?.length || brief.detailText?.trim())} onClick={() => void recognize()}>{busy ? <LoaderCircle size={15} className="creative-spin" /> : <RefreshCw size={15} />}提炼卖点与关键词</button>
     {message && <p className="creative-note" role="status">{message}</p>}{error && <p className="creative-result-error" role="alert">{error}</p>}
-  </details>;
+    </div>}
+  </section>;
 }
 
 // Intent/hierarchy: choose useful search terms; imported demand data stays visibly separate

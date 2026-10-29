@@ -1,27 +1,72 @@
-.image-edit-body { max-width: 1240px; }
+.image-edit-body { max-width: 1440px; }
 .image-edit-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.image-edit-layout.has-batch { grid-template-columns: minmax(320px, .85fr) minmax(0, 1.15fr); }
 .image-edit-panel { padding: 24px; background: var(--creative-paper); border: 1px solid var(--creative-line); border-radius: 8px; min-width: 0; }
 .image-edit-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.image-edit-panel h2 { font-size: 20px; font-weight: 650; margin-top: 8px; line-height: 1.4; }
+.image-edit-panel h2 { font-size: 20px; font-weight: 650; margin-top: 8px; line-height: 1.4; text-wrap: balance; }
+.image-edit-header-actions { display: flex; align-items: center; gap: 16px; }
 .image-edit-file { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
-.image-edit-file:focus-visible+.image-edit-preview, .image-edit-file:focus-visible+.image-edit-upload { outline: 2px solid var(--creative-blue); outline-offset: 3px; }
+.image-edit-file:focus-visible+.image-edit-upload, .image-edit-file:focus-visible+.image-edit-single-source { outline: 2px solid var(--creative-blue); outline-offset: 3px; }
 .image-edit-preview { display: flex; align-items: center; justify-content: center; width: 100%; min-height: 180px; height: 320px; padding: 0; overflow: hidden; border: 0; background: var(--creative-inset); cursor: zoom-in; }
 .image-edit-preview img { display: block; max-width: 100%; width: 100%; height: 100%; object-fit: contain; }
-.image-edit-upload, .image-edit-result-empty { min-height: 320px; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; gap: 12px; border: 1px dashed var(--creative-line); background: var(--creative-canvas); color: var(--creative-muted); border-radius: 6px; text-align: center; }
+.image-edit-upload, .image-edit-result-empty { min-height: 320px; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; gap: 12px; border: 1px dashed var(--creative-line); background: var(--creative-canvas); color: var(--creative-muted); border-radius: 4px; text-align: center; }
 .image-edit-upload { cursor: pointer; }
 .image-edit-upload:hover:not(:disabled) { border-color: var(--creative-blue); background: var(--creative-blue-paper); }
 .image-edit-upload strong, .image-edit-result-empty strong { color: var(--creative-secondary-ink); font-size: 16px; font-weight: 550; }
 .image-edit-upload span, .image-edit-result-empty p { font-size: 13px; line-height: 1.7; }
-.image-edit-instruction { display: grid; gap: 10px; margin-top: 24px; color: var(--creative-ink); font-size: 14px; font-weight: 550; }
-.image-edit-instruction textarea { width: 100%; border: 1px solid var(--creative-line); border-radius: 6px; padding: 12px; background: var(--creative-inset); color: var(--creative-ink); font: inherit; font-weight: 400; font-size: 14px; line-height: 1.7; resize: vertical; }
-.image-edit-workspace :is(button, textarea, a):focus-visible { outline: 2px solid var(--creative-blue); outline-offset: 3px; }
+.image-edit-instruction { display: grid; gap: 12px; margin-top: 24px; color: var(--creative-ink); font-size: 14px; font-weight: 550; }
+.image-edit-instruction textarea, .image-edit-override textarea { width: 100%; border: 1px solid var(--creative-line); border-radius: 4px; padding: 12px; background: var(--creative-inset); color: var(--creative-ink); font: inherit; font-weight: 400; font-size: 14px; line-height: 1.7; resize: vertical; }
+.image-edit-instruction textarea:disabled, .image-edit-override textarea:disabled { color: var(--creative-secondary-ink); opacity: 1; }
+.image-edit-workspace :is(button, textarea, a, summary):focus-visible { outline: 2px solid var(--creative-blue); outline-offset: 3px; }
 .image-edit-submit { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
 .image-edit-submit>span { font-size: 12px; color: var(--creative-muted); line-height: 1.6; }
+.image-edit-submit .creative-primary { flex-shrink: 0; }
 .image-edit-result-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
 .image-edit-result>.creative-help { margin-top: 16px; }
-.image-edit-versions { margin-top: 20px; font-size: 13px; color: var(--creative-secondary-ink); }
+.image-edit-versions { margin-top: 16px; font-size: 13px; color: var(--creative-secondary-ink); }
 .image-edit-versions summary { min-height: 40px; line-height: 40px; cursor: pointer; }
 .image-edit-versions a { display: inline-flex; align-items: center; min-height: 40px; margin-right: 16px; color: var(--creative-blue); }
-@media (max-width: 1000px) { .image-edit-layout { grid-template-columns: minmax(0, 1fr); gap: 20px; } .image-edit-result-empty { min-height: 220px; } }
-@media (max-width: 600px) { .image-edit-panel { padding: 20px 16px; } .image-edit-panel h2 { font-size: 18px; } .image-edit-preview { height: 280px; } .image-edit-upload { min-height: 240px; } .image-edit-submit { flex-direction: column; align-items: stretch; gap: 12px; } .image-edit-result-actions>* { flex: 1; } }
 .image-edit-result { scroll-margin-top: 16px; }
+.image-edit-source-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.image-edit-single-source, .image-edit-source-item { position: relative; min-width: 0; }
+.image-edit-source-preview { width: 100%; aspect-ratio: 1; display: block; border: 1px solid var(--creative-line); border-radius: 4px; padding: 0; overflow: hidden; background: var(--creative-inset); cursor: zoom-in; }
+.image-edit-source-preview img { width: 100%; height: 100%; display: block; object-fit: contain; }
+.image-edit-source-item>span { min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 4px; font-size: 12px; color: var(--creative-secondary-ink); }
+.image-edit-source-item small { color: var(--creative-blue); font-size: 11px; }
+.image-edit-remove.creative-icon-button { position: absolute; top: 4px; right: 4px; min-width: 40px; width: 40px; min-height: 40px; height: 40px; padding: 8px; background: var(--creative-paper); border: 1px solid var(--creative-line); }
+.image-edit-add { min-height: 104px; width: 100%; aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--creative-muted); background: var(--creative-canvas); border: 1px dashed var(--creative-line); border-radius: 4px; font: inherit; font-size: 12px; cursor: pointer; }
+.image-edit-add:hover:not(:disabled) { color: var(--creative-blue); border-color: var(--creative-blue); }
+.image-edit-overrides { margin-top: 16px; color: var(--creative-secondary-ink); font-size: 13px; }
+.image-edit-overrides>summary { min-height: 40px; padding: 8px 0; cursor: pointer; line-height: 24px; }
+.image-edit-overrides>summary span { margin-left: 8px; color: var(--creative-muted); font-size: 12px; }
+.image-edit-override-list { display: grid; gap: 16px; margin-top: 12px; }
+.image-edit-override { display: grid; gap: 8px; }
+.image-edit-override>span { display: flex; align-items: center; gap: 8px; }
+.image-edit-override>span img { width: 32px; height: 32px; object-fit: contain; background: var(--creative-inset); }
+.image-edit-override strong { font-size: 13px; font-weight: 550; }
+.image-edit-task-note { margin-top: 16px; }
+.image-edit-progress { margin-bottom: 24px; }
+.image-edit-progress>div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 12px; line-height: 1.7; color: var(--creative-muted); }
+.image-edit-progress strong { color: var(--creative-secondary-ink); font-weight: 550; font-variant-numeric: tabular-nums; }
+.image-edit-progress progress { display: block; width: 100%; height: 4px; border: 0; border-radius: 4px; overflow: hidden; margin-top: 8px; accent-color: var(--creative-blue); background: var(--creative-inset); }
+.image-edit-progress progress::-webkit-progress-bar { background: var(--creative-inset); }
+.image-edit-progress progress::-webkit-progress-value { background: var(--creative-blue); }
+.image-edit-progress progress::-moz-progress-bar { background: var(--creative-blue); }
+.image-edit-progress>a { margin-top: 16px; }
+.image-edit-result-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 16px; }
+.image-edit-result-card { min-width: 0; }
+.image-edit-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.image-edit-card-heading>span { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.image-edit-card-heading img { width: 28px; height: 28px; background: var(--creative-inset); object-fit: contain; }
+.image-edit-card-heading strong { font-size: 13px; font-weight: 550; color: var(--creative-secondary-ink); }
+.image-edit-card-heading small { color: var(--creative-muted); font-size: 12px; }
+.image-edit-card-heading small.is-failed { color: var(--creative-error, #a13d34); }
+.image-edit-result-card.is-batch .image-edit-preview, .image-edit-result-card.is-batch .image-edit-result-empty { aspect-ratio: 1; height: auto; min-height: 160px; }
+.image-edit-result-card.is-batch .image-edit-result-empty { padding: 16px; }
+.image-edit-result-card.is-batch .image-edit-result-actions { gap: 8px; margin-top: 12px; }
+.image-edit-result-card.is-batch .image-edit-result-actions :is(a, button) { font-size: 12px; padding: 8px; }
+.image-edit-result-card.is-batch .image-edit-result-actions>.creative-text-button { min-height: 40px; }
+.image-edit-result-card .creative-result-error { overflow-wrap: anywhere; }
+@media (max-width: 1200px) { .image-edit-result-grid { grid-template-columns: minmax(0, 1fr); } .image-edit-layout.has-batch { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+@media (max-width: 1000px) { .image-edit-layout, .image-edit-layout.has-batch { grid-template-columns: minmax(0, 1fr); gap: 20px; } .image-edit-result-empty { min-height: 220px; } .image-edit-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .image-edit-source-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .image-edit-panel { padding: 20px 16px; } .image-edit-panel h2 { font-size: 18px; } .image-edit-preview { height: 280px; } .image-edit-upload { min-height: 240px; } .image-edit-submit { flex-direction: column; align-items: stretch; gap: 12px; } .image-edit-header-actions { gap: 8px; flex-wrap: wrap; justify-content: flex-end; } .image-edit-header-actions>button { font-size: 12px; padding: 8px; } .image-edit-source-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .image-edit-result-grid { grid-template-columns: minmax(0, 1fr); gap: 24px; } .image-edit-result-actions>* { flex: 1 1 auto; } .image-edit-progress>div { align-items: flex-start; } .image-edit-progress>div>span:last-child { text-align: right; } }

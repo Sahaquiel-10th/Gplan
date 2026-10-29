@@ -57,13 +57,17 @@ export function commerceJobUsesAttachment(job: CommerceJob, id: string): boolean
 
 export function ensureCommerceAgent(db: Database, companyId: string, kind: "product_creative" | "image_edit" = "product_creative"): Agent | undefined {
   const existing = db.agents.find(a => a.companyId === companyId && a.commerce?.kind === kind);
-  if (existing) return existing;
+  const editDescription = "单张或批量上传图片，统一说明修改要求，也可逐张补充，分别生成可下载的新版本。";
+  if (existing) {
+    if (kind === "image_edit" && existing.description === "上传一张图片，说清要改哪里，生成可下载的新版本。") { existing.description = editDescription; existing.updatedAt = now(); }
+    return existing;
+  }
   const owner = db.users.find(u => u.companyId === companyId && u.role === "admin" && u.enabled);
   if (!owner) return;
   const at = now();
   const agent: Agent = {
     id: uid("agt"), companyId, ownerId: owner.id, commerce: { kind },
-    name: kind === "image_edit" ? "小修小改" : "电商主图与标题助手", description: kind === "image_edit" ? "上传一张图片，说清要改哪里，生成可下载的新版本。" : "识别商品资料，点选方向和参考图，按需制作主图、标题与SKU套图。",
+    name: kind === "image_edit" ? "小修小改" : "电商主图与标题助手", description: kind === "image_edit" ? editDescription : "识别商品资料，点选方向和参考图，按需制作主图、标题与SKU套图。",
     prompt: "", modelId: db.models.find(m => m.kind === "chat" && m.enabled && m.isDefault)?.id || "",
     group: "商品创作", avatar: "", color: "#E8F1FB", favoriteUserIds: [], useCount: 0,
     allowFileUpload: true, allowImageInput: true, allowWebSearch: false, published: true,
@@ -115,10 +119,10 @@ export function imageEditModel(db: Database): ModelConfig {
   return model;
 }
 
-export function imageEditPrompt(job: CommerceJob): string {
+export function imageEditPrompt(job: CommerceJob, variant = job.variants[0]): string {
   return [
     "对输入的这一张原图做小范围修改，只输出一张完整的修改后图片。不要输出拼图、前后对比、界面、解释或多张方案。",
-    `用户的修改要求：${JSON.stringify(job.brief.notes)}。`,
+    `用户的修改要求：${JSON.stringify(variant?.editInstruction || job.brief.notes)}。`,
     "只修改用户明确指定的内容和区域；其余内容尽量保留原样，包括商品外观、包装、Logo、文字、数字、颜色、排版和位置。不要顺便美化、改文案、增加元素或承诺。",
     "替换文字或价格时，准确使用用户指定的新内容，尽量匹配原来的字号、颜色、字形和对齐。用户要求移除内容时，合理修复其所在背景。",
     "替换后删除旧内容，不得新旧文字同时保留。未指定的英文、Logo、包装小字和花纹不可重绘。仅当用户明确要求重新排版时，才在其指定范围内重新平衡剩余元素；只删除时不擅自移动其他内容。",
@@ -254,10 +258,22 @@ export class CommerceService {
 
   async createEdit(user: User, agentId: string, value: unknown, requestKey: string) {
     const input = value && typeof value === "object" ? value as Record<string, unknown> : {};
-    const imageId = text(input.imageId, 120), instruction = text(input.instruction, 1000);
-    if (!imageId) throw new Error("请上传一张需要修改的图片");
-    if (!instruction) throw new Error("请写下要修改的地方，例如把79元改成69元");
-    if (typeof input.instruction !== "string" || input.instruction.trim().length > 1000) throw new Error("修改要求请控制在1000字以内");
+    const normalizeInstruction = (v: unknown) => {
+      if (v !== undefined && (typeof v !== "string" || v.trim().length > 1000)) throw new Error("修改要求请控制在1000字以内");
+      return typeof v === "string" ? v.trim() : "";
+    };
+    const instruction = normalizeInstruction(input.instruction);
+    const batch = input.items !== undefined;
+    if (batch && (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > 20)) throw new Error("每批请上传1至20张需要修改的图片");
+    const rawItems = batch ? input.items as unknown[] : [{ imageId: input.imageId }];
+    const items = rawItems.map(raw => {
+      const item = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+      if (typeof item.imageId !== "string" || !item.imageId.trim() || item.imageId.trim().length > 120) throw new Error(batch ? "每张图片都需要有效的图片标识" : "请上传一张需要修改的图片");
+      const effectiveInstruction = normalizeInstruction(item.instruction) || instruction;
+      if (!effectiveInstruction) throw new Error("请为每张图片填写修改要求，或填写统一修改要求");
+      return { imageId: item.imageId.trim(), instruction: effectiveInstruction };
+    });
+    if (new Set(items.map(item => item.imageId)).size !== items.length) throw new Error("同一批图片不能重复，请移除重复图片");
     if (!/^[\w-]{8,100}$/.test(requestKey)) throw new Error("请求标识无效，请刷新后重试");
     const result = await this.store.mutate(db => {
       db.commerceJobs ??= [];
@@ -269,12 +285,13 @@ export class CommerceService {
         return structuredClone(duplicate);
       }
       if (db.commerceJobs.some(j => j.userId === user.id && ["planning", "queued", "generating"].includes(j.status))) throw new Error("已有图片任务进行中，请先查看当前任务");
-      const [source] = commerceAttachments(db, user, [imageId]);
+      const sources = commerceAttachments(db, user, items.map(item => item.imageId));
+      if (sources.some(source => source.size > 10 * 1024 * 1024)) throw new Error("每张图片不能超过10MB，请压缩后重新上传");
       const image = imageEditModel(db), at = now();
-      const brief: CommerceBrief = { ...defaultCommerceBrief(), productImageIds: [imageId], productName: source.originalName.slice(0, 100), count: 1, mode: "direct", notes: instruction };
+      const brief: CommerceBrief = { ...defaultCommerceBrief(), productImageIds: items.map(item => item.imageId), productName: items.length === 1 ? sources[0].originalName.slice(0, 100) : `${sources[0].originalName.slice(0, 80)} 等${items.length}张图片`, count: items.length, mode: "direct", notes: instruction };
       const job: CommerceJob = { id: uid("edit"), kind: "image_edit", companyId: user.companyId, userId: user.id, agentId, requestKey, brief,
-        status: "queued", phase: "正在等待修改图片", summary: instruction, analysis: "", chatModelId: "", imageModelId: image.id, createdAt: at, updatedAt: at,
-        variants: [{ id: uid("ev"), name: "修改结果", reason: instruction, headline: "", subline: "", imagePrompt: "", title: "", titleReason: "", status: "pending", attempts: 0 }] };
+        status: "queued", phase: "正在等待修改图片", summary: instruction || `逐张修改${items.length}张图片`, analysis: "", chatModelId: "", imageModelId: image.id, createdAt: at, updatedAt: at,
+        variants: items.map((item, index) => ({ id: uid("ev"), name: `${sources[index].originalName.replace(/\.[^.]+$/, "").slice(0, 100)}-修改结果`, reason: item.instruction, editInstruction: item.instruction, productImageIds: [item.imageId], headline: "", subline: "", imagePrompt: "", title: "", titleReason: "", status: "pending", selected: true, attempts: 0 })) };
       db.commerceJobs.push(job); agent.useCount++;
       return structuredClone(job);
     });
@@ -378,9 +395,11 @@ export class CommerceService {
     void this.tick(); return result;
   }
 
-  async retry(user: User, id: string, variantId?: string, referenceImageId?: string) {
+  async retry(user: User, id: string, variantId?: string, referenceImageId?: string, requestKey?: string) {
+    if (requestKey !== undefined && !/^[\w-]{8,100}$/.test(requestKey)) throw new Error("重试标识无效，请刷新后重试");
     await this.store.mutate(db => {
       const job = commerceJobAccess(db, user, id);
+      if (requestKey && variantId && job.variants.some(v => v.id === variantId && v.lastRetryRequestKey === requestKey)) return;
       if (["planning", "queued", "generating"].includes(job.status) || this.active.has(id)) throw new Error("当前任务正在进行，请等待完成");
       if (db.commerceJobs?.some(j => j.userId === user.id && j.id !== id && ["planning", "queued", "generating"].includes(j.status))) throw new Error("已有任务进行中，请先查看当前任务");
       if (!variantId) {
@@ -393,6 +412,7 @@ export class CommerceService {
         this.selectReference(job, variant, referenceImageId);
         for (const v of job.variants) if (v.status === "pending") v.selected = false;
         variant.selected = true; variant.status = "pending"; delete variant.error;
+        if (requestKey) variant.lastRetryRequestKey = requestKey;
         job.status = "queued"; job.phase = `即将重新制作「${variant.name}」`;
       }
       delete job.error; job.updatedAt = now();
@@ -467,11 +487,11 @@ export class CommerceService {
         await this.update(id, j => {
           const target = j.variants.find(x => x.id === v.id)!;
           target.status = "generating"; target.attempts++;
-          j.phase = j.kind === "image_edit" ? "正在按要求修改图片" : `正在制作第${j.variants.findIndex(x => x.id === v.id) + 1}/${j.variants.length}张 · ${v.name}`;
+          j.phase = j.kind === "image_edit" ? `正在修改第${j.variants.findIndex(x => x.id === v.id) + 1}/${j.variants.length}张 · ${v.name}` : `正在制作第${j.variants.findIndex(x => x.id === v.id) + 1}/${j.variants.length}张 · ${v.name}`;
         });
         try {
           const attachments = commerceAttachments(context.db, context.user, commerceInputIds(job.brief, variant));
-          const answer = await this.ask(id, context.image, job.kind === "image_edit" ? imageEditPrompt(job) : commerceImagePrompt(job, variant), await this.deps.readImages(attachments), "auto");
+          const answer = await this.ask(id, context.image, job.kind === "image_edit" ? imageEditPrompt(job, variant) : commerceImagePrompt(job, variant), await this.deps.readImages(attachments), "auto");
           if (!answer.imageUrl) throw new Error("作图模型未返回图片");
           const image = await this.deps.saveImage(answer.imageUrl, job, variant);
           await this.allowed(id);
@@ -485,7 +505,7 @@ export class CommerceService {
             target.quality = "review"; target.qualityNote = ["待检查商品、规格与文字", variant.qualityNote].filter(Boolean).join("；"); delete target.error;
           });
           if (job.kind === "image_edit") {
-            await this.update(id, j => { j.variants[0].qualityNote = "请对照原图核对修改内容、文字和未修改区域。"; });
+            await this.update(id, j => { j.variants.find(x => x.id === v.id)!.qualityNote = "请对照原图核对修改内容、文字和未修改区域。"; });
             continue;
           }
           try {
@@ -514,7 +534,10 @@ export class CommerceService {
       }
       await this.update(id, j => {
         j.status = j.variants.every(v => v.status === "completed") ? "completed" : j.variants.some(v => v.status === "failed") ? "partial" : "review";
-        if (j.kind === "image_edit") { j.status = j.variants[0].status === "completed" ? "completed" : "failed"; j.phase = j.status === "completed" ? "图片修改完成，可以下载" : "图片修改未完成，可以重试"; }
+        if (j.kind === "image_edit") {
+          j.status = j.variants.every(v => v.status === "completed") ? "completed" : j.variants.some(v => v.status === "completed") ? "partial" : "failed";
+          j.phase = j.status === "completed" ? "图片修改完成，可以下载" : j.status === "partial" ? "已保留完成结果，可单独重试失败图片" : "图片修改未完成，可以重试";
+        }
         else j.phase = j.status === "completed" ? "主图与标题已完成" : "已保留完成结果，可继续选择其他方案制作";
       });
     } catch (error) {

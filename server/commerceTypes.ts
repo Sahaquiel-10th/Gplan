@@ -97,6 +97,8 @@ export type CommerceVariant = {
   referenceImageId?: string;
   sourceImageId?: string;
   productImageIds?: string[];
+  editInstruction?: string;
+  lastRetryRequestKey?: string;
   specification?: string;
   outputWidth?: number;
   outputHeight?: number;

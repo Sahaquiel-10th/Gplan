@@ -86,7 +86,7 @@ export function createCommerceRouter(store: Store, secret: string, uploadDir: st
     res.status(202).json({ ok: true });
   }));
   router.post("/commerce/jobs/:id/retry", asyncRoute(async (req, res) => {
-    await service.retry(req.user!, String(req.params.id), typeof req.body.variantId === "string" ? req.body.variantId : undefined, typeof req.body.referenceImageId === "string" ? req.body.referenceImageId : undefined);
+    await service.retry(req.user!, String(req.params.id), typeof req.body.variantId === "string" ? req.body.variantId : undefined, typeof req.body.referenceImageId === "string" ? req.body.referenceImageId : undefined, typeof req.body.requestKey === "string" ? req.body.requestKey : undefined);
     res.status(202).json({ ok: true });
   }));
   router.post("/commerce/jobs/:id/derive", asyncRoute(async (req, res) => {
@@ -98,26 +98,31 @@ export function createCommerceRouter(store: Store, secret: string, uploadDir: st
     const job = commerceJobAccess(db, req.user!, String(req.params.id));
     const zip = new JSZip();
     let count = 0;
-    const titleLines = [`${job.brief.productName} · ${job.brief.platform}`, job.summary, `规格：${job.brief.specification}`, `确认卖点：${job.brief.facts.join("、")}`, `标题关键词：${job.brief.keywords.join("、")}`, `其他要求：${job.brief.notes}`, ""];
+    const isEdit = job.kind === "image_edit";
+    const titleLines = isEdit ? ["小修小改 · 图片修改说明", `统一修改要求：${job.brief.notes || "按各张图片的单独要求修改"}`, ""] : [`${job.brief.productName} · ${job.brief.platform}`, job.summary, `规格：${job.brief.specification}`, `确认卖点：${job.brief.facts.join("、")}`, `标题关键词：${job.brief.keywords.join("、")}`, `其他要求：${job.brief.notes}`, ""];
     for (const module of job.brief.composition?.modules.filter(m => m.enabled) || []) titleLines.push(`模块「${module.name}」：${module.content}；位置：${module.location || "自动安排"}；样式：${module.appearance || "自动安排"}`);
     for (const [index, variant] of job.variants.entries()) {
-      titleLines.push(`${index + 1}. ${variant.name}`, variant.title, `标题说明：${variant.titleReason}`, `方案说明：${variant.reason}`, `本张参考：${variant.referenceImageId ? `参考图${job.brief.referenceImageIds.indexOf(variant.referenceImageId) + 1}` : "无参考或沿用底图"}`, `导出尺寸：${variant.outputWidth || "待确认"}×${variant.outputHeight || "待确认"}`, `图片检查：${variant.qualityNote || "待检查"}`, "");
+      if (isEdit) {
+        const sourceId = variant.productImageIds?.[0] || job.brief.productImageIds[index];
+        const source = db.attachments.find(a => a.id === sourceId && a.userId === req.user!.id && a.companyId === req.user!.companyId);
+        titleLines.push(`${index + 1}. ${variant.name}`, `原图：${source?.originalName || "原始图片"}`, `修改要求：${variant.editInstruction || job.brief.notes}`, `状态：${variant.status === "completed" ? "已完成" : variant.status === "failed" ? "未完成" : "处理中"}`, ...(variant.error ? [`失败原因：${variant.error}`] : []), `导出尺寸：${variant.outputWidth || "待确认"}×${variant.outputHeight || "待确认"}`, `图片检查：${variant.qualityNote || "待检查"}`, "");
+      } else titleLines.push(`${index + 1}. ${variant.name}`, variant.title, `标题说明：${variant.titleReason}`, `方案说明：${variant.reason}`, `本张参考：${variant.referenceImageId ? `参考图${job.brief.referenceImageIds.indexOf(variant.referenceImageId) + 1}` : "无参考或沿用底图"}`, `导出尺寸：${variant.outputWidth || "待确认"}×${variant.outputHeight || "待确认"}`, `图片检查：${variant.qualityNote || "待检查"}`, "");
       const a = db.attachments.find(a => a.id === variant.imageAttachmentId && a.userId === req.user!.id && a.companyId === req.user!.companyId);
       if (!a) continue;
       const ext = a.mimeType === "image/jpeg" ? "jpg" : a.mimeType === "image/webp" ? "webp" : "png";
       zip.file(`${index + 1}-${variant.name.replace(/[^\p{L}\p{N}_-]/gu, "_")}.${ext}`, await fs.readFile(a.storagePath)); count++;
     }
-    if (!count) throw new Error("还没有可下载的主图");
+    if (!count) throw new Error(isEdit ? "还没有可下载的修改结果" : "还没有可下载的主图");
     if (req.query.handoff === "1") {
       const ids = [...new Set([...job.brief.productImageIds, ...job.brief.referenceImageIds, ...compositionAssetIds(job.brief, true), ...job.variants.flatMap(v => [...(v.productImageIds || []), ...(v.sourceImageId ? [v.sourceImageId] : [])])])];
       for (const [index, asset] of commerceAttachments(db, req.user!, ids).entries()) zip.file(`原始素材/${index + 1}-${asset.originalName.replace(/[^\p{L}\p{N}_.-]/gu, "_")}`, await fs.readFile(asset.storagePath));
       titleLines.push("交付说明：包含选定效果图、确认文案和原始素材。请对照图片检查商品包装、文字、规格与赠品；需要完善的位置可在方案说明后补充。");
     }
-    zip.file("标题与方案说明.txt", titleLines.join("\n"));
+    zip.file(isEdit ? "修改说明.txt" : "标题与方案说明.txt", titleLines.join("\n"));
     // Recheck immediately before serving saved company assets.
     commerceJobAccess(await store.read(), req.user!, job.id);
     res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(job.brief.productName.slice(0, 40) + "-主图与标题.zip")}`);
+    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(isEdit ? "修改结果.zip" : job.brief.productName.slice(0, 40) + "-主图与标题.zip")}`);
     res.send(await zip.generateAsync({ type: "nodebuffer", compression: "STORE" }));
   }));
   return router;
