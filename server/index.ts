@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { buildEnterpriseDataContext } from "./enterpriseData.js";
 import { assertEnterpriseAdmin, canReadEnterpriseConversation } from "./enterpriseDataPolicy.js";
 import { createDashboardRouter } from "./dashboardRoutes.js";
@@ -8,7 +9,6 @@ import { parseSkill, validateSkill, agentInstructions } from "./agentSkills.js";
 import { canUseAgent } from "./operationsPolicy.js";
 import { createOperationsRouter, startOperationsNotifications } from "./operationsRoutes.js";
 import express, { Request, RequestHandler, Response } from "express";
-import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

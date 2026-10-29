@@ -16,6 +16,7 @@ export async function enterpriseDataFixture() {
   await fs.symlink(path.join(root, "node_modules"), path.join(dir, "node_modules"));
   await fs.mkdir(path.join(dir, "data"));
   await fs.writeFile(path.join(dir, "package.json"), '{"type":"module"}');
+  await fs.writeFile(path.join(dir, ".env"), "ENTERPRISE_BOOTSTRAP_PROBE=loaded\n");
   // Replace only the I/O boundaries in this ephemeral fixture; run the real planner and routes.
   const operations = path.join(dir, "server/operationsData.ts");
   let code = await fs.readFile(operations, "utf8");
@@ -30,7 +31,7 @@ export async function enterpriseDataFixture() {
   return [{dimension:"SKU-ONLY-C1",name:"测试商品",amount:"20.00"},{dimension:"SKU-SECOND",amount:"10.00"}] as RowDataPacket[];` + code.slice(end);
   await fs.writeFile(operations, code);
   const platform = path.join(dir, "server/dataPlatformDb.ts");
-  await fs.writeFile(platform, (await fs.readFile(platform, "utf8")).replace("status() { return this.currentStatus; }", "status() { return {...this.currentStatus, ready: true}; }"));
+  await fs.writeFile(platform, `const enterpriseBootstrapReady = process.env.ENTERPRISE_BOOTSTRAP_PROBE === "loaded";\n` + (await fs.readFile(platform, "utf8")).replace("status() { return this.currentStatus; }", "status() { return {...this.currentStatus, ready: enterpriseBootstrapReady}; }"));
   await fs.appendFile(path.join(dir, "server/bailian.ts"), '\nBailianCompanyKnowledgeService.prototype.retrieveCompanyKnowledge = async () => [{text:"AUTO-KB-CONTEXT",score:1,sourceType:"company_kb",source:"钉钉测试知识"}];\n');
   let url = "";
   let modelCalls = 0, plannerCalls = 0;
