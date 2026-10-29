@@ -228,9 +228,29 @@ export class ReviewReplyService {
       });
       if (initialized.existing) return initialized.existing;
       const run = initialized.run!; const reviews = initialized.reviews!; runId = run.id;
-      const answer = await this.ask(user, reviewGenerationPrompt(run.profileSnapshot, reviews), { agentId: run.agentId, attachmentIds: [...run.sourceImageIds, ...run.profileSnapshot.sourceAttachmentIds], requestId: run.id });
-      const results = parseReviewResults(answer.content, reviews, run.profileSnapshot, () => uid("rrc"), now());
-      return this.store.mutate(db => { const current = runAccess(db, user, run.id); if (current.status !== "generating") throw new Error("本次任务状态已改变，请查看历史记录"); reviewReplyAttachments(db, user, runAttachmentIds(current)); current.results = results; current.status = "completed"; current.updatedAt = now(); return clone(current); });
+      // Keep each response comfortably within the gateway's shared output-token limit.
+      // Persist completed batches before asking for the next one so a later failure does
+      // not erase paid results or the remaining editable review originals.
+      for (let offset = 0; offset < reviews.length; offset += 2) {
+        const beforeBatch = runAccess(await this.store.read(), user, run.id);
+        if (beforeBatch.status !== "generating") throw new Error("本次任务状态已改变，请查看历史记录");
+        const batch = reviews.slice(offset, offset + 2);
+        const answer = await this.ask(user, reviewGenerationPrompt(run.profileSnapshot, batch), {
+          agentId: run.agentId,
+          attachmentIds: [...run.sourceImageIds, ...run.profileSnapshot.sourceAttachmentIds],
+          requestId: `${run.id}-part-${offset}`,
+        });
+        const results = parseReviewResults(answer.content, batch, run.profileSnapshot, () => uid("rrc"), now());
+        await this.store.mutate(db => {
+          const current = runAccess(db, user, run.id);
+          if (current.status !== "generating") throw new Error("本次任务状态已改变，请查看历史记录");
+          reviewReplyAttachments(db, user, runAttachmentIds(current));
+          current.results = current.results.map(original => results.find(result => result.id === original.id) || original);
+          if (offset + batch.length === reviews.length) current.status = "completed";
+          current.updatedAt = now();
+        });
+      }
+      return await this.getRun(user, run.id);
     } catch (error) {
       if (!runId) throw error;
       await this.store.mutate(db => { const run = db.reviewReplyRuns?.find(r => r.id === runId && r.ownerId === user.id && r.companyId === user.companyId); if (run?.status === "generating") { run.status = "failed"; run.error = errText(error); run.updatedAt = now(); } });

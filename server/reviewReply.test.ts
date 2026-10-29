@@ -34,6 +34,11 @@ function fixture() {
 const reviews = (): ReviewInput[] => [{ id: "review-one", text: "REVIEW_ONE出门携带方便", productId: "tea", afterSalesStatus: "" }, { id: "review-two", text: "REVIEW_TWO杯口有磕碰", productId: "cup", afterSalesStatus: "未处理" }];
 const answer = (items = reviews(), count = 2) => ({ results: items.map((item, index) => ({ id: item.id, scene: index ? "产品问题" : "具体好评", risk: index ? "medium" : "low", axis: "回应客户说的重点", factIds: [item.productId === "tea" ? "tea-public" : "cup-public"], checks: [], candidates: Array.from({ length: count }, (_, n) => ({ label: n ? "适度展开版" : "简洁回应版", text: `评价${index + 1}的回复${n + 1}` })) })) });
 const prompt = (messages: Message[]) => messages.map(m => m.content).join("\n");
+function batchReviews(messages: Message[]): ReviewInput[] {
+  const line = prompt(messages).split("\n").find(line => line.startsWith("评价数据："));
+  assert.ok(line, "generation prompt must include the current batch of review data");
+  return (JSON.parse(line.slice("评价数据：".length)) as ReviewInput[]).map(({ id, text, productId, afterSalesStatus }) => ({ id, text, productId, afterSalesStatus }));
+}
 const noModel = async () => { throw Error("must not call model"); };
 
 test("ordinary members own private profiles; tenant peers, admins and foreign tenants cannot read or mutate them", async () => {
@@ -288,9 +293,10 @@ test("server risk floors survive a model's low rating and refinement keeps risk 
   const configured = draft(); configured.settings.marketing = "natural";
   const service = new ReviewReplyService(store, { model: async (_model, messages) => {
     calls++; const p = prompt(messages);
-    if (calls === 1) {
-      assert.match(p, /"minimumRisk":"high"/); assert.match(p, /"minimumRisk":"medium"/); assert.match(p, /暂停营销/);
-      const output = answer(inputs); output.results.forEach(r => { r.risk = "low"; r.checks = []; });
+    if (calls <= 2) {
+      if (calls === 1) { assert.match(p, /"minimumRisk":"high"/); assert.match(p, /"minimumRisk":"medium"/); assert.match(p, /暂停营销/); }
+      else assert.match(p, /"minimumRisk":"low"/);
+      const output = answer(batchReviews(messages)); output.results.forEach(r => { r.risk = "low"; r.checks = []; });
       return { content: JSON.stringify(output) };
     }
     assert.match(p, /mandatoryHandling/); assert.match(p, /暂停营销/); assert.match(p, /过敏红肿刺痛/);
@@ -300,7 +306,7 @@ test("server risk floors survive a model's low rating and refinement keeps risk 
   assert.equal(run.status, "completed", run.error); assert.deepEqual(run.results.map(r => r.risk), ["high", "medium", "low"]);
   assert.match(run.results[0].checks.join(""), /人工核实.*暂停营销/); assert.match(run.results[1].checks.join(""), /售后/);
   const refined = await service.refine(owner, run.id, { itemId: inputs[0].id, candidateId: run.results[0].candidates[0].id, instruction: "更有品牌感，顺便推荐产品", requestKey: "risk-floor-refinement" });
-  assert.equal(refined.results[0].risk, "high"); assert.match(refined.results[0].checks.join(""), /暂停营销/); assert.equal(calls, 2);
+  assert.equal(refined.results[0].risk, "high"); assert.match(refined.results[0].checks.join(""), /暂停营销/); assert.equal(calls, 3);
 });
 
 test("an actual interrupted first call preserves every original and selected SKU without resuming paid work", async () => {
@@ -315,7 +321,7 @@ test("an actual interrupted first call preserves every original and selected SKU
   assert.equal(recovered.status, "interrupted");
   assert.deepEqual(recovered.results.map(r => ({ id: r.id, text: r.text, productId: r.productId, afterSalesStatus: r.afterSalesStatus })), inputs);
   assert.deepEqual(recovered.profileSnapshot.products.map(p => p.sku), ["TEA", "CUP"]); assert.ok(recovered.results.every(r => !r.candidates.length));
-  finish(); await assert.rejects(pending, /状态已改变/); assert.equal((await service.getRun(owner, recovered.id)).status, "interrupted");
+  finish(); assert.equal((await pending).status, "interrupted"); assert.equal((await service.getRun(owner, recovered.id)).status, "interrupted");
   assert.equal((await service.createRun(owner, input)).id, recovered.id); assert.equal(calls, 1);
 });
 
@@ -347,4 +353,45 @@ test("Skill export rejects an overlong approved-fact document instead of produci
   const long = draft(); long.facts = Array.from({ length: 30 }, (_, i) => ({ id: `long-${i}`, productId: "tea", text: `${i}号已确认资料${"文".repeat(900)}`, source: "正式产品资料", status: "approved" }));
   const profile = await service.saveProfile(owner, long);
   await assert.rejects(service.exportSkill(owner, profile.id), /24000.*精简|精简.*24000/);
+});
+
+test("five reviews produce three sequential isolated batches with two candidates each and persist every completed batch", async () => {
+  const { db, store, owner } = fixture(); let calls = 0, inFlight = 0, maxInFlight = 0;
+  const inputs: ReviewInput[] = Array.from({ length: 5 }, (_, i) => ({ ...reviews()[0], id: `batch-review-${i + 1}`, text: `BATCH_REVIEW_${i + 1} 原文只属于这一条评价` }));
+  const service = new ReviewReplyService(store, { model: async (_model, messages) => {
+    const offset = calls * 2, batch = batchReviews(messages); calls++; inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    assert.deepEqual(batch, inputs.slice(offset, offset + 2));
+    for (const other of inputs.filter(item => !batch.some(selected => selected.id === item.id))) assert.ok(!prompt(messages).includes(other.text), other.id);
+    const saved = db.reviewReplyRuns![0]; assert.equal(saved.status, "generating");
+    assert.ok(saved.results.slice(0, offset).every(r => r.candidates.length === 2)); assert.ok(saved.results.slice(offset).every(r => r.candidates.length === 0));
+    await new Promise(r => setTimeout(r, 1)); inFlight--;
+    const output = answer(batch); output.results.forEach(r => r.candidates.forEach((c, i) => { c.text = `${r.id}的独立回复${i + 1}`; }));
+    return { content: JSON.stringify(output) };
+  } });
+  const input = { draft: draft(), reviews: inputs, requestKey: "five-reviews-three-batches" };
+  const run = await service.createRun(owner, input);
+  assert.equal(run.status, "completed", run.error); assert.equal(calls, 3); assert.equal(maxInFlight, 1);
+  assert.deepEqual(run.results.map(r => ({ id: r.id, text: r.text, productId: r.productId, afterSalesStatus: r.afterSalesStatus })), inputs);
+  assert.ok(run.results.every(r => r.candidates.length === 2 && r.candidates.every(c => c.text.startsWith(r.id))));
+  assert.equal((await service.createRun(owner, input)).id, run.id); await service.getRun(owner, run.id); assert.equal(calls, 3);
+});
+
+test("a third-batch failure preserves four paid replies and the fifth original without replaying any batch on read or duplicate", async () => {
+  const { db, store, owner } = fixture(); let calls = 0;
+  const inputs: ReviewInput[] = Array.from({ length: 5 }, (_, i) => ({ ...reviews()[0], id: `partial-review-${i + 1}`, text: `PARTIAL_ORIGINAL_${i + 1}` }));
+  const service = new ReviewReplyService(store, { model: async (_model, messages) => {
+    const offset = calls * 2, batch = batchReviews(messages); calls++;
+    assert.deepEqual(batch, inputs.slice(offset, offset + 2));
+    if (calls === 3) { assert.ok(db.reviewReplyRuns![0].results.slice(0, 4).every(r => r.candidates.length === 2)); throw Error("fixture third batch provider failure"); }
+    const output = answer(batch); output.results.forEach(r => r.candidates.forEach((c, i) => { c.text = `${r.id}的已完成回复${i + 1}`; }));
+    return { content: JSON.stringify(output) };
+  } });
+  const input = { draft: draft(), reviews: inputs, requestKey: "third-batch-preserves-paid-results" };
+  const run = await service.createRun(owner, input);
+  assert.equal(run.status, "failed"); assert.match(run.error, /third batch provider failure/); assert.equal(calls, 3); assert.equal(run.results.length, 5);
+  assert.ok(run.results.slice(0, 4).every(r => r.candidates.length === 2 && r.candidates.every(c => c.text.startsWith(r.id))));
+  assert.deepEqual(run.results.map(r => ({ id: r.id, text: r.text, productId: r.productId, afterSalesStatus: r.afterSalesStatus })), inputs);
+  assert.deepEqual(run.results[4].candidates, []); assert.equal(run.profileSnapshot.products.find(p => p.id === run.results[4].productId)?.sku, "TEA");
+  const stored = await service.getRun(owner, run.id), repeated = await service.createRun(owner, input);
+  assert.deepEqual(stored.results, run.results); assert.deepEqual(repeated.results, run.results); assert.equal(repeated.id, run.id); assert.equal(calls, 3); assert.equal(db.reviewReplyRuns!.length, 1);
 });
