@@ -137,3 +137,23 @@ test("live ERP is separately gated and limited; driver errors cannot leak creden
   assert.ok(!failure.context.includes("SECRET"));
   assert.equal(failure.evidence.status, "unavailable");
 });
+
+test("sync status reads bounded cursors and cannot expose another connector company's metadata", () => {
+  const q = buildEnterpriseQuery("other-company", "source_status", {});
+  assert.match(q.rows.sql, /data_sync_cursors/);
+  assert.match(q.rows.sql, /scope\.company_id=\?/);
+  assert.match(q.rows.sql, /LIMIT 5/);
+  assert.doesNotMatch(q.rows.sql, /ods_wln_|COUNT\(/);
+  assert.deepEqual(q.rows.values, ["other-company", process.env.WANLINIU_COMPANY_ID?.trim() || "company_default"]);
+});
+
+test("warehouse catalog stays bounded to current inventory instead of scanning outbound history", () => {
+  const q = buildEnterpriseQuery("c1", "warehouses", { search: "CK", limit: 1 });
+  for (const statement of [q.rows, q.summary!]) {
+    assert.match(statement.sql, /ods_wln_inventory_current/);
+    assert.doesNotMatch(statement.sql, /sale_outbound|UNION/);
+    assert.ok(statement.values.includes("c1"));
+  }
+  assert.match(q.note, /仅列出当前库存/);
+  assert.match(q.rows.sql, /NULL warehouseName/);
+});

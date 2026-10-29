@@ -2,7 +2,7 @@
 export const enterpriseTools = {
   source_status: "万里牛各资源同步状态",
   shops: "店铺目录",
-  warehouses: "仓库目录与源名称",
+  warehouses: "当前库存仓库编码目录（不含名称与无库存历史仓库）",
   products: "商品与 SKU 资料",
   inventory: "当前分仓库存",
   sales_summary: "销售出库汇总与排行",
@@ -113,18 +113,24 @@ export function buildEnterpriseQuery(companyId: string, toolName: string, input:
   const freshness = (alias: string, from: string): SqlStatement => sql(`MIN(${alias}.ingested_at) oldestSyncedAt, MAX(${alias}.ingested_at) latestSyncedAt`, from);
   let result: EnterpriseQuery;
   if (tool === "source_status") {
-    // Sync cursors are global today. Derive company-scoped freshness from actual ODS records.
-    const resources = [["shops", "ods_wln_shops"], ["products", "ods_wln_products"], ["inventory", "ods_wln_inventory_current"], ["sale_outbound", "ods_wln_sale_outbound"], ["purchase_inbound", "ods_wln_purchase_inbound"]];
+    // Cursors belong to the configured connector company, not every tenant.
+    // Read the five bounded cursor rows instead of scanning historical ODS tables.
+    const connectorCompanyId = process.env.WANLINIU_COMPANY_ID?.trim() || "company_default";
     result = { tool, params: p, rows: {
-      sql: resources.map(([name, table]) => `SELECT /*+ MAX_EXECUTION_TIME(12000) */ '${name}' resource, COUNT(*) recordCount, MAX(ingested_at) lastSuccessAt FROM ${table} WHERE company_id=?`).join(" UNION ALL "),
-      values: resources.map(() => companyId),
-    }, note: "时间来自本企业镜像记录的入库时间；不是上游实时状态或完整同步成功的保证。" };
+      sql: `SELECT /*+ MAX_EXECUTION_TIME(12000) */ c.resource_name resource,
+        DATE_FORMAT(c.last_success_at,'%Y-%m-%d %H:%i:%s') lastSuccessAt,
+        JSON_UNQUOTE(JSON_EXTRACT(c.cursor_json,'$.modifiedThrough')) modifiedThrough
+        FROM data_sync_cursors c JOIN (SELECT ? company_id) tenant_scope ON tenant_scope.company_id=?
+        WHERE c.connector_id='wanliniu' AND c.resource_name IN ('shops','products','inventory','sale_outbound','purchase_inbound')
+        ORDER BY c.resource_name LIMIT 5`,
+      values: [companyId, connectorCompanyId],
+    }, note: "各资源最后一次成功同步的时间，仅当前万里牛连接器所属企业可见；不代表上游数据实时状态。" };
   } else if (tool === "warehouses") {
     where.push("w.company_id=?", "w.storage_code IS NOT NULL");
     inFilter("w.storage_code", p.warehouseIds);
-    search(["w.storage_code", "w.storage_name"]);
-    const from = "(SELECT company_id,storage_code,storage_name,ingested_at FROM ods_wln_sale_outbound UNION ALL SELECT company_id,storage_code,storage_name,ingested_at FROM ods_wln_purchase_inbound UNION ALL SELECT company_id,storage_code,NULL storage_name,ingested_at FROM ods_wln_inventory_current) w";
-    result = { tool, params: p, rows: sql("w.storage_code warehouseId, COALESCE(MAX(NULLIF(w.storage_name,'')),w.storage_code) warehouseName, MAX(w.ingested_at) latestSyncedAt", from, "GROUP BY w.storage_code " + page("w.storage_code")), summary: sql("COUNT(DISTINCT w.storage_code) totalRows", from), note: "仓库编码及名称来自已同步的出入库单和当前库存；名称缺失时仅返回源编码。可据编码继续查询库存或出入库。" };
+    search(["w.storage_code"]);
+    const from = "ods_wln_inventory_current w";
+    result = { tool, params: p, rows: sql("w.storage_code warehouseId, NULL warehouseName, MAX(w.snapshot_at) snapshotAt", from, "GROUP BY w.storage_code " + page("w.storage_code")), summary: sql("COUNT(DISTINCT w.storage_code) totalRows", from), note: "仅列出当前库存记录覆盖的仓库编码。名称及没有当前库存记录的历史仓库不在此目录中；需要这些信息时须通过现有万里牛实时只读接口核实，不能猜测名称。" };
   } else if (tool === "shops") {
     where.push("s.company_id=?");
     inFilter("s.shop_uid", p.shopIds);
