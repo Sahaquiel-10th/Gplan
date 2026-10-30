@@ -33,6 +33,9 @@ npm run test:enterprise-data
 npm run test:review-replies
 npm run build
 
+# Additive online indexes; run with the existing protected server environment.
+(cd "$app_dir" && node "$work_dir/scripts/ensure-enterprise-indexes.mjs")
+
 # Keep recoverable code, build and dependency snapshots outside the rsync target.
 mkdir -p "$backup_dir"
 rsync -a --exclude '.env*' --exclude '.git/' --exclude 'data/' "$app_dir"/ "$backup_dir"/

@@ -53,7 +53,7 @@ test("enterprise chat HTTP: real orchestration, automatic KB, ownership, revocat
     const record = state.ragRetrievalLogs.find((l: any) => l.sourceType === "enterprise_data");
     assert.equal(record.injectedContext, "");
     assert.ok(!JSON.stringify(record.matchedItemsJson).includes("999999"));
-    assert.equal(state.modelUsageRecords.filter((u: any) => u.conversationId === id).length, 4); // two plans + two answers
+    assert.equal(state.modelUsageRecords.filter((u: any) => u.conversationId === id).length, 3); // one successful summary plan + two answers
 
     const publicCalls = f.counts().plannerCalls;
     assert.equal((await f.request("/api/public/agents/public/chat", "", { content: "你好", enterpriseData: true })).status, 200);

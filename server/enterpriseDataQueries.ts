@@ -164,12 +164,12 @@ export function buildEnterpriseQuery(companyId: string, toolName: string, input:
     inFilter("i.sku_code", p.skuCodes);
     inFilter(brandSql, p.brands);
     search(["i.sku_code", "i.goods_name", "p.goods_name", brandSql, sales ? "h.outbound_no" : "h.stock_code", sales ? "h.shop_name" : "h.supplier_name", ...(sales ? ["h.shop_nick"] : []), "h.storage_name"]);
-    const from = `${header} h JOIN ${items} i ON i.company_id=h.company_id AND i.${id}=h.${id} LEFT JOIN ods_wln_products p ON p.company_id=i.company_id AND p.sku_code=i.sku_code`;
+    const from = `${header} h${sales && !details ? " FORCE INDEX (idx_wln_sale_outbound_bill_date)" : ""} ${sales && !details ? "STRAIGHT_JOIN" : "JOIN"} ${items} i ON i.company_id=h.company_id AND i.${id}=h.${id} LEFT JOIN ods_wln_products p ON p.company_id=i.company_id AND p.sku_code=i.sku_code`;
     const amount = sales ? "i.gross_amount" : "i.total_amount";
-    const totals = `COUNT(*) matchedLines, COUNT(DISTINCT h.${id}) documentCount, SUM(i.quantity) quantity, CASE WHEN SUM(${amount} IS NULL)>0 THEN NULL ELSE SUM(${amount}) END amount, SUM(${amount} IS NULL) missingAmountLines${sales ? ", CASE WHEN SUM(i.cost_amount IS NULL)>0 THEN NULL ELSE SUM(i.cost_amount) END cost, SUM(i.cost_amount IS NULL) missingCostLines" : ""}`;
+    const totals = `COUNT(DISTINCT DATE(h.bill_date)) daysWithRecords, MIN(DATE_FORMAT(h.bill_date,'%Y-%m-%d')) firstRecordDate, MAX(DATE_FORMAT(h.bill_date,'%Y-%m-%d')) lastRecordDate, COUNT(*) matchedLines, COUNT(DISTINCT h.${id}) documentCount, SUM(i.quantity) quantity, CASE WHEN SUM(${amount} IS NULL)>0 THEN NULL ELSE SUM(${amount}) END amount, SUM(${amount} IS NULL) missingAmountLines${sales ? ", CASE WHEN SUM(i.cost_amount IS NULL)>0 THEN NULL ELSE SUM(i.cost_amount) END cost, SUM(i.cost_amount IS NULL) missingCostLines" : ""}`;
     let select: string, suffix: string;
     if (details) {
-      select = `h.${id} documentId, h.bill_date billDate, h.storage_code warehouseId, h.storage_name warehouseName, i.sku_code skuCode, COALESCE(i.goods_name,p.goods_name) productName, ${brandSql} brand, i.quantity, ${amount} amount, h.currency_code currencyCode, ${sales ? "h.outbound_no documentNo, h.shop_id shopId, h.shop_name shopName, h.bill_type billType, i.actual_paid_amount actualPaidAmount, i.cost_amount cost" : "h.supplier_code supplierCode, h.supplier_name supplierName, i.batch_code batchCode, i.production_date productionDate, i.expiry_date expiryDate"}`;
+      select = `h.${id} documentId, h.bill_date billDate, h.storage_code warehouseId, h.storage_name warehouseName, i.sku_code skuCode, COALESCE(i.goods_name,p.goods_name) productName, ${brandSql} brand, i.quantity, ${amount} amount, COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY') currencyCode, ${sales ? "h.outbound_no documentNo, h.shop_id shopId, h.shop_name shopName, h.bill_type billType, i.actual_paid_amount actualPaidAmount, i.cost_amount cost" : "h.supplier_code supplierCode, h.supplier_name supplierName, i.batch_code batchCode, i.production_date productionDate, i.expiry_date expiryDate"}`;
       suffix = page(`h.bill_date DESC, h.${id}, i.${sales ? "line_key" : "line_no"}`);
     } else {
       const group = p.groupBy || "day";
@@ -182,12 +182,45 @@ export function buildEnterpriseQuery(companyId: string, toolName: string, input:
         brand: brandSql,
       };
       const names: Record<string, string> = { day: dimensions.day, shop: "h.shop_name", product: "COALESCE(i.goods_name,p.goods_name)", warehouse: "h.storage_name", supplier: "h.supplier_name", brand: brandSql };
-      select = `${dimensions[group]} dimension, MAX(${names[group]}) name, COALESCE(NULLIF(h.currency_code,''),'UNKNOWN') currencyCode, ${totals}`;
+      select = `${dimensions[group]} dimension, MAX(${names[group]}) name, COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY') currencyCode, ${totals}`;
+      if (group === "brand") select += `, CASE WHEN SUM(SUM(${amount} IS NULL)) OVER (PARTITION BY COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY'))>0 THEN NULL ELSE ROUND(SUM(${amount})*100.0/NULLIF(SUM(SUM(${amount})) OVER (PARTITION BY COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY')),0),4) END amountSharePercent`;
       // Currency is always a separate group; totals never mix currencies into one amount.
-      suffix = `GROUP BY ${dimensions[group]}, COALESCE(NULLIF(h.currency_code,''),'UNKNOWN') ${page("amount DESC, dimension, currencyCode")}`;
+      suffix = `GROUP BY ${dimensions[group]}, COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY') ${page("amount DESC, dimension, currencyCode")}`;
     }
-    const summary = sql(`COALESCE(NULLIF(h.currency_code,''),'UNKNOWN') currencyCode, ${totals}`, from, "GROUP BY COALESCE(NULLIF(h.currency_code,''),'UNKNOWN')");
-    result = { tool, params: p, rows: sql(select, from, suffix), summary, freshness: freshness("h", from), note: `${sales ? "销售出库单明细口径，不等于平台成交订单、净销售额或到账金额；单据数不是平台订单数。成本只反映源明细成本，不含其他费用，不能直接认定净利润。" : "仅采购入库，不默认包含销售退货、调拨或其他入库。"} 日期均为北京时间，含起止日。金额按币种分别统计，UNKNOWN表示源币种缺失，不能直接当人民币。汇总覆盖全部匹配明细，返回行可能分页；缺金额或成本保留null。按源单据类型原样统计，未自动排除红冲或其他特殊类型。` };
+    const totalsFrom = !p.brands?.length && !p.search ? from.replace(/ LEFT JOIN ods_wln_products p ON.*$/, "") : from;
+    const summary = sql(`COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY') currencyCode, ${totals}`, totalsFrom, "GROUP BY COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY')");
+    result = { tool, params: p, rows: sql(select, from, suffix), summary, freshness: freshness("h", totalsFrom), note: `${sales ? "销售出库单明细口径，不等于平台成交订单、净销售额或到账金额；单据数不是平台订单数。成本只反映源明细成本，不含其他费用，不能直接认定净利润。" : "仅采购入库，不默认包含销售退货、调拨或其他入库。"} 日期均为北京时间，含起止日。金额按币种分别统计，源币种缺失时按企业约定默认人民币CNY；明确标注的其他币种单独统计。汇总覆盖全部匹配明细，返回行可能分页；缺金额或成本保留null。按源单据类型原样统计，未自动排除红冲或其他特殊类型。` };
+  }
+  if (tool === "sales_summary" && p.groupBy === "brand" && !p.shopIds?.length && !p.warehouseIds?.length && !p.skuCodes?.length && !p.brands?.length && !p.search) {
+    // Reduce millions of lines to a few thousand SKU totals before joining the
+    // small, tenant-bound brand dictionary. Document/day counts live in summary;
+    // adding SKU-level distinct counts would double-count multi-SKU documents.
+    const inner = `SELECT i.sku_code,COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY') currencyCode,
+      COUNT(*) matchedLines,SUM(i.quantity) quantity,SUM(i.gross_amount) amount,
+      SUM(i.gross_amount IS NULL) missingAmountLines,SUM(i.cost_amount) cost,SUM(i.cost_amount IS NULL) missingCostLines
+      FROM ods_wln_sale_outbound h FORCE INDEX (idx_wln_sale_outbound_bill_date)
+      STRAIGHT_JOIN ods_wln_sale_outbound_items i ON i.company_id=h.company_id AND i.outbound_uid=h.outbound_uid
+      WHERE h.company_id=? AND h.bill_date>=? AND h.bill_date<?
+      GROUP BY i.sku_code,COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY')`;
+    result.rows = {
+      sql: `SELECT /*+ MAX_EXECUTION_TIME(40000) */ /* enterprise-sales */ p.brandName dimension,MAX(p.brandName) name,t.currencyCode,
+        SUM(t.matchedLines) matchedLines,SUM(t.quantity) quantity,
+        CASE WHEN SUM(t.missingAmountLines)>0 THEN NULL ELSE SUM(t.amount) END amount,SUM(t.missingAmountLines) missingAmountLines,
+        CASE WHEN SUM(t.missingCostLines)>0 THEN NULL ELSE SUM(t.cost) END cost,SUM(t.missingCostLines) missingCostLines,
+        CASE WHEN SUM(SUM(t.missingAmountLines)) OVER (PARTITION BY t.currencyCode)>0 THEN NULL
+          ELSE ROUND(SUM(t.amount)*100.0/NULLIF(SUM(SUM(t.amount)) OVER (PARTITION BY t.currencyCode),0),4) END amountSharePercent
+        FROM (${inner}) t LEFT JOIN
+        (SELECT sku_code,${brandSql} brandName FROM ods_wln_products p WHERE company_id=? LIMIT 18446744073709551615) p ON p.sku_code=t.sku_code
+        GROUP BY p.brandName,t.currencyCode ${page("amount DESC, dimension, currencyCode")}`,
+      values: [...result.rows.values,companyId],
+    };
+    // Global brand reports use the bounded connector watermark for freshness;
+    // computing MAX over the same millions of joined lines adds no business facts.
+    result.freshness = {
+      sql: "SELECT c.last_success_at latestSyncedAt FROM data_sync_cursors c JOIN (SELECT ? company_id) tenant_scope ON tenant_scope.company_id=? WHERE c.connector_id='wanliniu' AND c.resource_name='sale_outbound' LIMIT 1",
+      values: [companyId,process.env.WANLINIU_COMPANY_ID?.trim() || "company_default"],
+    };
+    for (const statement of [result.summary, result.freshness]) if (statement) statement.sql = statement.sql.replace("SELECT /*+ MAX_EXECUTION_TIME(12000) */", "SELECT /*+ MAX_EXECUTION_TIME(30000) */ /* enterprise-sales */");
   }
   return result;
 }

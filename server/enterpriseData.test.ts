@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { buildEnterpriseQuery, enterpriseTools, normalizeDataQuery, shanghaiDate } from "./enterpriseDataQueries.js";
 import { assertEnterpriseAdmin, canReadEnterpriseConversation } from "./enterpriseDataPolicy.js";
 import type { Conversation, ModelConfig, User } from "./types.js";
+import { planBrandReport } from "./enterpriseDataPlanner.js";
+import { createEnterpriseQueryExecutor } from "./enterpriseQueryExecutor.js";
+import { enterpriseEvidenceStatus } from "./enterpriseDataPolicy.js";
 
 const admin = { id: "a", companyId: "c1", role: "admin", enabled: true } as User;
 const user = { ...admin, role: "user" } as User;
@@ -156,4 +159,81 @@ test("warehouse catalog stays bounded to current inventory instead of scanning o
   }
   assert.match(q.note, /仅列出当前库存/);
   assert.match(q.rows.sql, /NULL warehouseName/);
+});
+
+test("brand reports default missing currency to CNY, preserve source currencies and compute shares before paging", () => {
+  const q = buildEnterpriseQuery("c1", "sales_summary", { startDate: "2026-08-02", endDate: "2026-10-30", groupBy: "brand", limit: 1 });
+  assert.match(q.rows.sql, /TRIM\(h.currency_code\).*'CNY'/);
+  assert.match(q.rows.sql, /OVER \(PARTITION BY/);
+  assert.match(q.rows.sql, /amountSharePercent/);
+  assert.match(q.rows.sql, /STRAIGHT_JOIN/);
+  assert.match(q.summary!.sql, /daysWithRecords/);
+  assert.doesNotMatch(q.summary!.sql, /ods_wln_products|LIMIT/);
+  assert.doesNotMatch(q.freshness!.sql, /ods_wln_products/);
+  assert.match(q.note, /默认人民币CNY/);
+  const filtered = buildEnterpriseQuery("c1", "sales_summary", { startDate: "2026-10-01", endDate: "2026-10-30", brands: ["brand"] });
+  assert.match(filtered.summary!.sql, /ods_wln_products/);
+});
+
+test("brand planning covers original incident dates and interprets calendar weeks without model calls", () => {
+  const message = (content: string) => ({ role: "user" as const, content, createdAt: "2026-10-30" });
+  const first = message("帮我梳理最近一段时间公司各个品牌的销售额及销售额占比，越详细越好");
+  const get = (messages: ReturnType<typeof message>[]) => planBrandReport(messages, "2026-10-30")!.calls[0].params;
+  assert.equal(get([first]).startDate, "2026-10-01");
+  assert.equal(get([first, message("2026-08-02 至 2026-10-30")]).startDate, "2026-08-02");
+  assert.equal(get([first, message("那就帮我查看2026-10-01 至 2026-10-30之间，你能查到多少天就查多少天的")]).startDate, "2026-10-01");
+  assert.equal(get([message("最近一周公司所有销售品牌的销售金额和占比")]).startDate, "2026-10-24");
+  const previous = get([first, message("那上上周呢？")]);
+  assert.equal(previous.startDate, "2026-10-12");
+  assert.equal(previous.endDate, "2026-10-18");
+  assert.equal(planBrandReport([message("天猫店各品牌销售金额占比")], "2026-10-30"), undefined);
+  assert.equal(planBrandReport([first, message("只看薇诺娜")], "2026-10-30"), undefined);
+  assert.equal(planBrandReport([message("各品牌销售额占比，不包括赠品")], "2026-10-30"), undefined);
+  assert.equal(planBrandReport([message("按月统计公司各个品牌销售额占比")], "2026-10-30"), undefined);
+  assert.equal(planBrandReport([first, message("删除所有数据")], "2026-10-30"), undefined);
+});
+
+test("executor discovers optional covering indexes once and never changes tenant bindings or unrelated SQL", async () => {
+  const calls: Array<{ sql: string; values: (string | number)[] }> = [];
+  const run = createEnterpriseQueryExecutor(async (sql, values) => {
+    calls.push({ sql, values });
+    return sql.includes("information_schema") ? [{ indexName: "idx_wln_sale_enterprise_summary" }, { indexName: "idx_wln_items_enterprise_summary" }] : [];
+  });
+  const q = buildEnterpriseQuery("c1", "sales_summary", { startDate: "2026-10-01", endDate: "2026-10-30", groupBy: "brand" });
+  await run(q.rows.sql, q.rows.values);
+  await run(q.summary!.sql, q.summary!.values);
+  assert.equal(calls.filter(c => c.sql.includes("information_schema")).length, 1);
+  assert.match(calls[1].sql, /FORCE INDEX \(idx_wln_sale_enterprise_summary\)/);
+  assert.match(calls[1].sql, /FORCE INDEX \(idx_wln_items_enterprise_summary\)/);
+  assert.deepEqual(calls[1].values, q.rows.values);
+  await run("SELECT x FROM other WHERE company_id=?", ["c2"]);
+  assert.equal(calls.at(-1)!.sql, "SELECT x FROM other WHERE company_id=?");
+});
+
+test("sync success cannot hide failed business queries, including previously saved evidence", async () => {
+  const r = await buildEnterpriseDataContext(base, {
+    databaseReady: () => true,
+    callModel: async () => ({ content: '{"calls":[{"tool":"source_status","params":{}},{"tool":"sales_summary","params":{"startDate":"2026-10-01","endDate":"2026-10-30","groupBy":"brand"}}]}' }),
+    query: async sql => { if (sql.includes("data_sync_cursors")) return []; throw Object.assign(Error("private driver detail"), { code: "ER_QUERY_TIMEOUT" }); },
+  });
+  assert.equal(r.evidence.status, "unavailable");
+  assert.match(r.evidence.sources[1].note, /统计查询超时/);
+  assert.doesNotMatch(r.context, /private driver detail/);
+  assert.equal(enterpriseEvidenceStatus({ ...r.evidence, status: "queried" }), "unavailable");
+  assert.equal(enterpriseEvidenceStatus({ ...r.evidence, sources: [...r.evidence.sources, { ...r.evidence.sources[1], status: "success" }] }), "partial");
+});
+
+test("deterministic brand report skips planner, retains actual record days, and rechecks access", async () => {
+  let modelCalls = 0, checks = 0;
+  const r = await buildEnterpriseDataContext({ ...base, messages: [{ role: "user", content: "公司各个品牌的销售额及销售额占比，2026-10-01 至 2026-10-30", createdAt: "2026-10-30" }], ensureAccess: async () => { checks++; } }, {
+    databaseReady: () => true,
+    callModel: async () => { modelCalls++; throw Error("planner unavailable"); },
+    query: async sql => sql.includes("latestSyncedAt") ? [{ latestSyncedAt: "2026-10-30" }] : sql.includes("LIMIT") ? [{ dimension: "B", amount: "100", amountSharePercent: "100" }] : [{ currencyCode: "CNY", amount: "100", daysWithRecords: 29, firstRecordDate: "2026-10-01", lastRecordDate: "2026-10-29" }],
+  });
+  assert.equal(modelCalls, 0);
+  assert.ok(checks >= 4);
+  assert.equal(r.evidence.status, "queried");
+  assert.equal(r.evidence.sources[0].coverage!.queriedDays, 30);
+  assert.equal(r.evidence.sources[0].coverage!.recordsByCurrency[0].daysWithRecords, 29);
+  assert.match(r.context, /默认人民币CNY/);
 });

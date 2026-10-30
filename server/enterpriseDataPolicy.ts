@@ -22,11 +22,23 @@ export type EnterpriseDataSource = {
   hasMore: boolean;
   status: "success" | "error";
   note: string;
+  coverage?: {
+    startDate: string; endDate: string; queriedDays: number;
+    recordsByCurrency: Array<{ currencyCode: string; daysWithRecords?: number; firstRecordDate?: string; lastRecordDate?: string }>;
+  };
   sync?: Array<{ resource: string; lastSuccessAt: string }>;
 };
 
 export type EnterpriseDataEvidence = {
-  status: "queried" | "skipped" | "unavailable";
+  status: "queried" | "partial" | "skipped" | "unavailable";
   sources: EnterpriseDataSource[];
   notices: string[];
 };
+
+export function enterpriseEvidenceStatus(evidence: EnterpriseDataEvidence) {
+  const business = evidence.sources.filter(source => source.tool !== "source_status");
+  const relevant = business.length ? business : evidence.sources;
+  if (!relevant.length) return evidence.status;
+  const succeeded = relevant.filter(source => source.status === "success").length;
+  return succeeded ? succeeded < relevant.length ? "partial" : "queried" : "unavailable";
+}

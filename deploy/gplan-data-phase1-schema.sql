@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS gplan_data.ods_wln_sale_outbound (
   INDEX idx_wln_sale_outbound_bill_date (company_id, bill_date),
   INDEX idx_wln_sale_outbound_dashboard (company_id, bill_date, gross_amount, actual_payment),
   INDEX idx_wln_sale_outbound_shop_date (company_id, shop_nick, bill_date),
-  INDEX idx_wln_sale_outbound_modified (company_id, source_modified_at)
+  INDEX idx_wln_sale_outbound_modified (company_id, source_modified_at),
+  INDEX idx_wln_sale_enterprise_summary (company_id, bill_date, currency_code, ingested_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 销售出库明细：一行代表一张出库单中的一个商品/SKU 明细。
@@ -87,7 +88,8 @@ CREATE TABLE IF NOT EXISTS gplan_data.ods_wln_sale_outbound_items (
     ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (company_id, outbound_uid, line_key),
   INDEX idx_wln_sale_outbound_items_sku (company_id, sku_code),
-  INDEX idx_wln_sale_outbound_items_detail (company_id, source_detail_id)
+  INDEX idx_wln_sale_outbound_items_detail (company_id, source_detail_id),
+  INDEX idx_wln_items_enterprise_summary (company_id, outbound_uid, sku_code, quantity, gross_amount, cost_amount)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 当前分仓库存：一行代表一个仓库中的一个 SKU。
