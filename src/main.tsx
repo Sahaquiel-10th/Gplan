@@ -1,4 +1,5 @@
 import { EnterpriseDataSources } from "./EnterpriseDataSources";
+import { AlipayAccounts } from "./AlipayAccounts";
 import type { EnterpriseDataEvidence } from "../server/enterpriseDataPolicy";
 import { DashboardWorkspace, DashboardSettings } from "./Dashboard";
 import { SkillImport } from "./SkillImport";
@@ -2784,7 +2785,7 @@ function DataPlatformTab() {
             <span>{state?.connectors.length ?? 0} 个</span>
           </div>
           <div className="connector-list">
-            {state?.connectors.map((connector) => (
+            {state?.connectors.filter((connector) => connector.id !== "alipay").map((connector) => (
               <article className="connector-card" key={connector.id}>
                 <div className="connector-card-head">
                   <div>
@@ -2838,6 +2839,7 @@ function DataPlatformTab() {
           </div>
         </div>
       </section>
+      <AlipayAccounts api={api} />
       <section className="data-section brief-settings-entry">
         <div>
           <small>内部管理配置</small>

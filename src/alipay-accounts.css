@@ -1,0 +1,71 @@
+.alipay-panel {
+  --funds-text: #20242b;
+  --funds-secondary: #566171;
+  --funds-muted: #667080;
+  --funds-line: #e3e7ee;
+  --funds-paper: #fff;
+  --funds-inset: #f7f8fa;
+  --funds-brand: #286fc7;
+  --funds-success: #216346;
+  --funds-warning: #825616;
+  --funds-danger: #a32c38;
+  color: var(--funds-text);
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.alipay-panel p, .alipay-panel small { color: var(--funds-secondary); line-height: 1.6; }
+.alipay-panel h3, .alipay-panel h4 { margin: 0; }
+.alipay-panel h4 { font-size: 16px; }
+.alipay-panel small { font-size: 13px; }
+.alipay-heading, .alipay-account-title, .alipay-account-footer, .alipay-form-end, .alipay-lock-area, .alipay-generate { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; }
+.alipay-heading > div, .alipay-account-title > div, .alipay-lock-area > div, .alipay-generate > div { min-width: 0; }
+.alipay-panel button { min-height: 44px; flex: 0 0 auto; white-space: nowrap; }
+.alipay-panel button:disabled { opacity: .55; cursor: not-allowed; }
+.alipay-panel button:active:not(:disabled) { transform: translateY(1px); }
+.alipay-message, .alipay-warning, .alipay-locked { padding: 12px 16px; border-radius: 8px; background: var(--funds-inset); overflow-wrap: anywhere; line-height: 1.6; }
+.alipay-message[hidden] { display: none; }
+.alipay-message.error { color: var(--funds-danger); border: 1px solid currentColor; }
+.alipay-warning { color: var(--funds-warning) !important; }
+.alipay-locked { display: flex; align-items: center; gap: 8px; }
+.alipay-locked svg { flex-shrink: 0; }
+.alipay-account-list { display: grid; gap: 12px; }
+.alipay-account { background: var(--funds-paper); border: 1px solid var(--funds-line); border-radius: 10px; padding: 20px; min-width: 0; }
+.alipay-account-title { align-items: flex-start; }
+.alipay-account-title p { margin: 4px 0; }
+.alipay-account-title small, .alipay-account-title h4 { overflow-wrap: anywhere; }
+.alipay-capabilities { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; padding: 16px 0; margin: 16px 0; border-block: 1px solid var(--funds-line); }
+.alipay-capabilities dt { font-size: 14px; color: var(--funds-secondary); margin-bottom: 8px; }
+.alipay-capabilities dd { margin: 0; display: grid; gap: 4px; min-width: 0; }
+.alipay-capabilities small { overflow-wrap: anywhere; }
+.alipay-capabilities time { color: var(--funds-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.alipay-capability { font-size: 14px; font-weight: 600; color: var(--funds-secondary); }
+.alipay-capability.available { color: var(--funds-success); }
+.alipay-capability.failed { color: var(--funds-danger); }
+.alipay-capability.no_bill { color: var(--funds-warning); }
+.alipay-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.alipay-empty { padding: 24px; background: var(--funds-inset); border-radius: 8px; }
+.alipay-form { display: grid; gap: 20px; border: 1px solid var(--funds-line); border-radius: 10px; padding: 24px; background: var(--funds-paper); min-width: 0; }
+.alipay-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.alipay-form label { display: grid; align-content: start; gap: 8px; font-size: 14px; font-weight: 500; min-width: 0; }
+.alipay-form input, .alipay-form select, .alipay-form textarea { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--funds-line); border-radius: 6px; background: var(--funds-inset); color: var(--funds-text); font-size: 14px; }
+.alipay-form textarea { resize: vertical; overflow-wrap: anywhere; }
+.alipay-form input[readonly] { color: var(--funds-muted); }
+.alipay-public-key { display: grid; gap: 8px; }
+.alipay-public-key button { justify-self: start; }
+.alipay-public-key textarea { font-family: ui-monospace, monospace; font-size: 12px; }
+.alipay-form-end p { max-width: 64ch; font-size: 13px; }
+.alipay-generate { background: var(--funds-inset); padding: 16px; border-radius: 8px; }
+.alipay-generate p { font-size: 13px; margin-top: 4px; }
+.alipay-lock-area { border-top: 1px solid var(--funds-line); padding-top: 20px; }
+.alipay-lock-area p { font-size: 13px; margin: 8px 0; max-width: 80ch; }
+.alipay-lock-area label { font-size: 13px; display: flex; align-items: flex-start; gap: 8px; padding: 12px 0; line-height: 1.6; }
+.alipay-lock-area input { margin-top: 3px; }
+@media (max-width: 720px) {
+  .alipay-heading, .alipay-account-title, .alipay-account-footer, .alipay-form-end, .alipay-lock-area, .alipay-generate { align-items: stretch; flex-direction: column; }
+  .alipay-fields, .alipay-capabilities { grid-template-columns: minmax(0, 1fr); }
+  .alipay-panel .status-pill { align-self: flex-start; }
+  .alipay-form, .alipay-account { padding: 16px; }
+  .alipay-form input, .alipay-form select, .alipay-form textarea { font-size: 16px; }
+  .alipay-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+}

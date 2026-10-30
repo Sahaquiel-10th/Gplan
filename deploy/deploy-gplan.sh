@@ -28,6 +28,7 @@ node scripts/check-release-contract.mjs "$archive"
 [[ -r "$credential_file" ]] || { echo "Client API smoke-test credential missing" >&2; exit 68; }
 npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
 npm run test:client-api
+npm run test:alipay-accounts
 npm run test:enterprise-data
 npm run test:review-replies
 npm run build

@@ -280,6 +280,9 @@ export type ManagementBriefReport = {
 };
 
 export type Database = {
+  alipayAccounts?: import("./alipayAccounts.js").AlipayAccount[];
+  financeConfigLocks?: Record<string, string>;
+  financeAudit?: import("./alipayAccounts.js").FinanceAudit[];
   reviewReplyProfiles?: import("./reviewReplyTypes.js").ReviewProfile[];
   reviewReplyRuns?: import("./reviewReplyTypes.js").ReviewRun[];
   commerceProducts?: import("./commerceTypes.js").CommerceSavedProduct[];

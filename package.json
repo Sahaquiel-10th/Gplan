@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:alipay-accounts": "DATA_DB_PROVIDER=disabled tsx --test server/alipayAccounts.test.ts server/alipayAccountRoutes.test.ts",
     "dev": "node scripts/dev.mjs",
     "dev:server": "tsx watch server/index.ts",
     "dev:web": "vite --host 0.0.0.0",
@@ -19,6 +20,7 @@
     "test:enterprise-data": "DATA_DB_PROVIDER=disabled tsx --test server/enterpriseData.test.ts server/enterpriseDataHttp.test.ts server/enterpriseDataGateway.test.ts"
   },
   "dependencies": {
+    "alipay-sdk": "4.14.0",
     "@alicloud/bailian20231229": "^2.12.0",
     "@alicloud/openapi-client": "^0.4.15",
     "@alicloud/tea-util": "^1.4.11",

@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { createAlipayAccountRouter } from "./alipayAccountRoutes.js";
 import { buildEnterpriseDataContext } from "./enterpriseData.js";
 import { assertEnterpriseAdmin, canReadEnterpriseConversation } from "./enterpriseDataPolicy.js";
 import { createDashboardRouter } from "./dashboardRoutes.js";
@@ -1511,6 +1512,7 @@ app.delete("/api/memories/:id", auth(jwtSecret), asyncRoute(async (req, res) => 
 }));
 
 const admin: RequestHandler[] = [auth(jwtSecret), requireRole("admin")];
+app.use("/api/admin/data-platform/alipay", ...admin, createAlipayAccountRouter(store));
 const protectedAdmin: RequestHandler[] = [
   ...admin,
   (req, res, next) => {
@@ -2240,6 +2242,7 @@ app.post("/api/admin/ai-query/chat", ...admin, asyncRoute(async (req, res) => {
 }));
 
 app.post("/api/admin/data-platform/connectors/:id/check", ...admin, asyncRoute(async (req, res) => {
+  if (req.params.id === "alipay") return res.status(410).json({ error: "支付宝已改为逐账户真实接口检测，请使用企业支付宝账户入口" });
   const connectorId = req.params.id as DataConnectorId;
   if (connectorId === "wanliniu") {
     const startedAt = now();
@@ -2350,6 +2353,7 @@ app.post("/api/admin/data-platform/connectors/:id/check", ...admin, asyncRoute(a
 }));
 
 app.post("/api/admin/data-platform/connectors/:id/sync", ...admin, asyncRoute(async (req, res) => {
+  if (req.params.id === "alipay") return res.status(409).json({ error: "支付宝须先完成逐账户配置、真实接口验证和单日入库核对；当前未启用同步" });
   const connectorId = req.params.id as DataConnectorId;
   if (connectorId === "wanliniu") {
     const missing = missingWanliniuSyncConfig();
