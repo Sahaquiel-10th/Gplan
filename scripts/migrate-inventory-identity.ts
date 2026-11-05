@@ -53,6 +53,8 @@ try{
  const[col]=await db.query<RowDataPacket[]>("SHOW COLUMNS FROM ods_wln_inventory_current LIKE 'source_spec_uid'");
  if(!col.length)await db.query('ALTER TABLE ods_wln_inventory_current ADD COLUMN source_spec_uid VARCHAR(128) NULL');
  await ensureInventorySnapshotSchema(db);
+ const[existingPoints]=await db.execute<RowDataPacket[]>('SELECT business_date FROM data_inventory_report_snapshots WHERE company_id=?',[company]);
+ const preservedDates=new Set(existingPoints.map(r=>String(r.business_date).slice(0,10)));
  await db.beginTransaction();
  try{
   for(const row of canonical.retired){
@@ -69,6 +71,7 @@ try{
     const[hasRuns]=await db.query<RowDataPacket[]>("SHOW TABLES LIKE 'data_inventory_recovery_runs'");
     const[runs]=hasRuns.length?await db.execute<RowDataPacket[]>('SELECT manifest_json FROM data_inventory_recovery_runs WHERE company_id=? ORDER BY created_at DESC',[company]):[[]];
     for(const date of [...new Set(daily.map(r=>String(r.inventory_date).slice(0,10)))]){
+      if(preservedDates.has(date))continue;
       const recovered=daily.filter(r=>String(r.inventory_date).slice(0,10)===date);
       const missingSkus=new Set<string>();
       for(const run of runs){const m=parse(run.manifest_json);if(m.dates?.includes(date))for(const issue of m.issues||[])missingSkus.add(issue.sku);}
@@ -76,7 +79,11 @@ try{
       await saveInventorySnapshot(db,company,date,[...recovered.map(r=>({storage_code:r.storage_code,source_spec_uid:r.source_spec_uid,source_sku_code:r.sku_code,product_code:r.bar_code,product_name:r.product_name,quantity:Number(r.quantity),inventory_date:date,snapshot_time:r.snapshot_time})),...gaps],{status:gaps.length?'partial':'complete',source:'verified_day_end',missing_rows:gaps.length});
     }
   }
-  for(const p of points)await saveInventorySnapshot(db,company,p.date,p.rows,{status:p.missing?'partial':'complete',source:'saved_observation',missing_rows:p.missing,...(p.missing?{message:'部分历史商品身份无法核验，未返回未知库存行'}:{})});
+  for(const p of points){
+    if(preservedDates.has(p.date))continue;
+    const missing=p.missing+p.rows.filter(r=>r.quantity===null).length;
+    await saveInventorySnapshot(db,company,p.date,p.rows,{status:missing?'partial':'complete',source:'saved_observation',missing_rows:missing,...(missing?{message:'部分历史库存无法核验，未以当前库存或零补齐'}:{})});
+  }
   await db.commit();
  }catch(error){await db.rollback();throw error;}
  const[indexes]=await db.query<RowDataPacket[]>("SHOW INDEX FROM ods_wln_inventory_current WHERE Key_name='uniq_wln_inventory_spec'");
