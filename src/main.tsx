@@ -1,5 +1,5 @@
 import { EnterpriseDataSources } from "./EnterpriseDataSources";
-import { AlipayAccounts } from "./AlipayAccounts";
+import { FinanceAccounts } from "./FinanceAccounts";
 import type { EnterpriseDataEvidence } from "../server/enterpriseDataPolicy";
 import { DashboardWorkspace, DashboardSettings } from "./Dashboard";
 import { SkillImport } from "./SkillImport";
@@ -326,7 +326,7 @@ type MemoryLimits = {
 };
 
 class ApiError extends Error {
-  constructor(message: string, readonly requestId?: string) {
+  constructor(message: string, readonly requestId?: string, readonly fields?: Record<string,string>) {
     super(message);
   }
 }
@@ -345,7 +345,7 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     const requestId = payload.requestId || response.headers.get("x-request-id") || undefined;
     const message = payload.error || (response.status === 504 ? "模型响应超时，请稍后重试" : `请求失败（${response.status}）`);
-    throw new ApiError(requestId ? `${message} · 编号 ${requestId}` : message, requestId);
+    throw new ApiError(requestId ? `${message} · 编号 ${requestId}` : message, requestId, payload.fields);
   }
   return payload as T;
 }
@@ -2839,7 +2839,7 @@ function DataPlatformTab() {
           </div>
         </div>
       </section>
-      <AlipayAccounts api={api} />
+      <FinanceAccounts api={api} />
       <section className="data-section brief-settings-entry">
         <div>
           <small>内部管理配置</small>

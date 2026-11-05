@@ -29,6 +29,7 @@ test(
     await fs.cp(path.join(root, "server"), path.join(dir, "server"), {
       recursive: true,
     });
+    await fs.cp(path.join(root, "shared"), path.join(dir, "shared"), { recursive: true });
     await fs.symlink(
       path.join(root, "node_modules"),
       path.join(dir, "node_modules"),

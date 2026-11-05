@@ -12,6 +12,7 @@ export async function enterpriseDataFixture() {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gplan-enterprise-http-"));
   await fs.cp(path.join(root, "server"), path.join(dir, "server"), { recursive: true });
+  await fs.cp(path.join(root, "shared"), path.join(dir, "shared"), { recursive: true });
   await fs.cp(path.join(root, "dist"), path.join(dir, "dist"), { recursive: true }).catch(() => undefined);
   await fs.symlink(path.join(root, "node_modules"), path.join(dir, "node_modules"));
   await fs.mkdir(path.join(dir, "data"));

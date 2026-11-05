@@ -9,6 +9,7 @@ export type AlipayCredentials = { privateKey: string; mode: "public_key" | "cert
 export type AlipayCapability = { status: "not_tested" | "available" | "no_bill" | "failed"; checkedAt?: string; code?: string; message: string };
 export type AlipayAccount = {
   id: string; companyId: string; name: string; legalEntity: string; appId: string;
+  financeAccountId?: string;
   revision: number; credentials: SealedCredential; applicationPublicKey: string;
   configured: boolean; mode: AlipayCredentials["mode"];
   createdAt: string; updatedAt: string;
@@ -78,7 +79,7 @@ function validatedCredentials(input: Record<string, unknown>, previous?: AlipayC
 }
 
 export function publicAlipayAccount(a: AlipayAccount) {
-  return { id: a.id, name: a.name, legalEntity: a.legalEntity, appId: a.appId, mode: a.mode, configured: a.configured, hasPrivateKey: true, applicationPublicKey: a.applicationPublicKey, capabilities: a.capabilities, createdAt: a.createdAt, updatedAt: a.updatedAt, syncStatus: "not_enabled" as const };
+  return { id: a.id, name: a.name, legalEntity: a.legalEntity, appId: a.appId, financeAccountId:a.financeAccountId, mode: a.mode, configured: a.configured, hasPrivateKey: true, applicationPublicKey: a.applicationPublicKey, capabilities: a.capabilities, createdAt: a.createdAt, updatedAt: a.updatedAt, syncStatus: "not_enabled" as const };
 }
 
 export class AlipayAccountService {
@@ -120,6 +121,8 @@ export class AlipayAccountService {
     const db = await this.store.read();
     this.assertConfiguration(db, user);
     const existing = id ? this.account(db, user, id) : undefined;
+    const financeAccountId = input.financeAccountId === undefined ? existing?.financeAccountId : boundedText(input.financeAccountId, '账户清单编号', 100);
+    if(existing?.financeAccountId && financeAccountId!==existing.financeAccountId)throw new FinanceError('不能改绑已有资金账户，请联系维护人员核对');
     if (generate && existing) throw new FinanceError("已有账户不支持一键重置密钥，请使用受控更新流程");
     const name = boundedText(input.name, "账户名称", 60), legalEntity = boundedText(input.legalEntity, "账户主体", 100);
     const appId = boundedText(input.appId, "APP_ID", 32);
@@ -137,9 +140,16 @@ export class AlipayAccountService {
     }
     const timestamp = new Date().toISOString();
     const accountBase = { id: existing?.id || uid("alipay"), companyId: user.companyId, appId, revision: (existing?.revision || 0) + 1 };
-    const account: AlipayAccount = { ...accountBase, name, legalEntity, credentials: sealCredential(credentials, credentialScope(accountBase), key), applicationPublicKey: createPublicKey(credentials.privateKey).export({ format: "pem", type: "spki" }).toString(), mode: credentials.mode, configured: !generate, capabilities: freshCapabilities(), createdAt: existing?.createdAt || timestamp, updatedAt: timestamp };
+    const account: AlipayAccount = { ...accountBase, ...(financeAccountId?{financeAccountId}:{}), name, legalEntity, credentials: sealCredential(credentials, credentialScope(accountBase), key), applicationPublicKey: createPublicKey(credentials.privateKey).export({ format: "pem", type: "spki" }).toString(), mode: credentials.mode, configured: !generate, capabilities: freshCapabilities(), createdAt: existing?.createdAt || timestamp, updatedAt: timestamp };
     return this.store.mutate(current => {
       this.assertConfiguration(current, user); // Includes lock/revocation while key generation was pending.
+      if(financeAccountId){
+        const draft=current.financeAccountDrafts?.find(a=>a.id===financeAccountId&&a.companyId===user.companyId&&a.sourceId==='alipay');
+        const entity=draft&&current.financeEntities?.find(e=>e.id===draft.legalEntityId&&e.companyId===user.companyId);
+        if(!draft||!entity)throw new FinanceError('对应的企业支付宝账户清单不存在',404);
+        if(entity.name!==legalEntity||draft.name!==name)throw new FinanceError('公司及账户名称与清单不一致，请刷新后重试',409);
+        if(current.alipayAccounts?.some(a=>a.financeAccountId===financeAccountId&&a.companyId===user.companyId&&a.id!==id))throw new FinanceError('此账户已关联应用，请编辑已有配置',409);
+      }
       current.alipayAccounts ??= [];
       const latest = id ? this.account(current, user, id) : undefined;
       if (latest && latest.revision !== existing!.revision) throw new FinanceError("账户已被修改，请刷新后重试", 409);

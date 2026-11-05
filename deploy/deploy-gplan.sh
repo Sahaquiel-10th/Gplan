@@ -31,6 +31,7 @@ npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
 npm run test:client-api
 DATA_DB_PROVIDER=disabled npm run test:wanliniu
 npm run test:alipay-accounts
+npm run test:finance-directory
 npm run test:enterprise-data
 npm run test:review-replies
 npm run build

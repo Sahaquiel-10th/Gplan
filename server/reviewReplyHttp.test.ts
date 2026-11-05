@@ -17,6 +17,7 @@ test("HTTP shop Skills persist private configuration, OCR images, editable origi
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gplan-review-reply-http-"));
   await fs.cp(path.join(root, "server"), path.join(dir, "server"), { recursive: true });
+  await fs.cp(path.join(root, "shared"), path.join(dir, "shared"), { recursive: true });
   await fs.symlink(path.join(root, "node_modules"), path.join(dir, "node_modules"));
   await fs.writeFile(path.join(dir, "package.json"), '{"type":"module"}');
   await fs.mkdir(path.join(dir, "data/uploads"), { recursive: true });

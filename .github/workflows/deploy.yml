@@ -27,6 +27,7 @@ jobs:
       - run: npm run test:client-api
       - run: DATA_DB_PROVIDER=disabled npm run test:wanliniu
       - run: npm run test:alipay-accounts
+      - run: npm run test:finance-directory
       - run: npm run test:enterprise-data
       - run: npm run test:commerce
       - run: npm run test:review-replies

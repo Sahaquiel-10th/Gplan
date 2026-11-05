@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { createAlipayAccountRouter } from "./alipayAccountRoutes.js";
+import { createFinanceDirectoryRouter } from "./financeDirectoryRoutes.js";
 import { buildEnterpriseDataContext } from "./enterpriseData.js";
 import { assertEnterpriseAdmin, canReadEnterpriseConversation } from "./enterpriseDataPolicy.js";
 import { createDashboardRouter } from "./dashboardRoutes.js";
@@ -1513,6 +1514,7 @@ app.delete("/api/memories/:id", auth(jwtSecret), asyncRoute(async (req, res) => 
 
 const admin: RequestHandler[] = [auth(jwtSecret), requireRole("admin")];
 app.use("/api/admin/data-platform/alipay", ...admin, createAlipayAccountRouter(store));
+app.use("/api/admin/data-platform/finance-directory", ...admin, createFinanceDirectoryRouter(store));
 const protectedAdmin: RequestHandler[] = [
   ...admin,
   (req, res, next) => {

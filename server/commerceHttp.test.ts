@@ -17,6 +17,7 @@ test("HTTP creative flow: private jobs, original assets retained, five separate 
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gplan-creative-http-"));
   await fs.cp(path.join(root, "server"), path.join(dir, "server"), { recursive: true });
+  await fs.cp(path.join(root, "shared"), path.join(dir, "shared"), { recursive: true });
   await fs.symlink(path.join(root, "node_modules"), path.join(dir, "node_modules"));
   await fs.writeFile(path.join(dir, "package.json"), '{"type":"module"}');
   await fs.mkdir(path.join(dir, "data/uploads"), { recursive: true });

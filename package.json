@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:finance-directory": "DATA_DB_PROVIDER=disabled tsx --test server/financeDirectory.test.ts",
     "test:alipay-accounts": "DATA_DB_PROVIDER=disabled tsx --test server/alipayAccounts.test.ts server/alipayAccountRoutes.test.ts",
     "dev": "node scripts/dev.mjs",
     "dev:server": "tsx watch server/index.ts",
