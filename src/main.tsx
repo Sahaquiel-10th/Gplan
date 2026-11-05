@@ -1949,7 +1949,7 @@ function ManagementDashboardPage({ onOpenSidebar }: { onOpenSidebar: () => void 
 }
 
 function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
-  const [tab, setTab] = useState<"settings" | "users" | "tokens" | "aiQuery" | "data" | "secure" | "operations" | "dashboard">("settings");
+  const [tab, setTab] = useState<"settings" | "users" | "tokens" | "aiQuery" | "data" | "finance" | "secure" | "operations" | "dashboard">("settings");
   const [users, setUsers] = useState<User[]>([]);
   const [tokens, setTokens] = useState<IntegrationToken[]>([]);
   const [settings, setSettings] = useState<SystemSettings>({ safetyRules: "" });
@@ -1989,6 +1989,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           <button className={tab === "dashboard" ? "active" : ""} onClick={() => setTab("dashboard")}><LayoutDashboard size={16} />驾驶舱默认</button>
           <button className={tab === "operations" ? "active" : ""} onClick={() => setTab("operations")}><Bot size={16} />经营助手</button>
           <button className={tab === "data" ? "active" : ""} onClick={() => setTab("data")}><FileSpreadsheet size={16} />数据接入</button>
+          <button className={tab === "finance" ? "active" : ""} onClick={() => setTab("finance")}><KeyRound size={16} />银行与支付宝</button>
           <button className={`secure-tab ${tab === "secure" ? "active" : ""}`} onClick={() => setTab("secure")}><Lock size={16} />模型充值后台</button>
         </nav>
         {notice ? <div className="notice">{notice}</div> : null}
@@ -1998,6 +1999,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           {tab === "tokens" ? <TokensTab tokens={tokens} reload={load} setNotice={setNotice} /> : null}
           {tab === "aiQuery" ? <AiQueryTestTab /> : null}
           {tab === "data" ? <DataPlatformTab /> : null}
+          {tab === "finance" ? <FinanceAccounts api={api} /> : null}
           {tab === "dashboard" ? <DashboardSettings api={api} /> : null}
           {tab === "operations" ? <OperationsAdmin api={api} onChanged={refreshModels} /> : null}
           {tab === "secure" ? <SecureAdminTab users={users} refreshModels={refreshModels} /> : null}
@@ -2759,7 +2761,7 @@ function DataPlatformTab() {
       <section className="data-platform-hero">
         <div>
           <h3>AI 问数数据接入</h3>
-          <p>先把万里牛和企业支付宝接成受控数据能力：每个数据源、每次检测、每次同步都会留痕。</p>
+          <p>管理 ERP 与知识库的数据接入。资金账户请使用后台独立的“银行与支付宝”标签。</p>
         </div>
         <a className="secondary" href="/api/admin/data-platform/plan" target="_blank" rel="noreferrer">
           <FileSpreadsheet size={15} />查看内部方案
@@ -2782,7 +2784,7 @@ function DataPlatformTab() {
         <div className="data-section">
           <div className="records-heading">
             <h3>数据源连接器</h3>
-            <span>{state?.connectors.length ?? 0} 个</span>
+            <span>{state?.connectors.filter((connector) => connector.id !== "alipay").length ?? 0} 个</span>
           </div>
           <div className="connector-list">
             {state?.connectors.filter((connector) => connector.id !== "alipay").map((connector) => (
@@ -2839,7 +2841,6 @@ function DataPlatformTab() {
           </div>
         </div>
       </section>
-      <FinanceAccounts api={api} />
       <section className="data-section brief-settings-entry">
         <div>
           <small>内部管理配置</small>

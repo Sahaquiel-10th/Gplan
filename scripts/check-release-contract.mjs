@@ -8,7 +8,7 @@ const required=[
   'server/clientReportPublication.test.ts','scripts/check-client-api.mjs','scripts/test-client-daily-report.mjs',
   'docs/client-daily-report-v1.md','server/inventoryIdentity.ts','server/inventorySnapshots.ts',
   'server/inventoryIdentity.test.ts','scripts/migrate-inventory-identity.ts','scripts/check-inventory-integrity.ts','scripts/reconcile-inventory.ts','scripts/check-inventory-writes.ts','deploy/deploy-gplan-entry.sh',
-  'server/financeDirectory.ts','server/financeDirectoryRoutes.ts','server/financeDirectory.test.ts','shared/financeCatalog.ts','src/FinanceAccounts.tsx','src/finance-accounts.css'
+  'server/financeDirectory.ts','server/financeDirectoryRoutes.ts','server/financeDirectory.test.ts','shared/financeCatalog.ts','src/FinanceAccounts.tsx','src/FinanceDialog.tsx','src/finance-accounts.css'
 ];
 const archive=process.argv[2];
 const entries=archive?new Set(execFileSync('tar',['-tf',archive],{encoding:'utf8'}).split('\n')):null;
