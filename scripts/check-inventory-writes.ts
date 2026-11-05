@@ -34,5 +34,13 @@ try{
  await product('new','uid-4','2026-11-01 00:00:00');await inventory('new',3,'2026-11-01 03:00:00.000');
  [rows]=await db.query<any[]>("SELECT * FROM ods_wln_inventory_current WHERE sku_code='new'");assert.equal(rows.length,1);assert.equal(rows[0].source_spec_uid,'uid-4');assert.equal(rows[0].actual_quantity,3);
  const[archived]=await db.query<any[]>('SELECT COUNT(*) n FROM data_inventory_identity_archive');assert(archived[0].n>=2);
- console.log(JSON.stringify({nativeInventoryWrites:'ok',temporaryTablesOnly:true,checks:['rename','stale-replay','same-barcode-independent-specs','character-width','sku-reuse','audit']}));
+ await db.query("UPDATE ods_wln_inventory_current SET sync_run_id='checked:full'");
+ await product('stopped','uid-stopped','2026-11-01 00:00:00');await inventory('stopped',7,'2026-11-05 03:00:00.000');
+ await assert.rejects(()=>store.assertInventoryReconciled(company,'checked:full'),/未返回的非零/);
+ await db.query("UPDATE ods_wln_products SET status=0,raw_payload=JSON_SET(raw_payload,'$.goods.brand_name','其他品牌') WHERE sku_code='stopped'");
+ assert.equal((await store.assertInventoryReconciled(company,'checked:full')).length,1);
+ [rows]=await db.query<any[]>("SELECT actual_quantity FROM ods_wln_inventory_current WHERE sku_code='stopped'");assert.equal(rows[0].actual_quantity,7);
+ await db.query("UPDATE ods_wln_products SET raw_payload=JSON_SET(raw_payload,'$.goods.brand_name','薇诺娜') WHERE sku_code='stopped'");
+ await assert.rejects(()=>store.assertInventoryReconciled(company,'checked:full'),/未返回的非零/);
+ console.log(JSON.stringify({nativeInventoryWrites:'ok',temporaryTablesOnly:true,checks:['rename','stale-replay','same-barcode-independent-specs','character-width','sku-reuse','audit','source-omission-preserves-stock','active-omission-blocks','client-brand-omission-blocks']}));
 }finally{await db.end();}

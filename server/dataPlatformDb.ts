@@ -69,7 +69,7 @@ export interface DataPlatformStore {
   upsertInventory(companyId: string, records: NormalizedInventory[], runId: string): Promise<number>;
   captureInventorySnapshot?(companyId:string,observedAt:string):Promise<unknown>;
   inventoryReconciliationSkus?(companyId:string):Promise<string[]>;
-  assertInventoryReconciled?(companyId:string,runId:string):Promise<void>;
+  assertInventoryReconciled?(companyId:string,runId:string):Promise<string[]|void>;
   acquireSyncLease?(companyId:string):Promise<()=>Promise<void>>;
   upsertOutbound(companyId: string, records: NormalizedOutbound[], runId: string): Promise<number>;
   upsertInbound(companyId: string, records: NormalizedInbound[], runId: string): Promise<number>;
@@ -298,8 +298,22 @@ export class MySqlDataPlatformStore implements DataPlatformStore {
     return async()=>{try{await connection.query('SELECT RELEASE_LOCK(?)',[lock]);}finally{connection.release();}};
   }
   async assertInventoryReconciled(companyId:string,runId:string){
-    const[missing]=await this.pool.execute<mysql.RowDataPacket[]>(`SELECT sku_code,storage_code FROM ods_wln_inventory_current WHERE company_id=? AND storage_code IN ('CK001','CK008') AND source_spec_uid IS NOT NULL AND sync_run_id<>? AND (actual_quantity<>0 OR locked_quantity<>0 OR in_transit_quantity<>0 OR defect_quantity<>0) LIMIT 20`,[companyId,runId]);
-    if(missing.length)throw new Error('库存全量校验存在未返回的非零记录，禁止以零库存替代：'+missing.map(r=>r.storage_code+'/'+r.sku_code).join('、'));
+    const[missing]=await this.pool.execute<mysql.RowDataPacket[]>(`SELECT i.*,p.status product_status,
+      JSON_UNQUOTE(JSON_EXTRACT(p.raw_payload,'$.goods.brand_name')) brand_name
+      FROM ods_wln_inventory_current i LEFT JOIN ods_wln_products p ON p.company_id=i.company_id AND p.sku_code=i.sku_code
+      WHERE i.company_id=? AND i.storage_code IN ('CK001','CK008') AND i.source_spec_uid IS NOT NULL
+      AND i.sync_run_id<>? AND (i.actual_quantity<>0 OR i.locked_quantity<>0 OR i.in_transit_quantity<>0 OR i.defect_quantity<>0)`,[companyId,runId]);
+    // A provider may omit stopped products even in an explicit-SKU query. Keep
+    // their last observation and audit the omission; never manufacture a zero.
+    // Such omissions outside this report's brand must not block its publication.
+    for(const row of missing){const raw=json({...row,reconciliation_run_id:runId});await this.pool.execute(
+      `INSERT IGNORE INTO data_inventory_identity_archive(company_id,storage_code,source_spec_uid,sku_code,payload_sha256,row_json,reason) VALUES(?,?,?,?,SHA2(?,256),?,?)`,
+      [companyId,row.storage_code,row.source_spec_uid,row.sku_code,raw,raw,'source_omitted_inventory']);}
+    const blocking=missing.filter(r=>r.product_status===null||Number(r.product_status)!==0||!r.brand_name||r.brand_name==='薇诺娜');
+    if(blocking.length)throw new Error('库存全量校验存在未返回的非零记录，禁止以零库存替代：'+blocking.slice(0,20).map(r=>r.storage_code+'/'+r.sku_code).join('、'));
+    const warnings=missing.map(r=>'停用商品未返回当前库存，已保留原始观察并留痕：'+r.storage_code+'/'+r.sku_code);
+    if(warnings.length)console.warn(JSON.stringify({event:'inventory_source_omissions',runId,warnings}));
+    return warnings;
   }
 
   async upsertOutbound(companyId: string, records: NormalizedOutbound[], runId: string) {

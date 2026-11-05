@@ -28,6 +28,7 @@ export type WanliniuResourceSummary = {
   pages: number;
   startedAt: string;
   finishedAt: string;
+  warnings?: string[];
 };
 
 export type WanliniuSyncSummary = {
@@ -112,6 +113,7 @@ export class WanliniuSyncService {
     let recordsRead = 0;
     let recordsWritten = 0;
     let pages = 0;
+    const warnings:string[]=[];
     await this.dataStore.startSyncRun({
       id: runId,
       resource,
@@ -148,7 +150,8 @@ export class WanliniuSyncService {
               if(page===maxPages)throw new Error('库存全量校验达到分页上限');
             }
           }
-          await this.dataStore.assertInventoryReconciled?.(companyId,runId+':full');
+          const issues=await this.dataStore.assertInventoryReconciled?.(companyId,runId+':full');
+          if(Array.isArray(issues))warnings.push(...issues);
           await this.dataStore.captureInventorySnapshot?.(companyId,window.startedAt);
         }
         // 大数据量资源每完成一个时间分片就保存断点；中途失败时无需从头重扫。
@@ -165,6 +168,7 @@ export class WanliniuSyncService {
         recordsRead,
         recordsWritten,
         pages,
+        ...(warnings.length?{warnings}:{}),
         startedAt: window.startedAt,
         finishedAt: new Date().toISOString()
       };
