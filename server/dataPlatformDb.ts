@@ -309,7 +309,7 @@ export class MySqlDataPlatformStore implements DataPlatformStore {
     for(const row of missing){const raw=json({...row,reconciliation_run_id:runId});await this.pool.execute(
       `INSERT IGNORE INTO data_inventory_identity_archive(company_id,storage_code,source_spec_uid,sku_code,payload_sha256,row_json,reason) VALUES(?,?,?,?,SHA2(?,256),?,?)`,
       [companyId,row.storage_code,row.source_spec_uid,row.sku_code,raw,raw,'source_omitted_inventory']);}
-    const blocking=missing.filter(r=>r.product_status===null||Number(r.product_status)!==0||!r.brand_name||r.brand_name==='薇诺娜');
+    const blocking=missing.filter(r=>r.product_status===null||Number(r.product_status)!==0||r.brand_name==='薇诺娜');
     if(blocking.length)throw new Error('库存全量校验存在未返回的非零记录，禁止以零库存替代：'+blocking.slice(0,20).map(r=>r.storage_code+'/'+r.sku_code).join('、'));
     const warnings=missing.map(r=>'停用商品未返回当前库存，已保留原始观察并留痕：'+r.storage_code+'/'+r.sku_code);
     if(warnings.length)console.warn(JSON.stringify({event:'inventory_source_omissions',runId,warnings}));
