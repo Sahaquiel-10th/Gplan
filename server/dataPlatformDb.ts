@@ -1,4 +1,5 @@
 import mysql from "mysql2/promise";
+import {createHash} from 'node:crypto';
 import type {
   NormalizedInbound,
   NormalizedInventory,
@@ -7,6 +8,8 @@ import type {
   NormalizedShop
 } from "./data-connectors/wanliniu/mappers.js";
 import { mysqlDateInShanghai } from "./data-connectors/wanliniu/mappers.js";
+import {canonicalInventoryRows,MissingInventoryIdentityError} from './inventoryIdentity.js';
+import {captureInventorySnapshot} from './inventorySnapshots.js';
 
 export type DataResource = "shops" | "products" | "inventory" | "sale_outbound" | "purchase_inbound";
 export type SyncMode = "full" | "incremental";
@@ -64,6 +67,10 @@ export interface DataPlatformStore {
   upsertShops(companyId: string, records: NormalizedShop[], runId: string): Promise<number>;
   upsertProducts(companyId: string, records: NormalizedProduct[], runId: string): Promise<number>;
   upsertInventory(companyId: string, records: NormalizedInventory[], runId: string): Promise<number>;
+  captureInventorySnapshot?(companyId:string,observedAt:string):Promise<unknown>;
+  inventoryReconciliationSkus?(companyId:string):Promise<string[]>;
+  assertInventoryReconciled?(companyId:string,runId:string):Promise<void>;
+  acquireSyncLease?(companyId:string):Promise<()=>Promise<void>>;
   upsertOutbound(companyId: string, records: NormalizedOutbound[], runId: string): Promise<number>;
   upsertInbound(companyId: string, records: NormalizedInbound[], runId: string): Promise<number>;
   getManagementDashboardFacts(companyId: string, reportDate: string): Promise<ManagementDashboardFacts>;
@@ -86,7 +93,7 @@ class UnavailableDataPlatformStore implements DataPlatformStore {
   async getManagementDashboardFacts() { return this.unavailable(); }
 }
 
-class MySqlDataPlatformStore implements DataPlatformStore {
+export class MySqlDataPlatformStore implements DataPlatformStore {
   constructor(private pool: mysql.Pool, private database: string) {}
 
   status(): DataPlatformStatus {
@@ -109,7 +116,8 @@ class MySqlDataPlatformStore implements DataPlatformStore {
       "ods_wln_sale_outbound_items",
       "ods_wln_inventory_current",
       "ods_wln_purchase_inbound",
-      "ods_wln_purchase_inbound_items"
+      "ods_wln_purchase_inbound_items",
+      "data_inventory_identity_archive","data_product_identity_aliases","data_inventory_report_snapshots"
     ];
     const [rows] = await this.pool.query<mysql.RowDataPacket[]>(
       `SELECT TABLE_NAME FROM information_schema.TABLES
@@ -119,6 +127,8 @@ class MySqlDataPlatformStore implements DataPlatformStore {
     const existing = new Set(rows.map((row) => String(row.TABLE_NAME)));
     const missing = required.filter((name) => !existing.has(name));
     if (missing.length) throw new Error(`经营数据库缺少表：${missing.join("、")}`);
+    const[identity]=await this.pool.query<mysql.RowDataPacket[]>("SHOW INDEX FROM ods_wln_inventory_current WHERE Key_name='uniq_wln_inventory_spec'");
+    if(!identity.length)throw new Error('库存稳定身份迁移未执行，禁止启用旧同步逻辑');
   }
 
   async startSyncRun(run: { id: string; resource: DataResource; mode: SyncMode; startedAt: string }) {
@@ -188,6 +198,14 @@ class MySqlDataPlatformStore implements DataPlatformStore {
 
   async upsertProducts(companyId: string, records: NormalizedProduct[], runId: string) {
     if (!records.length) return 0;
+    const normalizedCodes=new Map<string,string|null>();
+    for(const r of records){const k=r.skuCode.normalize('NFKC').toLowerCase();if(normalizedCodes.has(k)&&normalizedCodes.get(k)!==r.sourceSpecUid)throw new Error('规格编码存在大小写或字符宽度冲突，禁止覆盖不同商品身份');normalizedCodes.set(k,r.sourceSpecUid);}
+    const requested=records.map(()=>"SELECT ? sku_code").join(' UNION ALL ');
+    const[prior]=await this.pool.query<mysql.RowDataPacket[]>(`SELECT r.sku_code requested_sku,p.sku_code,p.source_spec_uid FROM (${requested}) r JOIN ods_wln_products p ON p.company_id=? AND p.sku_code=r.sku_code COLLATE utf8mb4_unicode_ci`,[...records.map(r=>r.skuCode),companyId]);
+    for(const p of prior){const incoming=records.find(r=>r.skuCode===p.requested_sku)!;if(p.sku_code!==incoming.skuCode&&p.source_spec_uid&&incoming.sourceSpecUid&&p.source_spec_uid!==incoming.sourceSpecUid)throw new Error('规格编码排序规则冲突，禁止混合不同系统规格');}
+    // Preserve observed codes/names/barcodes before a mutable source row changes.
+    await this.pool.query(`INSERT IGNORE INTO data_product_identity_aliases(company_id,source_spec_uid,alias_sha256,sku_code,bar_code,goods_name,source_modified_at)
+      SELECT company_id,source_spec_uid,SHA2(CAST(JSON_ARRAY(sku_code,bar_code,goods_name) AS CHAR),256),sku_code,bar_code,goods_name,source_modified_at FROM ods_wln_products WHERE company_id=? AND sku_code IN (?) AND source_spec_uid IS NOT NULL AND source_spec_uid<>''`,[companyId,records.map(r=>r.skuCode)]);
     const ingestedAt = mysqlDateInShanghai(new Date());
     const values = records.map((item) => [
       companyId, item.skuCode, item.goodsCode, item.goodsName, item.specName, item.barCode,
@@ -198,34 +216,90 @@ class MySqlDataPlatformStore implements DataPlatformStore {
       company_id, sku_code, goods_code, goods_name, spec_name, bar_code, source_goods_uid,
       source_spec_uid, status, source_modified_at, raw_payload, sync_run_id, ingested_at
     ) VALUES `, values, ` ON DUPLICATE KEY UPDATE
-      goods_code=VALUES(goods_code), goods_name=VALUES(goods_name), spec_name=VALUES(spec_name),
+      sku_code=VALUES(sku_code),goods_code=VALUES(goods_code), goods_name=VALUES(goods_name), spec_name=VALUES(spec_name),
       bar_code=VALUES(bar_code), source_goods_uid=VALUES(source_goods_uid), source_spec_uid=VALUES(source_spec_uid),
       status=VALUES(status), source_modified_at=VALUES(source_modified_at), raw_payload=VALUES(raw_payload),
       sync_run_id=VALUES(sync_run_id), ingested_at=VALUES(ingested_at)`);
+    await this.pool.query(`INSERT IGNORE INTO data_product_identity_aliases(company_id,source_spec_uid,alias_sha256,sku_code,bar_code,goods_name,source_modified_at)
+      SELECT company_id,source_spec_uid,SHA2(CAST(JSON_ARRAY(sku_code,bar_code,goods_name) AS CHAR),256),sku_code,bar_code,goods_name,source_modified_at FROM ods_wln_products WHERE company_id=? AND sku_code IN (?) AND source_spec_uid IS NOT NULL AND source_spec_uid<>''`,[companyId,records.map(r=>r.skuCode)]);
     return records.length;
   }
 
   async upsertInventory(companyId: string, records: NormalizedInventory[], runId: string) {
     if (!records.length) return 0;
+    const skus=[...new Set(records.map(r=>r.skuCode))];
+    const requested=skus.map(()=>"SELECT ? sku_code").join(' UNION ALL ');
+    const[products]=await this.pool.query<mysql.RowDataPacket[]>(`SELECT r.sku_code requested_sku,p.sku_code,source_spec_uid,DATE_FORMAT(source_modified_at,'%Y-%m-%d %H:%i:%s.%f') source_modified_at FROM (${requested}) r JOIN ods_wln_products p ON p.company_id=? AND p.sku_code=r.sku_code COLLATE utf8mb4_unicode_ci`,[...skus,companyId]);
+    const metadata=new Map(products.map(p=>[String(p.requested_sku),p]));
+    const usable=records.filter(r=>!(r.skuCode==='已删除商品'&&r.actualQuantity===0&&r.defectQuantity===0&&r.lockedQuantity===0));
+    const missing=[...new Set(usable.filter(r=>!metadata.get(r.skuCode)?.source_spec_uid).map(r=>r.skuCode))];
+    if(missing.length)throw new MissingInventoryIdentityError(missing);
+    if(!usable.length)return 0;
+    const selected=canonicalInventoryRows(usable.map(original=>{const p=metadata.get(original.skuCode)!;const item={...original,skuCode:String(p.sku_code)};return{company_id:companyId,storage_code:item.storageCode,sku_code:item.skuCode,source_spec_uid:String(p.source_spec_uid),product_modified:String(p.source_modified_at||''),snapshot_at:item.snapshotAt,actual_quantity:item.actualQuantity,item};})).kept;
+    const connection=await this.pool.getConnection();
+    const lock='inventory-write:'+createHash('sha256').update(companyId).digest('hex').slice(0,40);
+    let locked=false;
+    try{
+    const[acquired]=await connection.query<mysql.RowDataPacket[]>('SELECT GET_LOCK(?,15) acquired',[lock]);locked=Number(acquired[0]?.acquired)===1;
+    if(!locked)throw new Error('库存身份更新繁忙，请稍后重试');
+    await connection.beginTransaction();
+    const[existing]=await connection.query<mysql.RowDataPacket[]>(`SELECT i.*,DATE_FORMAT(i.snapshot_at,'%Y-%m-%d %H:%i:%s.%f') snapshot_at,DATE_FORMAT(p.source_modified_at,'%Y-%m-%d %H:%i:%s.%f') product_modified FROM ods_wln_inventory_current i LEFT JOIN ods_wln_products p ON p.company_id=i.company_id AND p.sku_code=i.sku_code WHERE i.company_id=? AND (i.source_spec_uid IN (?) OR i.sku_code IN (?)) FOR UPDATE`,[companyId,selected.map(r=>r.source_spec_uid),skus]);
+    const archive=async(row:mysql.RowDataPacket,reason:string)=>{
+      const raw=json(row);await connection.execute(`INSERT IGNORE INTO data_inventory_identity_archive(company_id,storage_code,source_spec_uid,sku_code,payload_sha256,row_json,reason) VALUES(?,?,?,?,SHA2(?,256),?,?)`,[companyId,row.storage_code,row.source_spec_uid,row.sku_code,raw,raw,reason]);
+    };
+    const accepted=selected.filter(r=>{
+      const prior=existing.find(x=>x.storage_code===r.storage_code&&x.source_spec_uid===r.source_spec_uid);
+      return !prior || (String(prior.snapshot_at).slice(0,23)<=r.snapshot_at.slice(0,23) && (prior.sku_code===r.sku_code||String(prior.product_modified||'')<=r.product_modified));
+    });
+    for(const row of accepted){
+      for(const prior of existing.filter(x=>x.storage_code===row.storage_code&&((x.source_spec_uid===row.source_spec_uid&&x.sku_code!==row.sku_code)||(x.sku_code===row.sku_code&&x.source_spec_uid!==row.source_spec_uid)))){
+        await archive(prior,prior.source_spec_uid===row.source_spec_uid?'sku_renamed':'sku_reused');
+        if(prior.source_spec_uid!==row.source_spec_uid)await connection.execute('DELETE FROM ods_wln_inventory_current WHERE company_id=? AND storage_code=? AND sku_code=?',[companyId,prior.storage_code,prior.sku_code]);
+      }
+    }
     const ingestedAt = mysqlDateInShanghai(new Date());
-    const values = records.map((item) => [
+    const values = accepted.map(({item,source_spec_uid}) => [
       companyId, item.storageCode, item.skuCode, item.goodsCode, item.articleNumber, item.barCode,
       item.specName, item.actualQuantity, item.lockedQuantity, item.inTransitQuantity,
       item.defectQuantity, item.lockedDefectQuantity, item.inTransitDefectQuantity, item.totalCost,
-      item.snapshotAt, json(item.rawPayload), runId, ingestedAt
+      item.snapshotAt, json(item.rawPayload), runId, ingestedAt,source_spec_uid
     ]);
-    await batchUpsert(this.pool, `INSERT INTO ods_wln_inventory_current (
+    if(values.length)await batchUpsert(connection, `INSERT INTO ods_wln_inventory_current (
       company_id, storage_code, sku_code, goods_code, article_number, bar_code, spec_name,
       actual_quantity, locked_quantity, in_transit_quantity, defect_quantity, locked_defect_quantity,
-      in_transit_defect_quantity, total_cost, snapshot_at, raw_payload, sync_run_id, ingested_at
+      in_transit_defect_quantity, total_cost, snapshot_at, raw_payload, sync_run_id, ingested_at,source_spec_uid
     ) VALUES `, values, ` ON DUPLICATE KEY UPDATE
-      goods_code=VALUES(goods_code), article_number=VALUES(article_number), bar_code=VALUES(bar_code),
+      sku_code=VALUES(sku_code),source_spec_uid=VALUES(source_spec_uid),goods_code=VALUES(goods_code), article_number=VALUES(article_number), bar_code=VALUES(bar_code),
       spec_name=VALUES(spec_name), actual_quantity=VALUES(actual_quantity), locked_quantity=VALUES(locked_quantity),
       in_transit_quantity=VALUES(in_transit_quantity), defect_quantity=VALUES(defect_quantity),
       locked_defect_quantity=VALUES(locked_defect_quantity), in_transit_defect_quantity=VALUES(in_transit_defect_quantity),
       total_cost=VALUES(total_cost), snapshot_at=VALUES(snapshot_at), raw_payload=VALUES(raw_payload),
       sync_run_id=VALUES(sync_run_id), ingested_at=VALUES(ingested_at)`);
-    return records.length;
+    await connection.commit();
+    return accepted.length;
+    }catch(error){await connection.rollback();throw error;}
+    finally{if(locked)await connection.query('SELECT RELEASE_LOCK(?)',[lock]).catch(()=>undefined);connection.release();}
+  }
+
+  async captureInventorySnapshot(companyId:string,observedAt:string){return captureInventorySnapshot(this.pool,companyId,observedAt);}
+
+  async inventoryReconciliationSkus(companyId:string){
+    const[rows]=await this.pool.execute<mysql.RowDataPacket[]>(`SELECT p.sku_code,p.source_spec_uid,p.source_modified_at,p.status,
+      EXISTS(SELECT 1 FROM ods_wln_inventory_current x WHERE x.company_id=p.company_id AND x.source_spec_uid=p.source_spec_uid AND x.storage_code IN ('CK001','CK008') AND (x.actual_quantity<>0 OR x.locked_quantity<>0 OR x.in_transit_quantity<>0 OR x.defect_quantity<>0)) has_stock
+      FROM ods_wln_products p WHERE p.company_id=? AND p.source_spec_uid IN (SELECT i.source_spec_uid FROM ods_wln_inventory_current i WHERE i.company_id=? AND i.storage_code IN ('CK001','CK008') AND i.source_spec_uid IS NOT NULL) ORDER BY p.ingested_at DESC,p.source_modified_at DESC,p.sku_code DESC`,[companyId,companyId]);
+    const canonical=new Map<string,mysql.RowDataPacket>();for(const r of rows)if(!canonical.has(r.source_spec_uid))canonical.set(r.source_spec_uid,r);
+    return [...canonical.values()].filter(r=>Number(r.status)===1||Number(r.has_stock)>0).map(r=>String(r.sku_code));
+  }
+  async acquireSyncLease(companyId:string){
+    const connection=await this.pool.getConnection();
+    const lock='wanliniu-sync:'+createHash('sha256').update(companyId).digest('hex').slice(0,40);
+    try{const[r]=await connection.query<mysql.RowDataPacket[]>('SELECT GET_LOCK(?,0) acquired',[lock]);if(Number(r[0]?.acquired)!==1)throw new Error('该企业的万里牛同步正在其他进程运行');}
+    catch(error){connection.release();throw error;}
+    return async()=>{try{await connection.query('SELECT RELEASE_LOCK(?)',[lock]);}finally{connection.release();}};
+  }
+  async assertInventoryReconciled(companyId:string,runId:string){
+    const[missing]=await this.pool.execute<mysql.RowDataPacket[]>(`SELECT sku_code,storage_code FROM ods_wln_inventory_current WHERE company_id=? AND storage_code IN ('CK001','CK008') AND source_spec_uid IS NOT NULL AND sync_run_id<>? AND (actual_quantity<>0 OR locked_quantity<>0 OR in_transit_quantity<>0 OR defect_quantity<>0) LIMIT 20`,[companyId,runId]);
+    if(missing.length)throw new Error('库存全量校验存在未返回的非零记录，禁止以零库存替代：'+missing.map(r=>r.storage_code+'/'+r.sku_code).join('、'));
   }
 
   async upsertOutbound(companyId: string, records: NormalizedOutbound[], runId: string) {

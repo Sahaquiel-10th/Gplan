@@ -24,14 +24,17 @@ cd "$work_dir"
 [[ -f scripts/check-release-contract.mjs && -f package-lock.json ]] || {
   echo "Release lacks formal API checks; refusing replacement" >&2; exit 67;
 }
+[[ -f scripts/migrate-inventory-identity.ts ]] || { echo 'Release lacks stable inventory identity migration' >&2; exit 67; }
 node scripts/check-release-contract.mjs "$archive"
 [[ -r "$credential_file" ]] || { echo "Client API smoke-test credential missing" >&2; exit 68; }
 npm ci --ignore-scripts --prefer-offline --no-audit --no-fund
 npm run test:client-api
+DATA_DB_PROVIDER=disabled npm run test:wanliniu
 npm run test:alipay-accounts
 npm run test:enterprise-data
 npm run test:review-replies
 npm run build
+GPLAN_ENV_FILE="$app_dir/.env" node --import tsx scripts/check-inventory-writes.ts
 
 # Additive online indexes; run with the existing protected server environment.
 (cd "$app_dir" && node "$work_dir/scripts/ensure-enterprise-indexes.mjs")
@@ -46,6 +49,13 @@ rollback() {
   pm2 startOrRestart deploy/ecosystem.config.cjs --update-env
   pm2 save
 }
+# Identity migration is additive and archives superseded data before retiring
+# rows. Stop only this app so old writers cannot bypass the new stable key.
+if ! pm2 stop gplan-ai; then exit 1; fi
+if ! GPLAN_ENV_FILE="$app_dir/.env" INVENTORY_BACKUP_DIR="$app_dir/data/backups" \
+  node --import tsx scripts/migrate-inventory-identity.ts --apply; then
+  rollback; exit 1
+fi
 rsync -a --delete --exclude '.env*' --exclude '.git/' --exclude 'data/' "$work_dir"/ "$app_dir"/
 cd "$app_dir"
 if ! pm2 startOrRestart deploy/ecosystem.config.cjs --update-env; then rollback; exit 1; fi
@@ -58,8 +68,13 @@ if [[ "$ready" != true ]] || ! CLIENT_API_BASE_URL=http://127.0.0.1:3001/api/ope
   CLIENT_API_CREDENTIAL_FILE="$credential_file" node scripts/check-client-api.mjs; then
   rollback; exit 1
 fi
+if ! CLIENT_API_BASE_URL=http://127.0.0.1:3001/api/open/v1 \
+  CLIENT_API_CREDENTIAL_FILE="$credential_file" node --import tsx scripts/check-inventory-integrity.ts; then
+  rollback; exit 1
+fi
 printf '%s\n' "$commit_sha" > "$app_dir/REVISION"
 pm2 save
 # Subsequent automated deployments use the same versioned checks.
 install -m 755 deploy/deploy-gplan.sh /usr/local/sbin/deploy-gplan
+install -m 755 deploy/deploy-gplan-entry.sh /usr/local/bin/deploy
 echo "Deployment complete with authenticated API validation: $commit_sha"

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS gplan_data.ods_wln_products (
   PRIMARY KEY (company_id, sku_code),
   INDEX idx_wln_products_goods_code (company_id, goods_code),
   INDEX idx_wln_products_bar_code (company_id, bar_code),
+  INDEX idx_wln_products_spec_uid (company_id,source_spec_uid),
   INDEX idx_wln_products_modified (company_id, source_modified_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -97,6 +98,7 @@ CREATE TABLE IF NOT EXISTS gplan_data.ods_wln_inventory_current (
   company_id VARCHAR(128) NOT NULL,
   storage_code VARCHAR(128) NOT NULL,
   sku_code VARCHAR(128) NOT NULL,
+  source_spec_uid VARCHAR(128) NULL,
   goods_code VARCHAR(128) NULL,
   article_number VARCHAR(128) NULL,
   bar_code VARCHAR(128) NULL,
@@ -115,6 +117,7 @@ CREATE TABLE IF NOT EXISTS gplan_data.ods_wln_inventory_current (
   updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
     ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (company_id, storage_code, sku_code),
+  UNIQUE KEY uniq_wln_inventory_spec (company_id,storage_code,source_spec_uid),
   INDEX idx_wln_inventory_sku (company_id, sku_code),
   INDEX idx_wln_inventory_snapshot (company_id, snapshot_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -175,6 +178,23 @@ CREATE TABLE IF NOT EXISTS gplan_data.ods_wln_purchase_inbound_items (
   PRIMARY KEY (company_id, stock_code, line_no),
   INDEX idx_wln_purchase_inbound_items_sku (company_id, sku_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 历史版本只作审计；不得与当前库存相加。
+CREATE TABLE IF NOT EXISTS gplan_data.data_inventory_identity_archive (
+ company_id VARCHAR(128) NOT NULL,storage_code VARCHAR(128) NOT NULL,source_spec_uid VARCHAR(128) NULL,
+ sku_code VARCHAR(128) NOT NULL,payload_sha256 CHAR(64) NOT NULL,row_json JSON NOT NULL,reason VARCHAR(64) NOT NULL,
+ archived_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),PRIMARY KEY(company_id,storage_code,sku_code,payload_sha256)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS gplan_data.data_product_identity_aliases (
+ company_id VARCHAR(128) NOT NULL,source_spec_uid VARCHAR(128) NOT NULL,alias_sha256 CHAR(64) NOT NULL,
+ sku_code VARCHAR(128) NOT NULL,bar_code VARCHAR(128) NULL,goods_name VARCHAR(255) NULL,source_modified_at DATETIME(3) NULL,
+ observed_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),PRIMARY KEY(company_id,source_spec_uid,alias_sha256)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS gplan_data.data_inventory_report_snapshots (
+ company_id VARCHAR(128) NOT NULL,business_date DATE NOT NULL,rows_json JSON NOT NULL,
+ quality_json JSON NOT NULL,revision CHAR(64) NOT NULL,created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ PRIMARY KEY(company_id,business_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 甲方只读视图 1：出货维度。
 -- gmv 优先取明细分摊实付；若源接口未返回，再回退到明细销售金额。

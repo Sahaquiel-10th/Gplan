@@ -177,10 +177,12 @@ router.get('/daily-report', authenticate('daily-report:read'), async (req,res,ne
     const expectedBatch=optionalFilter(req,'batch_id');
     if(expectedBatch && expectedBatch!==batch.batch_id)return void res.status(409).json({code:40901,message:'数据批次已更新，请从第一页重新读取',request_id:res.locals.requestId});
     let rows: RowDataPacket[]=typeof batch.rows_json==='string'?JSON.parse(batch.rows_json):batch.rows_json;
+    const quality=typeof batch.inventory_status_json==='string'?JSON.parse(batch.inventory_status_json):batch.inventory_status_json;
     const product=optionalFilter(req,'product_code');
     if(product)rows=rows.filter(row=>row.product_code===product);
     const {page,pageSize,offset}=paging(req);
     res.json({code:0,message:'success',request_id:res.locals.requestId,business_date:date,
+      inventory_status:quality?{status:quality.status,missing_rows:quality.missing_rows,...(quality.message?{message:quality.message}:{})}:null,
       batch_id:batch.batch_id,data_updated_at:batch.prepared_at,
       data:rows.slice(offset,offset+pageSize),pagination:{page,page_size:pageSize,total:rows.length,has_more:offset+pageSize<rows.length}});
     await recordRequest(client.id,res,'/daily-report',Math.min(pageSize,Math.max(0,rows.length-offset)),startedAt);

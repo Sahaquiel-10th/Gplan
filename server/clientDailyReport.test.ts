@@ -12,10 +12,9 @@ test('合并指定来源的出库并保留仓库库存与独立业务日期',asy
      {shop_id:'1D0EB38BF5003BE59100A3D6F069190A',storage_code:'CK001',product_code:'6901234567892',product_name:'产品',quantity:3,movement_time:'2026-10-14T13:00:00+08:00'}],
     [{storage_code:'CK001',inbound_type:'PURCHASE',product_code:null,product_name:'未提供条码商品',quantity:8,movement_time:'2026-10-14T00:00:00+08:00'},
     {storage_code:'CK001',inbound_type:'SALES_RETURN',product_code:null,product_name:'未提供条码商品',quantity:2,movement_time:'2026-10-14T12:00:00+08:00'}],
-    [{storage_code:'CK001',product_code:'6901234567892',product_name:'产品',quantity:100,inventory_date:'2026-09-01',snapshot_time:'2026-09-01T03:00:00+08:00'}],
-    [{inventory_date:'2026-10-15',inventory_as_of:'2026-10-15T03:00:00+08:00'}]
+    [{rows_json:[{storage_code:'CK001',source_spec_uid:'uid',product_code:'6901234567892',product_name:'产品',quantity:100,inventory_date:'2026-10-15',snapshot_time:'2026-10-15T03:00:00+08:00'}],quality_json:{status:'complete'},revision:'test'}]
   ];
-  const db={query:async()=>[sources.shift()]} as unknown as Connection;
+  const db={query:async()=>[sources.shift()],execute:async()=>[sources.shift()]} as unknown as Connection;
   const result=await buildClientReport(db,'company_default','2026-10-14');
   const sale=result.rows.find(x=>x.record_type==='outbound')!;
   assert.equal(sale.outbound_quantity,5);

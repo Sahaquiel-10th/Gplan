@@ -139,6 +139,14 @@ export class WanliniuClient {
     });
   }
 
+  findProductBySku(skuCode:string){
+    return this.call('/erp/goods/spec/open/query/goodswithspeclist',{spec_code:skuCode,all_status:true,page:1,limit:20});
+  }
+  listInventoryForSkus(skus:string[],page:number){
+    if(!skus.length||skus.length>50||skus.some(s=>s.includes(',')))throw new Error('库存规格校验批次非法');
+    return this.call('/erp/open/inventory/items/get/by/modifytimev2',{sku_code:skus.join(','),storage:'CK001,CK008',page_no:page,page_size:200});
+  }
+
   listInventory(page: number, pageSize: number, modifiedAfter?: string, modifiedBefore?: string) {
     return this.call("/erp/open/inventory/items/get/by/modifytimev2", {
       page_no: page,

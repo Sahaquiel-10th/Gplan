@@ -19,13 +19,14 @@ test('正式接口 HTTP 合约：JSON、分页、过滤、权限、日期、批�
       throw new Error('Unexpected query: '+sql);
     },
     async execute(sql: string, args: unknown[]) {
+      if(sql.includes('FROM data_inventory_report_snapshots'))return [[{revision:'test',rows_json:[{storage_code:'CK001',source_spec_uid:'uid',product_code:'6900000000002',product_name:'产品',quantity:20,inventory_date:'2026-10-14',snapshot_time:'2026-10-14T03:00:00+08:00'}],quality_json:{status:'complete',source:'internal',missing_rows:0}}]];
       if(sql.includes('SELECT id, company_id')) return [[{
         id:'test-client', company_id:'company_default', client_code:'winona_daily_trial',
         scopes_json: JSON.stringify(['daily-report:read'])
       }]];
       if(sql.includes('UPDATE data_api_clients') || sql.includes('INSERT INTO data_api_request_logs')) return [{affectedRows:1}];
       if(sql.includes('SELECT batch_id,rows_json')) return [[{
-        batch_id:'stable-batch', rows_json:rows, source_version:publicationVersion([] as RowDataPacket[]), prepared_at:'2026-10-27T03:30:00+08:00'
+        batch_id:'stable-batch', rows_json:rows, source_version:publicationVersion([] as RowDataPacket[],'test'), inventory_status_json:{status:'complete',source:'internal',missing_rows:0},prepared_at:'2026-10-27T03:30:00+08:00'
       }]];
       throw new Error('Unexpected execute: '+sql+' '+args?.length);
     }
@@ -47,6 +48,7 @@ test('正式接口 HTTP 合约：JSON、分页、过滤、权限、日期、批�
     assert.equal((await request('/open/v1/ping')).code,0);
     await request('/open/v1/daily-report?date=2026-10-13',401,false);
     const first=await request('/open/v1/daily-report?date=2026-10-13&page_size=1');
+    assert.deepEqual(first.inventory_status,{status:'complete',missing_rows:0});
     assert.equal(first.data.length,1);assert.equal(first.pagination.total,2);assert.equal(first.pagination.has_more,true);
     const second=await request('/open/v1/daily-report?date=2026-10-13&page=2&page_size=1&batch_id=stable-batch');
     assert.equal(second.data[0].record_type,'inventory');assert.equal(second.pagination.has_more,false);

@@ -1,4 +1,5 @@
 import type { Connection, RowDataPacket } from 'mysql2/promise';
+import {loadInventorySnapshot} from './inventorySnapshots.js';
 
 // Explicit source identities, independent of mutable source display names.
 export const reportShops: Record<string, string> = {
@@ -49,25 +50,8 @@ export async function buildClientReport(db: Connection, companyId: string, date:
     WHERE h.company_id=? AND h.bill_date>=? AND h.bill_date<DATE_ADD(?,INTERVAL 1 DAY)
       AND h.storage_code IN ('CK001','CK008') AND ${brand}
     ORDER BY h.bill_date,h.stock_code,i.line_no`,[companyId,date,date]);
-  const [inventory] = await db.query<RowDataPacket[]>(`SELECT i.storage_code,
-      COALESCE(NULLIF(i.bar_code,''),NULLIF(p.bar_code,'')) product_code,
-      COALESCE(NULLIF(p.goods_name,''),i.spec_name) product_name,i.actual_quantity quantity,
-      DATE_FORMAT(i.snapshot_at,'%Y-%m-%d') inventory_date,
-      DATE_FORMAT(i.snapshot_at,'%Y-%m-%dT%H:%i:%s+08:00') snapshot_time
-    FROM ods_wln_inventory_current i JOIN ods_wln_products p
-      ON p.company_id=i.company_id AND p.sku_code=i.sku_code
-    WHERE i.company_id=? AND i.storage_code IN ('CK001','CK008') AND ${brand}`,[companyId]);
-  const [inventorySync] = await db.query<RowDataPacket[]>(`SELECT
-    DATE_FORMAT(last_success_at,'%Y-%m-%d') inventory_date,
-    DATE_FORMAT(last_success_at,'%Y-%m-%dT%H:%i:%s+08:00') inventory_as_of
-    FROM data_sync_cursors WHERE connector_id='wanliniu' AND resource_name='inventory'`);
-  if (!inventorySync[0]) throw new Error('库存尚无成功同步记录');
-  // The current table contains incremental updates: individual snapshot_at values
-  // are last-change times, not separate historical inventory snapshots.
-  for (const row of inventory) {
-    row.inventory_date=inventorySync[0].inventory_date;
-    row.snapshot_time=inventorySync[0].inventory_as_of;
-  }
+  const snapshot=await loadInventorySnapshot(db,companyId,date);
+  const inventory=snapshot.rows;
   type ReportRow = {
     record_type: string; business_date: string; inventory_date: string | null;
     shop_name: string | null; storage_name: string; product_code: string | null;
@@ -92,11 +76,11 @@ export async function buildClientReport(db: Connection, companyId: string, date:
           inbound_type:inboundType};
         grouped.set(key,row);
       }
-      const quantity=Number(item.quantity);
-      if(type==='outbound') row.outbound_quantity!+=quantity;
-      if(type==='inbound') row.inbound_quantity!+=quantity;
+      const quantity=item.quantity===null?null:Number(item.quantity);
+      if(type==='outbound') row.outbound_quantity!+=quantity!;
+      if(type==='inbound') row.inbound_quantity!+=quantity!;
       if(type==='inventory') {
-        row.inventory_quantity!+=quantity;
+        row.inventory_quantity=quantity===null||row.inventory_quantity===null?null:row.inventory_quantity+quantity;
         if(item.snapshot_time>row.inventory_as_of!)row.inventory_as_of=item.snapshot_time;
       } else row.movement_times.push(item.movement_time);
     }
@@ -104,5 +88,5 @@ export async function buildClientReport(db: Connection, companyId: string, date:
   const rows=[...grouped.values()];
   for(const row of rows)row.movement_times=[...new Set(row.movement_times)].sort();
   rows.sort((a,b)=>JSON.stringify([a.record_type,a.shop_name,a.storage_name,a.product_code,a.product_name,a.inbound_type]).localeCompare(JSON.stringify([b.record_type,b.shop_name,b.storage_name,b.product_code,b.product_name,b.inbound_type])));
-  return {rows,sourceCounts:{outbound:outbound.length,inbound:inbound.length,inventory:inventory.length},missingBarcodes:rows.filter(x=>!x.product_code).length};
+  return {rows,inventoryStatus:snapshot.quality,sourceCounts:{outbound:outbound.length,inbound:inbound.length,inventory:inventory.length},missingBarcodes:rows.filter(x=>!x.product_code).length};
 }

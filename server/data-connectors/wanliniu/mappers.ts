@@ -172,6 +172,7 @@ export function normalizeInventory(source: WanliniuRecord, snapshotAt: string): 
   const storageCode = text(source.storage_code);
   const skuCode = text(source.sku_code);
   if (!storageCode || !skuCode) throw new Error("万里牛库存缺少 storage_code 或 sku_code");
+  if(!['number','string'].includes(typeof source.quantity)||source.quantity===null||source.quantity===undefined||String(source.quantity).trim()===''||!Number.isFinite(Number(source.quantity)))throw new Error('万里牛库存 quantity 缺失或非法，禁止按零库存保存');
   return {
     storageCode,
     skuCode,

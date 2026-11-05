@@ -3,6 +3,25 @@ import test from "node:test";
 import type { DataPlatformStore, DataResource, SyncCursor } from "../../dataPlatformDb.js";
 import type { WanliniuClient } from "./client.js";
 import { millisecondsUntilNextShanghaiTime, WanliniuSyncService } from "./sync.js";
+import {MissingInventoryIdentityError} from '../../inventoryIdentity.js';
+
+test('库存按规格全量核验通过后才保存采样与游标，并释放跨进程租约',async()=>{
+ const events:string[]=[];
+ const client={listShops:async()=>[],listProducts:async()=>[],listInventory:async()=>[],listSaleOutbound:async()=>[],listPurchaseInbound:async()=>[],listInventoryForSkus:async()=>[{sku_code:'new',storage_code:'CK001',quantity:9}],findProductBySku:async()=>[{goods_code:'g',specs:[{spec_code:'new',sys_spec_uid:'uid'}]}]} as unknown as WanliniuClient;
+ let writes=0;
+ const store={status:()=>({ready:true}),acquireSyncLease:async()=>{events.push('lease');return async()=>{events.push('release');};},startSyncRun:async()=>{},completeSyncRun:async()=>{},failSyncRun:async()=>assert.fail(),getCursor:async()=>undefined,saveCursor:async(r:string)=>events.push('cursor:'+r),upsertProducts:async()=>{events.push('resolve');return 1;},upsertInventory:async(_c:string,_r:unknown,run:string)=>{if(writes++===0)throw new MissingInventoryIdentityError(['new']);assert(run.endsWith(':full'));events.push('write');return 1;},inventoryReconciliationSkus:async()=>['new'],assertInventoryReconciled:async()=>events.push('verify'),captureInventorySnapshot:async()=>events.push('snapshot'),upsertShops:async()=>0,upsertOutbound:async()=>0,upsertInbound:async()=>0} as unknown as DataPlatformStore;
+ // Empty incremental pages are valid and should not call the mocked writer.
+ const original=(store as any).upsertInventory;(store as any).upsertInventory=async(c:string,r:unknown[],run:string)=>r.length?original(c,r,run):0;
+ await new WanliniuSyncService(client,store).syncAll('c');
+ assert(events.indexOf('resolve')<events.indexOf('write'));assert(events.indexOf('verify')<events.indexOf('snapshot'));assert(events.indexOf('snapshot')<events.indexOf('cursor:inventory'));assert.equal(events.at(-1),'release');
+});
+
+test('未返回的非零库存不能补零、发布采样或推进库存游标',async()=>{
+ const events:string[]=[];
+ const client={listShops:async()=>[],listProducts:async()=>[],listInventory:async()=>[],listSaleOutbound:async()=>[],listPurchaseInbound:async()=>[],listInventoryForSkus:async()=>[]} as unknown as WanliniuClient;
+ const store={status:()=>({ready:true}),startSyncRun:async()=>{},completeSyncRun:async()=>{},failSyncRun:async()=>{},getCursor:async()=>undefined,saveCursor:async(r:string)=>events.push(r),upsertProducts:async()=>0,upsertInventory:async()=>0,inventoryReconciliationSkus:async()=>['missing'],assertInventoryReconciled:async()=>{throw new Error('missing positive inventory');},captureInventorySnapshot:async()=>events.push('snapshot'),upsertShops:async()=>0,upsertOutbound:async()=>0,upsertInbound:async()=>0} as unknown as DataPlatformStore;
+ await assert.rejects(new WanliniuSyncService(client,store).syncAll('c'),/missing positive inventory/);assert(!events.includes('inventory'));assert(!events.includes('snapshot'));
+});
 
 test("首轮五类资源全部成功后分别保存游标和运行留痕", async () => {
   const cursors = new Map<DataResource, SyncCursor>();

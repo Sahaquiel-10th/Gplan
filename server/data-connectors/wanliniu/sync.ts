@@ -2,6 +2,7 @@ import { dataPlatformStore, type DataPlatformStore, type DataResource, type Sync
 import { uid } from "../../security.js";
 import { wanliniuClient, type WanliniuClient, type WanliniuRecord } from "./client.js";
 import { publishLatestClientReport } from '../../clientReportPublication.js';
+import {MissingInventoryIdentityError} from '../../inventoryIdentity.js';
 import {
   mysqlDateInShanghai,
   normalizeInbound,
@@ -63,7 +64,9 @@ export class WanliniuSyncService {
     if (!this.dataStore.status().ready) throw new Error(this.dataStore.status().message);
     this.running = true;
     const startedAt = new Date().toISOString();
+    let releaseLease:(()=>Promise<void>)|undefined;
     try {
+      releaseLease=await this.dataStore.acquireSyncLease?.(companyId);
       const summaries: WanliniuResourceSummary[] = [];
       const failures: string[] = [];
       for (const resource of resources) {
@@ -90,8 +93,16 @@ export class WanliniuSyncService {
         finishedAt: new Date().toISOString()
       };
     } finally {
-      this.running = false;
+      try{await releaseLease?.();}finally{this.running = false;}
     }
+  }
+
+  async reconcileCurrentInventory(companyId:string){
+    if(this.running)throw new Error('万里牛同步任务正在运行');
+    if(!this.dataStore.status().ready)throw new Error(this.dataStore.status().message);
+    this.running=true;let release:(()=>Promise<void>)|undefined;
+    try{release=await this.dataStore.acquireSyncLease?.(companyId);return[await this.syncResource('products',companyId),await this.syncResource('inventory',companyId)];}
+    finally{try{await release?.();}finally{this.running=false;}}
   }
 
   private async syncResource(resource: DataResource, companyId: string): Promise<WanliniuResourceSummary> {
@@ -127,6 +138,19 @@ export class WanliniuSyncService {
           if (page === maxPages) throw new Error(`${resource} 单个时间分片已达到最大分页数 ${maxPages}，本次任务停在 ${currentWindow.modifiedAfter || "起点"}`);
         }
         completedCursor = currentWindow.cursor;
+        if(resource==='inventory'&&currentWindow===windows.at(-1)){
+          const skus=await this.dataStore.inventoryReconciliationSkus?.(companyId)||[];
+          for(let i=0;i<skus.length;i+=50){
+            for(let page=1;page<=maxPages;page++){
+              const data=await this.client.listInventoryForSkus(skus.slice(i,i+50),page);
+              recordsRead+=data.length;recordsWritten+=await this.writeInventory(companyId,data,runId+':full',window.startedAt);pages++;
+              if(data.length<200)break;
+              if(page===maxPages)throw new Error('库存全量校验达到分页上限');
+            }
+          }
+          await this.dataStore.assertInventoryReconciled?.(companyId,runId+':full');
+          await this.dataStore.captureInventorySnapshot?.(companyId,window.startedAt);
+        }
         // 大数据量资源每完成一个时间分片就保存断点；中途失败时无需从头重扫。
         await this.dataStore.saveCursor(resource, completedCursor);
       }
@@ -175,8 +199,7 @@ export class WanliniuSyncService {
       const pageSize = 200;
       const records = await this.client.listInventory(page, pageSize, window.modifiedAfter, window.modifiedAfter ? window.modifiedBefore : undefined);
       const snapshotAt = mysqlDateInShanghai(window.startedAt);
-      const normalized = records.map((record) => normalizeInventory(record, snapshotAt));
-      return pageResult(records, await this.dataStore.upsertInventory(companyId, normalized, runId), pageSize);
+      return pageResult(records,await this.writeInventory(companyId,records,runId,window.startedAt),pageSize);
     }
     if (resource === "sale_outbound") {
       const pageSize = 20;
@@ -190,6 +213,24 @@ export class WanliniuSyncService {
     return pageResult(records, await this.dataStore.upsertInbound(companyId, normalized, runId), pageSize);
   }
 
+  private async writeInventory(companyId:string,records:WanliniuRecord[],runId:string,startedAt:string){
+      const normalized=records.map(r=>normalizeInventory(r,mysqlDateInShanghai(startedAt)));
+      let written:number;
+      try{written=await this.dataStore.upsertInventory(companyId, normalized, runId);}
+      catch(error){
+        if(!(error instanceof MissingInventoryIdentityError))throw error;
+        // A rename may not be included in the provider's modified-time feed.
+        // Resolve the exact source code, never infer identity from its barcode.
+        for(const sku of error.skuCodes){
+          const found=(await this.client.findProductBySku(sku)).flatMap(normalizeProducts).filter(p=>p.skuCode===sku&&p.sourceSpecUid);
+          if(new Set(found.map(p=>p.sourceSpecUid)).size!==1)throw error;
+          await this.dataStore.upsertProducts(companyId,found,runId);
+        }
+        written=await this.dataStore.upsertInventory(companyId,normalized,runId);
+      }
+      return written;
+  }
+
   private async syncWindow(resource: DataResource): Promise<SyncWindow> {
     const started = this.now();
     const startedAt = started.toISOString();
@@ -201,13 +242,15 @@ export class WanliniuSyncService {
     let modifiedAfter: Date | undefined;
     let mode: SyncMode = "full";
 
-    if (cursor?.modifiedThrough) {
+    if(resource==='products'){
+      // Code/name/barcode changes can retain an old provider modification time.
+      // Refresh this small dictionary daily; large transaction tables stay incremental.
+      modifiedAfter=new Date(process.env.WANLINIU_PRODUCT_INITIAL_START?.trim()||'2000-01-01T00:00:00+08:00');
+    }else if (cursor?.modifiedThrough) {
       const cursorDate = new Date(cursor.modifiedThrough);
       if (Number.isNaN(cursorDate.getTime())) throw new Error(`${resource} 的同步游标时间无效`);
       modifiedAfter = new Date(cursorDate.getTime() - overlapMs);
       mode = "incremental";
-    } else if (resource === "products") {
-      modifiedAfter = new Date(process.env.WANLINIU_PRODUCT_INITIAL_START?.trim() || "2000-01-01T00:00:00+08:00");
     } else if (resource === "inventory") {
       modifiedAfter = new Date(started.getTime() - 7 * 86_400_000 + 60_000);
     } else if (resource === "sale_outbound" || resource === "purchase_inbound") {
