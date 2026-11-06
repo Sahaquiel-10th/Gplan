@@ -21,6 +21,6 @@ export type FinanceAccountView = FinanceDraftInput & {
   id: string; legalEntityId: string; revision: number; createdAt: string; updatedAt: string;
   credentialStatus: 'not_configured' | 'incomplete' | 'configured';
   checkStatus: 'not_tested' | 'partial' | 'available' | 'failed';
-  syncStatus: 'not_enabled'; linkedAlipayId?: string;
+  syncStatus: 'not_enabled'; linkedAlipayId?: string; linkedAlipayRevision?:number;
 };
 export type FinanceDirectoryState = { sources: typeof financeSources; accounts: FinanceAccountView[]; entities: {id: string; name: string}[]; credentialConfigurationOpen: boolean };

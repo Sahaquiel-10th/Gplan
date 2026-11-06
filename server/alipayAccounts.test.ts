@@ -72,6 +72,11 @@ test("generated key is never returned, saved as draft and cannot reset an existi
   await assert.rejects(f.service.save(user, body, draft.id, true), /不支持一键重置/);
   await assert.rejects(f.service.save(user, { ...body, appId: "2026000000000003", mode: "certificate" }, undefined, true), /证书模式/);
 });
+test('legacy credential deletion is gated, revision-bound and cannot be queried or revived by old ID',async()=>{
+ const f=fixture(),a=await f.service.save(f.users[0],body),confirm={revision:a.revision,confirmName:a.name};
+ await assert.rejects(f.service.remove(f.users[2],a.id,confirm),/无权/);await assert.rejects(f.service.remove(f.users[3],a.id,confirm),/不存在/);await assert.rejects(f.service.remove(f.users[0],a.id,{...confirm,confirmName:'wrong'}),/完整输入/);await assert.rejects(f.service.remove(f.users[0],a.id,{...confirm,revision:0}),/已更新/);
+ f.env.FINANCE_CONFIG_ENABLED='false';await assert.rejects(f.service.remove(f.users[0],a.id,confirm),/锁定/);f.env.FINANCE_CONFIG_ENABLED='true';await f.service.remove(f.users[0],a.id,confirm);assert.equal((await f.service.state(f.users[0])).accounts.length,0);assert.equal(f.db.financeAudit?.at(-1)?.action,'delete');await assert.rejects(f.service.check(f.users[0],a.id,async()=>{throw Error('must not call');}),/不存在/);await assert.rejects(f.service.save(f.users[0],body,a.id),/不存在/);assert.notEqual((await f.service.save(f.users[0],body)).id,a.id);
+});
 
 test("PKCS1/PKCS8 accepted, non-RSA/weak keys/cert mismatch/incorrect public key rejected", async () => {
   const f = fixture(), user = f.users[0];

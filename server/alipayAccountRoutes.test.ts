@@ -40,6 +40,9 @@ test("HTTP: deny unauthenticated/member/cross-tenant access; lock closes every c
     assert.ok(!JSON.stringify(created.data).includes("PRIVATE KEY"));
     assert.ok(!JSON.stringify(created.data).includes(platform.publicKey));
     const id = created.data.account.id;
+    assert.equal((await request(`/accounts/${id}`, 'u', 'DELETE', {revision:1,confirmName:body.name})).status,403);
+    assert.equal((await request(`/accounts/${id}`, 'b', 'DELETE', {revision:1,confirmName:body.name})).status,404);
+    assert.equal((await request(`/accounts/${id}`, 'a', 'DELETE', {revision:0,confirmName:body.name})).status,409);
     assert.deepEqual((await request("", "b")).data.accounts, []);
     assert.equal((await request(`/accounts/${id}`, "b", "PUT", body)).status, 404);
     assert.equal((await request(`/accounts/${id}/check`, "b", "POST", {})).status, 404);
@@ -51,7 +54,7 @@ test("HTTP: deny unauthenticated/member/cross-tenant access; lock closes every c
     const locked = await request();
     assert.equal(locked.data.configurationOpen, false);
     assert.equal(locked.data.accounts[0].applicationPublicKey, "");
-    for (const [route, method] of [["/accounts", "POST"], ["/accounts/generate-key", "POST"], [`/accounts/${id}`, "PUT"], [`/accounts/${id}/check`, "POST"], ["/lock", "POST"]]) assert.equal((await request(route, "a", method, body)).status, 403, route);
+    for (const [route, method] of [["/accounts", "POST"], ["/accounts/generate-key", "POST"], [`/accounts/${id}`, "PUT"], [`/accounts/${id}`, "DELETE"], [`/accounts/${id}/check`, "POST"], ["/lock", "POST"]]) assert.equal((await request(route, "a", method, body)).status, 403, route);
     assert.equal(probes, 1);
     assert.equal((await request("/unlock", "a", "POST", {})).status, 404);
     assert.equal(db.alipayAccounts!.length, 1);

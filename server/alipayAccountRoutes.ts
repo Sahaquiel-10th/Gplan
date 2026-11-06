@@ -30,6 +30,7 @@ export function createAlipayAccountRouter(store: AccountStore, env = process.env
   router.post("/accounts", route(async (req, res) => { res.status(201).json({ account: await service.save(req.user!, req.body) }); }));
   router.post("/accounts/generate-key", route(async (req, res) => { res.status(201).json({ account: await service.save(req.user!, req.body, undefined, true) }); }));
   router.put("/accounts/:id", route(async (req, res) => { res.json({ account: await service.save(req.user!, req.body, String(req.params.id)) }); }));
+  router.delete("/accounts/:id",route(async(req,res)=>{res.json(await service.remove(req.user!,String(req.params.id),req.body||{}));}));
   router.post("/accounts/:id/check", route(async (req, res) => {
     const id = String(req.params.id), key = `${req.user!.companyId}:${id}`;
     // Check authorization before consuming cooldown or initiating upstream calls.

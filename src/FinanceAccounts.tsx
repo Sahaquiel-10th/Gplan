@@ -1,5 +1,5 @@
 import {useCallback,useEffect,useRef,useState,type FormEvent} from 'react';
-import {Download,Plus,Upload,Search,LockKeyhole,ChevronRight,RefreshCw} from 'lucide-react';
+import {Download,Plus,Upload,Search,LockKeyhole,ChevronRight,RefreshCw,Trash2} from 'lucide-react';
 import {AlipayAccounts,type AlipaySelection} from './AlipayAccounts';
 import {FinanceDialog} from './FinanceDialog';
 import {financeSources,type FinanceAccountView,type FinanceDirectoryState,type FinanceDraftInput,type FinanceImportPreview} from '../shared/financeCatalog';
@@ -9,6 +9,7 @@ const base='/api/admin/data-platform/finance-directory';
 const blank=():FinanceDraftInput=>({legalEntity:'',sourceId:'alipay',name:'',last4:'',currency:'CNY',note:''});
 const credentialLabels={not_configured:'未配置',incomplete:'待补齐',configured:'已保存'};
 const checkLabels={not_tested:'未检测',partial:'待复核',available:'只读查询通过',failed:'未通过'};
+type Removal={id:string;name:string;legalEntity:string;revision:number;linkedAlipayId?:string;linkedAlipayRevision?:number;legacy?:boolean};
 
 /** Finance onboarding: a ledger of preparation, never a claim of bank connectivity. */
 export function FinanceAccounts({api}:{api:Api}){
@@ -19,6 +20,7 @@ export function FinanceAccounts({api}:{api:Api}){
  const[search,setSearch]=useState(''),[entity,setEntity]=useState(''),[source,setSource]=useState('');
  const[selection,setSelection]=useState<AlipaySelection|null>(null);
  const[credentialVersion,setCredentialVersion]=useState(0);
+ const[removing,setRemoving]=useState<Removal|null>(null),[confirmName,setConfirmName]=useState('');
  const[section,setSection]=useState<'accounts'|'guide'|'maintenance'>('accounts'),[preparing,setPreparing]=useState<FinanceAccountView|null>(null),[credentialBusy,setCredentialBusy]=useState(false),[credentialDirty,setCredentialDirty]=useState(false);
  const message=useRef<HTMLDivElement>(null),form=useRef<HTMLFormElement>(null);
  const load=useCallback(async()=>{const next=await api<FinanceDirectoryState>(base);setState(next);return next;},[api]);
@@ -31,6 +33,7 @@ export function FinanceAccounts({api}:{api:Api}){
  async function save(event:FormEvent){event.preventDefault();await perform('save',async()=>{await api(`${base}/accounts${editing?'/'+editing.id:''}`,{method:editing?'PUT':'POST',body:JSON.stringify({...draft,...(editing?{revision:editing.revision}:{})})});setMode(null);setEditing(null);await load();setNotice('账户资料已保存。尚未配置的凭证可以之后补齐，保存资料不会启动同步。');});}
  async function readFile(file?:File){setPreview(null);setCsv('');setFileName('');if(!file)return;await perform('file',async()=>{if(file.size>256*1024||!file.name.toLowerCase().endsWith('.csv'))throw Error('请选择不超过256KB的CSV UTF-8文件；Excel可另存为该格式。');let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer());}catch{throw Error('文件不是UTF-8编码，请在Excel另存为“CSV UTF-8（逗号分隔）”。');}setCsv(text);setFileName(file.name);});}
  function configure(account:FinanceAccountView){setSelection({financeAccountId:account.id,linkedAlipayId:account.linkedAlipayId,name:account.name,legalEntity:account.legalEntity,selectionKey:Date.now()});}
+ function openRemoval(account:Removal){setConfirmName('');setRemoving(account);setError('');setNotice('');setFields({});}
  function closeEditor(){if(busy)return;if(mode==='single'&&JSON.stringify(draft)!==JSON.stringify(editing?{legalEntity:editing.legalEntity,sourceId:editing.sourceId,name:editing.name,last4:editing.last4,currency:editing.currency,note:editing.note}:blank())&&!window.confirm('有尚未保存的账户资料，确定放弃并关闭？'))return;if(mode==='import'&&csv&&!window.confirm('这批文件尚未确认导入，确定关闭？'))return;setMode(null);setError('');setFields({});}
  const filtered=state?.accounts.filter(a=>(!entity||a.legalEntityId===entity)&&(!source||a.sourceId===source)&&(!search||[a.name,a.legalEntity,a.last4,financeSources.find(s=>s.id===a.sourceId)?.name].join(' ').toLowerCase().includes(search.toLowerCase())))||[];
  const sourceInfo=financeSources.find(s=>s.id===draft.sourceId)!;
@@ -41,7 +44,7 @@ export function FinanceAccounts({api}:{api:Api}){
  <section className="data-section finance-panel" aria-labelledby="finance-title">
   <header className="finance-heading"><div><small>资金数据 · 永久只读</small><h3 id="finance-title">银行与支付宝</h3><p>按账户完成登记、凭证配置和接口检测，不离开当前清单。</p></div>{section==='accounts'&&<div className="finance-actions"><button className="secondary" disabled={!!busy} onClick={openImport}><Upload size={16} aria-hidden="true"/>批量导入</button><button className="primary" disabled={!!busy} onClick={()=>openSingle()}><Plus size={16} aria-hidden="true"/>添加账户</button></div>}</header>
   <nav className="finance-section-tabs" aria-label="资金账户管理"><button aria-pressed={section==='accounts'} onClick={()=>setSection('accounts')}>账户清单</button><button aria-pressed={section==='guide'} onClick={()=>setSection('guide')}>接入准备 · 12 个来源</button><button aria-pressed={section==='maintenance'} onClick={()=>setSection('maintenance')}>安全维护</button></nav>
-  {!mode&&feedback}
+  {!mode&&!removing&&feedback}
   {mode==='single'&&<FinanceDialog title={editing?'编辑账户资料':'添加账户'} context="账户资料" busy={!!busy} onClose={closeEditor}>{feedback}<form ref={form} className="finance-editor" onSubmit={save} aria-label={editing?'编辑账户资料':'添加账户资料'}>
    <p className="finance-step-note">第 1 步 · 先登记资料。这里不用填密钥，保存后可在账户这一行继续配置。</p>
    <div className="finance-form-grid">
@@ -72,15 +75,16 @@ export function FinanceAccounts({api}:{api:Api}){
    {filtered.length?filtered.map(a=><article className="finance-account-row" key={a.id} aria-label={a.name+' '+a.legalEntity}>
     <div className="finance-account-identity"><h4>{a.name}</h4><p>{a.legalEntity}</p><small>{financeSources.find(s=>s.id===a.sourceId)?.name} · {a.last4?'尾号 '+a.last4:'尾号待补'} · {a.currency}</small>{a.note&&<small>{a.note}</small>}</div>
     <dl className="finance-statuses"><div><dt>凭证配置</dt><dd>{credentialLabels[a.credentialStatus]}</dd></div><div><dt>接口检测</dt><dd className={a.checkStatus==='failed'?'finance-field-error':''}>{checkLabels[a.checkStatus]}</dd></div><div><dt>自动同步</dt><dd>未启用</dd></div></dl>
-    <div className="finance-account-actions"><button className="secondary" disabled={!!busy} onClick={()=>openSingle(a)}>编辑资料</button><button className="secondary" onClick={()=>a.sourceId==='alipay'?configure(a):setPreparing(a)}>{a.sourceId==='alipay'?(state?.credentialConfigurationOpen?'配置与检测':'查看接入状态'):'查看接入准备'}<ChevronRight size={15} aria-hidden="true"/></button></div>
+    <div className="finance-account-actions"><button className="secondary" disabled={!!busy} onClick={()=>openSingle(a)}>编辑资料</button><button className="secondary" onClick={()=>a.sourceId==='alipay'?configure(a):setPreparing(a)}>{a.sourceId==='alipay'?(state?.credentialConfigurationOpen?'配置与检测':'查看接入状态'):'查看接入准备'}<ChevronRight size={15} aria-hidden="true"/></button><button className="secondary finance-delete-action" disabled={!!busy} onClick={()=>openRemoval(a)}><Trash2 size={15} aria-hidden="true"/>删除账户</button></div>
    </article>):<div className="finance-empty"><h4>{state?.accounts.length?'没有匹配的账户':'先把账户记下来，凭证稍后补'}</h4><p>{state?.accounts.length?'调整公司、来源筛选或搜索条件。':'可以逐个添加，也可以用空白模板批量导入。登记清单不需要银行Key。'}</p>{!state?.accounts.length&&state&&<button className="secondary" onClick={openImport}><Upload size={16} aria-hidden="true"/>批量导入账户</button>}</div>}
   </div>
   <details className="finance-prerequisites"><summary>这些状态是什么意思？</summary><p>凭证配置：密钥是否已加密保存；接口检测：是否真实调用过只读接口；自动同步：是否已经实现并启用定时入库。三个状态分别判断，不能相互代替。</p></details>
   </>}
   {section==='guide'&&<div className="finance-source-guide"><p>先按来源确认要求，已备资料可以一次集中办理。目前支付宝支持凭证配置与只读检测，其他来源仍需完成对应适配。</p><div>{financeSources.map(s=><details key={s.id}><summary>{s.name}<small>{s.stage}</small></summary><p>{s.requirements.join('；')}。</p></details>)}</div></div>}
-  {section==='maintenance'&&<><div className="finance-prerequisites"><strong>凭证维护与账户资料是两回事</strong><p>账户清单可正常登记；修改密钥、证书与手动检测受临时维护窗口控制。入口关闭不会删除凭证。以下集中查看已有支付宝配置（含早期未关联清单的配置）。新增请先到“账户清单”添加，再打开该账户的配置弹窗。</p></div><AlipayAccounts refreshKey={credentialVersion} api={api} onSelectAccount={setSelection} onChanged={()=>{void load();}}/></>}
+  {section==='maintenance'&&<><div className="finance-prerequisites"><strong>凭证维护与账户资料是两回事</strong><p>账户清单可正常登记；修改密钥、证书与手动检测受临时维护窗口控制。入口关闭不会删除凭证。以下集中查看已有支付宝配置（含早期未关联清单的配置）。新增请先到“账户清单”添加，再打开该账户的配置弹窗。</p></div><AlipayAccounts refreshKey={credentialVersion} api={api} onSelectAccount={setSelection} onRemoveAccount={a=>openRemoval({...a,legacy:true})} onChanged={()=>{void load();}}/></>}
   <p className="finance-boundary"><LockKeyhole size={16} aria-hidden="true"/>清单与凭证分开管理。登记不代表接通，检测通过不代表账单已入库或自动同步已启用。</p>
  </section>
+ {removing&&<FinanceDialog title={removing.legacy?'删除旧凭证配置':'删除账户'} context={`${removing.legalEntity} / ${removing.name}`} busy={!!busy} onClose={()=>{setRemoving(null);setError('');}}>{feedback}<form className="finance-editor" onSubmit={e=>{e.preventDefault();void perform('delete',async()=>{await api((removing.legacy?'/api/admin/data-platform/alipay':base)+'/accounts/'+removing.id,{method:'DELETE',body:JSON.stringify({revision:removing.revision,confirmName,linkedAlipayRevision:removing.linkedAlipayRevision})});setRemoving(null);await load();setCredentialVersion(v=>v+1);setNotice('已移除本平台账户记录，相关凭证配置已停用（如有）。未注销外部银行或支付宝账户，审计记录保留。');});}}><p>将从本平台清单移除“{removing.name}”。不会注销银行或支付宝账户，不会发起任何资金操作；保留审计记录，不删除ERP或其他业务数据。</p>{(removing.linkedAlipayId||removing.legacy)&&<p className="finance-field-error">此操作还会停用对应支付宝凭证，删除后不能继续检测或使用旧配置。需要重新接入时请重新添加账户并配置。</p>}{(removing.linkedAlipayId||removing.legacy)&&!state?.credentialConfigurationOpen&&<p role="alert">当前凭证维护窗口已关闭，请联系维护人员开放后再删除此账户。</p>}<div className="finance-form-grid"><label>输入账户名称确认<input autoFocus required value={confirmName} onChange={e=>setConfirmName(e.target.value)} aria-describedby="finance-delete-help"/><small id="finance-delete-help">请完整输入：{removing.name}。不是公司名，也不是银行账号。</small></label></div><div className="finance-actions"><button className="secondary" type="button" disabled={!!busy} onClick={()=>{setRemoving(null);setError('');}}>取消</button><button className="secondary finance-delete-action" disabled={!!busy||confirmName!==removing.name||!!((removing.linkedAlipayId||removing.legacy)&&!state?.credentialConfigurationOpen)}>{busy==='delete'?'删除中…':'确认删除'}</button></div></form></FinanceDialog>}
  {selection&&<FinanceDialog title="支付宝配置与检测" context={`${selection.legalEntity} / ${selection.name}`} busy={credentialBusy} onClose={()=>{if(!credentialDirty||window.confirm('有尚未保存的凭证，确定放弃并返回账户清单？'))setSelection(null);}}><AlipayAccounts api={api} selection={selection} onBusyChange={setCredentialBusy} onDirtyChange={setCredentialDirty} onChanged={()=>{void load();setCredentialVersion(v=>v+1);}}/></FinanceDialog>}
  {preparing&&<FinanceDialog title="接入准备" context={`${preparing.legalEntity} / ${preparing.name}`} onClose={()=>setPreparing(null)}><div className="finance-prerequisites"><strong>{financeSources.find(s=>s.id===preparing.sourceId)?.name}</strong><p>{financeSources.find(s=>s.id===preparing.sourceId)?.stage}</p><ul>{financeSources.find(s=>s.id===preparing.sourceId)?.requirements.map(r=><li key={r}>{r}</li>)}</ul><p>当前仅登记账户资料，尚不能填写此来源凭证或检测接口。拿到对应官方文档与只读授权后再适配，不需要在此填写网银密码或 UKey PIN。</p></div></FinanceDialog>}
  </>;

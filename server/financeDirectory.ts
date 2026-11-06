@@ -6,8 +6,8 @@ import {uid} from './security.js';
 import type {Database,User} from './types.js';
 
 export type FinanceEntity = {id:string;companyId:string;name:string;createdAt:string};
-export type FinanceAccountDraft = Omit<FinanceAccountView,'legalEntity'|'credentialStatus'|'checkStatus'|'syncStatus'|'linkedAlipayId'> & {companyId:string};
-export type FinanceDirectoryAudit = {at:string;companyId:string;userId:string;action:'add'|'edit'|'import';created:number;accountId?:string};
+export type FinanceAccountDraft = Omit<FinanceAccountView,'legalEntity'|'credentialStatus'|'checkStatus'|'syncStatus'|'linkedAlipayId'|'linkedAlipayRevision'> & {companyId:string;deletedAt?:string};
+export type FinanceDirectoryAudit = {at:string;companyId:string;userId:string;action:'add'|'edit'|'import'|'delete';created:number;accountId?:string};
 export class DirectoryValidationError extends FinanceError {
   constructor(message:string,public fields:Record<string,string>={}){super(message);}
 }
@@ -39,11 +39,11 @@ function assertAdmin(db:Database,user:User){if(!db.users.some(u=>u.id===user.id&
 function accountKey(v:Pick<FinanceDraftInput,'legalEntity'|'sourceId'|'name'|'currency'>){return JSON.stringify([key(v.legalEntity),v.sourceId,key(v.name),v.currency]);}
 function views(db:Database,user:User):FinanceAccountView[]{
   const entities=new Map((db.financeEntities||[]).filter(e=>e.companyId===user.companyId).map(e=>[e.id,e.name]));
-  return(db.financeAccountDrafts||[]).filter(a=>a.companyId===user.companyId).map(({companyId,...a})=>{
-    const linked=(db.alipayAccounts||[]).find(p=>p.companyId===user.companyId&&p.financeAccountId===a.id);
+  return(db.financeAccountDrafts||[]).filter(a=>a.companyId===user.companyId&&!a.deletedAt).map(({companyId,...a})=>{
+    const linked=(db.alipayAccounts||[]).find(p=>p.companyId===user.companyId&&p.financeAccountId===a.id&&!p.deletedAt);
     const statuses=linked?Object.values(linked.capabilities).map(c=>c.status):[];
     const checkStatus=statuses.every(s=>s==='available')&&statuses.length?'available':statuses.some(s=>s==='failed')?'failed':statuses.some(s=>s==='available'||s==='no_bill')?'partial':'not_tested';
-    return{...a,legalEntity:entities.get(a.legalEntityId)||'主体记录缺失',credentialStatus:linked?(linked.configured?'configured':'incomplete'):'not_configured',checkStatus,syncStatus:'not_enabled',...(linked?{linkedAlipayId:linked.id}:{})} as FinanceAccountView;
+    return{...a,legalEntity:entities.get(a.legalEntityId)||'主体记录缺失',credentialStatus:linked?(linked.configured?'configured':'incomplete'):'not_configured',checkStatus,syncStatus:'not_enabled',...(linked?{linkedAlipayId:linked.id,linkedAlipayRevision:linked.revision}:{})} as FinanceAccountView;
   });
 }
 function parseRows(csv:unknown):{rowNumber:number;input:Record<string,string>}[]{
@@ -84,6 +84,19 @@ function append(db:Database,user:User,inputs:FinanceDraftInput[]){
 function audit(db:Database,user:User,action:FinanceDirectoryAudit['action'],created:number,accountId?:string){db.financeDirectoryAudit??=[];db.financeDirectoryAudit.push({at:new Date().toISOString(),companyId:user.companyId,userId:user.id,action,created,...(accountId?{accountId}:{})});if(db.financeDirectoryAudit.length>10000)db.financeDirectoryAudit.splice(0,db.financeDirectoryAudit.length-10000);}
 export class FinanceDirectoryService{
   constructor(private store:AccountStore,private env=process.env){}
+  async remove(user:User,id:string,input:{revision?:unknown;confirmName?:unknown;linkedAlipayRevision?:unknown}){
+    return this.store.mutate(db=>{
+      assertAdmin(db,user);const old=views(db,user).find(a=>a.id===id);if(!old)throw new FinanceError('账户不存在或已删除',404);
+      if(old.revision!==input.revision||old.linkedAlipayRevision!==input.linkedAlipayRevision)throw new FinanceError('账户或凭证已更新，请刷新后重新确认删除',409);
+      if(input.confirmName!==old.name)throw new FinanceError('请完整输入账户名称以确认删除');
+      if(old.linkedAlipayId&&!new AlipayAccountService(this.store,this.env).canConfigure(db,user))throw new FinanceError('此账户已关联凭证，删除需在指定管理员的凭证维护窗口内进行',403);
+      const at=new Date().toISOString();
+      db.financeAccountDrafts=db.financeAccountDrafts!.map(a=>a.id===id&&a.companyId===user.companyId?{...a,deletedAt:at,updatedAt:at,revision:a.revision+1}:a);
+      db.alipayAccounts=(db.alipayAccounts||[]).map(a=>a.id===old.linkedAlipayId&&a.companyId===user.companyId?{...a,deletedAt:at,updatedAt:at,revision:a.revision+1}:a);
+      if(old.linkedAlipayId){db.financeAudit??=[];db.financeAudit.push({at,companyId:user.companyId,userId:user.id,accountId:old.linkedAlipayId,action:'delete'});if(db.financeAudit.length>10000)db.financeAudit.splice(0,db.financeAudit.length-10000);}
+      audit(db,user,'delete',0,id);return{deleted:true,credentialsDisabled:!!old.linkedAlipayId};
+    });
+  }
   async state(user:User){const db=await this.store.read();assertAdmin(db,user);return{sources:financeSources,accounts:views(db,user),entities:(db.financeEntities||[]).filter(e=>e.companyId===user.companyId).map(({id,name})=>({id,name})),credentialConfigurationOpen:new AlipayAccountService(this.store,this.env).canConfigure(db,user)};}
   async preview(user:User,csv:unknown){const db=await this.store.read();assertAdmin(db,user);return prepare(db,user,csv);}
   async commit(user:User,csv:unknown,digest:unknown){return this.store.mutate(db=>{assertAdmin(db,user);const p=prepare(db,user,csv);if(typeof digest!=='string'||p.digest!==digest)throw new FinanceError('预览已变化，请重新预览后再确认',409);if(p.errors)throw new FinanceError('文件仍有错误，未写入任何账户');const created=append(db,user,p.rows.filter(r=>r.action==='create').map(r=>r.values!));audit(db,user,'import',created.length);return{created:created.length,skipped:p.skips};});}

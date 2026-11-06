@@ -10,12 +10,12 @@ export type AlipayCapability = { status: "not_tested" | "available" | "no_bill" 
 export type AlipayAccount = {
   id: string; companyId: string; name: string; legalEntity: string; appId: string;
   financeAccountId?: string;
-  revision: number; credentials: SealedCredential; applicationPublicKey: string;
+  revision: number; credentials: SealedCredential; applicationPublicKey: string; deletedAt?:string;
   configured: boolean; mode: AlipayCredentials["mode"];
   createdAt: string; updatedAt: string;
   capabilities: { balance: AlipayCapability; bill: AlipayCapability };
 };
-export type FinanceAudit = { at: string; companyId: string; userId: string; accountId?: string; action: "create" | "update" | "generate_key" | "check" | "lock" };
+export type FinanceAudit = { at: string; companyId: string; userId: string; accountId?: string; action: "create" | "update" | "generate_key" | "check" | "lock" | "delete" };
 export type AccountStore = { read(): Promise<Database>; mutate<T>(fn: (db: Database) => T): Promise<T> };
 export class FinanceError extends Error { constructor(message: string, public status = 400) { super(message); } }
 const freshCapabilities = (): AlipayAccount["capabilities"] => ({ balance: { status: "not_tested", message: "尚未调用真实接口" }, bill: { status: "not_tested", message: "尚未调用真实接口" } });
@@ -79,7 +79,7 @@ function validatedCredentials(input: Record<string, unknown>, previous?: AlipayC
 }
 
 export function publicAlipayAccount(a: AlipayAccount) {
-  return { id: a.id, name: a.name, legalEntity: a.legalEntity, appId: a.appId, financeAccountId:a.financeAccountId, mode: a.mode, configured: a.configured, hasPrivateKey: true, applicationPublicKey: a.applicationPublicKey, capabilities: a.capabilities, createdAt: a.createdAt, updatedAt: a.updatedAt, syncStatus: "not_enabled" as const };
+  return { id: a.id, revision:a.revision, name: a.name, legalEntity: a.legalEntity, appId: a.appId, financeAccountId:a.financeAccountId, mode: a.mode, configured: a.configured, hasPrivateKey: true, applicationPublicKey: a.applicationPublicKey, capabilities: a.capabilities, createdAt: a.createdAt, updatedAt: a.updatedAt, syncStatus: "not_enabled" as const };
 }
 
 export class AlipayAccountService {
@@ -90,7 +90,7 @@ export class AlipayAccountService {
     let encryptionReady = true;
     try { credentialMasterKey(this.env); } catch { encryptionReady = false; }
     const configurationOpen = this.canConfigure(db, user);
-    return { configurationOpen, encryptionReady, accounts: (db.alipayAccounts || []).filter(a => a.companyId === user.companyId).map(a => { const view = publicAlipayAccount(a); return configurationOpen ? view : { ...view, applicationPublicKey: "" }; }) };
+    return { configurationOpen, encryptionReady, accounts: (db.alipayAccounts || []).filter(a => a.companyId === user.companyId&&!a.deletedAt).map(a => { const view = publicAlipayAccount(a); return configurationOpen ? view : { ...view, applicationPublicKey: "" }; }) };
   }
   private assertAdmin(db: Database, user: User) {
     if (!db.users.some(u => u.id === user.id && u.companyId === user.companyId && u.role === "admin" && u.enabled)) throw new FinanceError("无权访问资金账户", 403);
@@ -108,7 +108,7 @@ export class AlipayAccountService {
   }
   private account(db: Database, user: User, id: string) {
     this.assertAdmin(db, user);
-    const account = db.alipayAccounts?.find(a => a.id === id && a.companyId === user.companyId);
+    const account = db.alipayAccounts?.find(a => a.id === id && a.companyId === user.companyId&&!a.deletedAt);
     if (!account) throw new FinanceError("账户不存在", 404);
     return account;
   }
@@ -116,6 +116,16 @@ export class AlipayAccountService {
     db.financeAudit ??= [];
     db.financeAudit.push({ at: new Date().toISOString(), companyId: user.companyId, userId: user.id, action, accountId });
     if (db.financeAudit.length > 10000) db.financeAudit.splice(0, db.financeAudit.length - 10000);
+  }
+  async remove(user:User,id:string,input:{revision?:unknown;confirmName?:unknown}){
+    return this.store.mutate(db=>{
+      this.assertConfiguration(db,user);const account=this.account(db,user,id);
+      if(account.financeAccountId)throw new FinanceError('此配置已关联账户清单，请从账户清单删除该账户',409);
+      if(input.revision!==account.revision)throw new FinanceError('配置已更新，请刷新后重新确认',409);
+      if(input.confirmName!==account.name)throw new FinanceError('请完整输入账户名称以确认删除');
+      account.deletedAt=new Date().toISOString();account.updatedAt=account.deletedAt;account.revision++;
+      this.audit(db,user,'delete',id);return{deleted:true};
+    });
   }
   async save(user: User, input: Record<string, unknown>, id?: string, generate = false) {
     const db = await this.store.read();
@@ -144,17 +154,17 @@ export class AlipayAccountService {
     return this.store.mutate(current => {
       this.assertConfiguration(current, user); // Includes lock/revocation while key generation was pending.
       if(financeAccountId){
-        const draft=current.financeAccountDrafts?.find(a=>a.id===financeAccountId&&a.companyId===user.companyId&&a.sourceId==='alipay');
+        const draft=current.financeAccountDrafts?.find(a=>a.id===financeAccountId&&a.companyId===user.companyId&&a.sourceId==='alipay'&&!a.deletedAt);
         const entity=draft&&current.financeEntities?.find(e=>e.id===draft.legalEntityId&&e.companyId===user.companyId);
         if(!draft||!entity)throw new FinanceError('对应的企业支付宝账户清单不存在',404);
         if(entity.name!==legalEntity||draft.name!==name)throw new FinanceError('公司及账户名称与清单不一致，请刷新后重试',409);
-        if(current.alipayAccounts?.some(a=>a.financeAccountId===financeAccountId&&a.companyId===user.companyId&&a.id!==id))throw new FinanceError('此账户已关联应用，请编辑已有配置',409);
+        if(current.alipayAccounts?.some(a=>a.financeAccountId===financeAccountId&&a.companyId===user.companyId&&a.id!==id&&!a.deletedAt))throw new FinanceError('此账户已关联应用，请编辑已有配置',409);
       }
       current.alipayAccounts ??= [];
       const latest = id ? this.account(current, user, id) : undefined;
       if (latest && latest.revision !== existing!.revision) throw new FinanceError("账户已被修改，请刷新后重试", 409);
-      if (current.alipayAccounts.some(a => a.appId === appId && a.id !== id)) throw new FinanceError("该应用已登记，请核对后勿重复添加", 409);
-      if (!latest && current.alipayAccounts.filter(a => a.companyId === user.companyId).length >= 100) throw new FinanceError("单个企业最多登记100个账户");
+      if (current.alipayAccounts.some(a => a.appId === appId && a.id !== id&&!a.deletedAt)) throw new FinanceError("该应用已登记，请核对后勿重复添加", 409);
+      if (!latest && current.alipayAccounts.filter(a => a.companyId === user.companyId&&!a.deletedAt).length >= 100) throw new FinanceError("单个企业最多登记100个账户");
       if (latest) current.alipayAccounts[current.alipayAccounts.indexOf(latest)] = account;
       else current.alipayAccounts.push(account);
       this.audit(current, user, generate ? "generate_key" : id ? "update" : "create", account.id);

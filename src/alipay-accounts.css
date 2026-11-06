@@ -51,6 +51,7 @@
 .alipay-form input, .alipay-form select, .alipay-form textarea { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--funds-line); border-radius: 6px; background: var(--funds-inset); color: var(--funds-text); font-size: 14px; }
 .alipay-form textarea { resize: vertical; overflow-wrap: anywhere; }
 .alipay-form input[readonly] { color: var(--funds-muted); }
+.alipay-file-field{display:grid;gap:8px;font-size:14px;min-width:0}.alipay-file-field>strong{font-weight:500}.alipay-upload-control{display:flex;gap:12px;align-items:center;flex-wrap:wrap;min-width:0;padding:12px;border:1px solid var(--funds-line);border-radius:6px;background:var(--funds-inset)}.alipay-upload-control input[hidden]{display:none!important}.alipay-upload-control span{font-size:13px;color:var(--funds-secondary);overflow-wrap:anywhere;min-width:0}.alipay-upload-control button{background:var(--funds-paper)}
 .alipay-public-key { display: grid; gap: 8px; }
 .alipay-public-key button { justify-self: start; }
 .alipay-public-key textarea { font-family: ui-monospace, monospace; font-size: 12px; }
