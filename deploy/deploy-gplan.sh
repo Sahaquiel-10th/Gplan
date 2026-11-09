@@ -34,6 +34,7 @@ npm run test:alipay-accounts
 npm run test:finance-directory
 npm run test:enterprise-data
 npm run test:review-replies
+npm run test:invoices
 npm run build
 GPLAN_ENV_FILE="$app_dir/.env" node --import tsx scripts/check-inventory-writes.ts
 

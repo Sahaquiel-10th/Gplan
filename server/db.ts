@@ -315,6 +315,7 @@ function migrateDatabase(db: Database): boolean {
   db.modelUsageRecords ??= [];
   db.reviewReplyProfiles ??= [];
   db.reviewReplyRuns ??= [];
+  db.invoiceJobs ??= [];
   db.dataConnectors ??= defaultDataConnectors();
   db.dataSyncLogs ??= [];
   db.dataMetricDefinitions ??= defaultDataMetricDefinitions();

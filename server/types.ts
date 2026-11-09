@@ -83,6 +83,7 @@ export type IntegrationToken = {
 };
 
 export type Agent = {
+  invoiceSummary?: boolean;
   reviewReply?: boolean;
   commerce?: { kind: "product_creative" | "image_edit" };
   skill?: import("./agentSkills.js").AgentSkill;
@@ -112,6 +113,7 @@ export type Agent = {
 export type AttachmentKind = "image" | "document" | "spreadsheet" | "presentation" | "text";
 
 export type Attachment = {
+  invoiceUpload?: boolean;
   id: string;
   companyId: string;
   userId: string;
@@ -280,6 +282,7 @@ export type ManagementBriefReport = {
 };
 
 export type Database = {
+  invoiceJobs?: import("./invoiceTypes.js").InvoiceJob[];
   financeEntities?: import("./financeDirectory.js").FinanceEntity[];
   financeAccountDrafts?: import("./financeDirectory.js").FinanceAccountDraft[];
   financeDirectoryAudit?: import("./financeDirectory.js").FinanceDirectoryAudit[];
