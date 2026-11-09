@@ -1,6 +1,7 @@
 // Untrusted document rendering and archive expansion run outside the web process.
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const MAX_FILES=500, MAX_BYTES=250*1024*1024, MAX_FILE=100*1024*1024;
@@ -28,10 +29,18 @@ async function document(file,out,ext) {
   const data=await fs.readFile(file),units=[];let written=0;
   const writeImage=async(p,bytes)=>{written+=bytes.length;if(written>MAX_BYTES)throw Error('渲染后的图片超过250MB，请拆分后上传');await fs.writeFile(p,bytes);};
   if(ext==='.pdf'){
-    const canvas=await import('@napi-rs/canvas');globalThis.DOMMatrix??=canvas.DOMMatrix;globalThis.Path2D??=canvas.Path2D;globalThis.ImageData??=canvas.ImageData;
+    const canvas=await import('@napi-rs/canvas');for(const family of ['Noto Sans CJK SC','serif','sans-serif','STSong-Light'])canvas.GlobalFonts.registerFromPath(fileURLToPath(new URL('./assets/NotoSansCJKsc-Regular.otf',import.meta.url)),family);globalThis.DOMMatrix??=canvas.DOMMatrix;globalThis.Path2D??=canvas.Path2D;globalThis.ImageData??=canvas.ImageData;
+    // PDF.js uses browser FontFace when glyphs are rasterized by Skia. Register
+    // embedded fonts with the native canvas; system/CID fallbacks stay local.
+    const fallback=fileURLToPath(new URL('./assets/NotoSansCJKsc-Regular.otf',import.meta.url));
+    globalThis.FontFace=class {
+      constructor(family,source){this.family=family;this.loaded=Promise.resolve().then(()=>{const ok=typeof source==='string'?canvas.GlobalFonts.registerFromPath(fallback,family):canvas.GlobalFonts.register(Buffer.from(source),family);if(!ok)throw Error('PDF字体无法读取');return this;});}
+      load(){return this.loaded;}
+    };
+    const ownerDocument={fonts:{add(){},delete(){}}};
     const pdfjs=await import('pdfjs-dist/legacy/build/pdf.mjs');
     const root=path.dirname(require.resolve('pdfjs-dist/package.json'));
-    const task=pdfjs.getDocument({data:new Uint8Array(data),isEvalSupported:false,useWorkerFetch:false,useSystemFonts:false,standardFontDataUrl:root+'/standard_fonts/',cMapUrl:root+'/cmaps/',cMapPacked:true,verbosity:0});
+    const task=pdfjs.getDocument({data:new Uint8Array(data),ownerDocument,isEvalSupported:false,disableFontFace:false,useWorkerFetch:false,useSystemFonts:true,standardFontDataUrl:root+'/standard_fonts/',cMapUrl:root+'/cmaps/',cMapPacked:true,verbosity:0});
     const pdf=await task.promise;
     try {
       if(pdf.numPages>100)throw Error('单份PDF最多100页，请拆分后上传');

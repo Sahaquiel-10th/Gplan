@@ -1,4 +1,5 @@
 import test from "node:test";
+import {fileURLToPath} from "node:url";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -69,4 +70,11 @@ test("manual correction rejects invalid amounts and stale writes; model output c
  const f=await fixture(1);try{const service=new InvoiceService(f.store,f.dir,{worker,model:async()=>({content:JSON.stringify({invoices:[payload()]})})});const job=await terminal(f,(await service.create(f.user,["a0"],"correction-request")).id);const row=job.items[0].units[0].rows[0];await assert.rejects(service.edit(f.user,job.id,row.id,{tax:"abc"},job.revision),/金额/);await assert.rejects(service.edit(f.user,job.id,row.id,{tax:"8.00"},0),/更新/);await assert.rejects(service.create(f.user,Array.from({length:501},(_,i)=>String(i)),"oversized-request"),/500/);
  }finally{await fs.rm(f.dir,{recursive:true,force:true});}
  const f2=await fixture(1);try{const service=new InvoiceService(f2.store,f2.dir,{worker,model:async()=>{f2.agent.published=false;return {content:JSON.stringify({invoices:[payload()]})};}});const job=await terminal(f2,(await service.create(f2.user,["a0"],"revoked-request")).id);assert.equal(invoiceStats(job).invoices,0);assert.equal(job.status,"failed");}finally{await fs.rm(f2.dir,{recursive:true,force:true});}
+});
+
+test("real PDF pages render both missing CJK system fonts and embedded subset fonts with visible glyphs",async()=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),"gplan-invoice-fonts-"));try{
+ const fixture=fileURLToPath(new URL("./fixtures/invoice-fonts.pdf",import.meta.url));const result=await runInvoiceWorker<{units:{page:number;text:string;imagePath:string}[]}>(fixture,dir,"document");assert.equal(result.units.length,2);assert.match(result.units[0].text,/测试供应商/);assert.match(result.units[1].text,/EMBEDDED FONT/);
+ for(const unit of result.units){const stats=await sharp(unit.imagePath).stats();assert.ok(stats.channels[0].min<100,"PDF page must not render blank");assert.ok(stats.channels[0].mean<254,"PDF text must have visible ink");}
+ }finally{await fs.rm(dir,{recursive:true,force:true});}
 });
