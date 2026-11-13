@@ -237,3 +237,59 @@ test("deterministic brand report skips planner, retains actual record days, and 
   assert.equal(r.evidence.sources[0].coverage!.recordsByCurrency[0].daysWithRecords, 29);
   assert.match(r.context, /默认人民币CNY/);
 });
+
+test("incident regression: yesterday resolves to Nov 4 and the three shares require both data tools", async () => {
+  const content = "给我昨天所有品牌的销售额及销售占比，包括销售额占比和销售笔数占比和销售件数占比";
+  const messages = [{ role: "user" as const, content, createdAt: "2026-11-05T04:06:57.634Z" }];
+  const plan = planBrandReport(messages, "2026-11-05")!;
+  assert.equal(plan.startDate, "2026-11-04"); assert.equal(plan.endDate, "2026-11-04");
+  assert.deepEqual(plan.calls.map(call => call.tool), ["sales_summary", "sales_brand_documents"]);
+  assert.deepEqual(new Set(plan.requestedMetrics), new Set(["amount", "amountSharePercent", "quantity", "quantitySharePercent", "documentCount", "documentSharePercent"]));
+  let plannerCalls = 0;
+  const result = await buildEnterpriseDataContext({ ...base, messages, referenceDate: new Date("2026-11-05T04:06:57.634Z") }, {
+    databaseReady: () => true,
+    callModel: async () => { plannerCalls++; throw Error("not needed"); },
+    query: async sql => sql.includes("brand_documents") ? [{ dimension: "品牌A", currencyCode: "CNY", documentCount: 5, documentSharePercent: 100, totalDocumentCount: 5 }] : sql.includes("latestSyncedAt") ? [{ latestSyncedAt: "2026-11-05" }] : [{ dimension: "品牌A", currencyCode: "CNY", amount: "100", amountSharePercent: 100, quantity: 20, quantitySharePercent: 100 }],
+  });
+  assert.equal(plannerCalls, 0); assert.equal(result.evidence.status, "queried");
+  assert.equal(result.evidence.sources.length, 2); assert.equal(result.evidence.task!.completed, true);
+  assert.deepEqual(result.evidence.task!.missingMetrics, []);
+  assert.match(result.context, /按品牌dimension和币种currencyCode关联/);
+  assert.match(result.context, /documentSharePercent/);
+  assert.ok(result.evidence.context!.sha256.length === 64);
+  assert.ok(result.evidence.sources.every(source => source.querySteps!.every(step => step.status === "success")));
+});
+
+test("a missing secondary query keeps acquired values and marks the task partial", async () => {
+  const result = await buildEnterpriseDataContext({ ...base, messages: [{ role: "user", content: "昨天所有品牌销售额、销售笔数及占比", createdAt: "now" }] }, {
+    databaseReady: () => true,
+    callModel: async () => { throw Error("not needed"); },
+    query: async sql => {
+      if (sql.includes("brand_documents")) throw Object.assign(Error("secret schema"), { code: "ER_QUERY_TIMEOUT" });
+      return [{ dimension: "品牌A", amount: 100, amountSharePercent: 100 }];
+    },
+  });
+  assert.equal(result.evidence.status, "partial"); assert.match(result.context, /"amount":100/);
+  assert.deepEqual(result.evidence.task!.missingMetrics, ["documentCount", "documentSharePercent"]);
+  assert.ok(!result.context.includes("secret schema"));
+});
+
+test("date interpretation includes single dates, today and the day before yesterday", () => {
+  for (const [term, expected] of [["昨天", "2026-11-04"], ["昨日", "2026-11-04"], ["前天", "2026-11-03"], ["今天", "2026-11-05"], ["2026-10-01", "2026-10-01"]]) {
+    const plan = planBrandReport([{ role: "user", content: `${term}所有品牌的销售额占比`, createdAt: "now" }], "2026-11-05")!;
+    assert.equal(plan.startDate, expected); assert.equal(plan.endDate, expected);
+  }
+});
+
+
+test("a successful summary does not prevent a second round for another fact", async () => {
+  let rounds = 0;
+  const result = await buildEnterpriseDataContext({ ...base, messages: [{ role: "user", content: "查看销售和库存", createdAt: "now" }] }, {
+    databaseReady: () => true,
+    callModel: async () => ({ content: JSON.stringify({ calls: ++rounds === 1 ? [{ tool: "sales_summary", params: { startDate: "2026-11-04", endDate: "2026-11-04", groupBy: "brand" } }] : [{ tool: "inventory", params: {} }] }) }),
+    query: async () => [{ amount: 100, quantity: 5 }],
+  });
+  assert.equal(rounds, 2);
+  assert.deepEqual(result.evidence.sources.map(source => source.tool), ["sales_summary", "inventory"]);
+  assert.ok(result.evidence.sources.every(source => source.status === "success"));
+});

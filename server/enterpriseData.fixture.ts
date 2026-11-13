@@ -17,7 +17,7 @@ export async function enterpriseDataFixture() {
   await fs.symlink(path.join(root, "node_modules"), path.join(dir, "node_modules"));
   await fs.mkdir(path.join(dir, "data"));
   await fs.writeFile(path.join(dir, "package.json"), '{"type":"module"}');
-  await fs.writeFile(path.join(dir, ".env"), "ENTERPRISE_BOOTSTRAP_PROBE=loaded\n");
+  await fs.writeFile(path.join(dir, ".env"), "ENTERPRISE_BOOTSTRAP_PROBE=loaded\nADMIN_TOOLS_PASSWORD=fixture-admin-tools\n");
   // Replace only the I/O boundaries in this ephemeral fixture; run the real planner and routes.
   const operations = path.join(dir, "server/operationsData.ts");
   let code = await fs.readFile(operations, "utf8");
@@ -27,9 +27,10 @@ export async function enterpriseDataFixture() {
   code = code.slice(0, start) + `
   if (!params.includes("c1")) return [];
   if (!sql.startsWith("SELECT") || /DELETE|INSERT|UPDATE|CREATE|DROP/.test(sql)) throw new Error("non-read query");
+  if (sql.includes("brand_documents")) return (sql.includes("report.*") ? [{dimension:"SKU-ONLY-C1",currencyCode:"CNY",documentCount:600,documentSharePercent:60},{dimension:"SKU-SECOND",currencyCode:"CNY",documentCount:400,documentSharePercent:40}] : [{currencyCode:"CNY",totalDocumentCount:1000,brandDocumentOccurrences:1000}]) as RowDataPacket[];
   if (sql.includes("latestSyncedAt")) return [{ latestSyncedAt:"2026-10-29 03:00:00" }] as RowDataPacket[];
   if (!sql.includes("LIMIT")) return [{ currencyCode:"CNY", documentCount:1000, quantity:10000, amount:"999999.00" }] as RowDataPacket[];
-  return [{dimension:"SKU-ONLY-C1",name:"测试商品",amount:"20.00"},{dimension:"SKU-SECOND",amount:"10.00"}] as RowDataPacket[];` + code.slice(end);
+  return [{dimension:"SKU-ONLY-C1",name:"测试商品",amount:"20.00",amountSharePercent:0.002,quantity:5,quantitySharePercent:0.05},{dimension:"SKU-SECOND",amount:"10.00",amountSharePercent:0.001,quantity:3,quantitySharePercent:0.03}] as RowDataPacket[];` + code.slice(end);
   await fs.writeFile(operations, code);
   const platform = path.join(dir, "server/dataPlatformDb.ts");
   await fs.writeFile(platform, `const enterpriseBootstrapReady = process.env.ENTERPRISE_BOOTSTRAP_PROBE === "loaded";\n` + (await fs.readFile(platform, "utf8")).replace("status() { return this.currentStatus; }", "status() { return {...this.currentStatus, ready: enterpriseBootstrapReady}; }"));
@@ -38,8 +39,8 @@ export async function enterpriseDataFixture() {
   let modelCalls = 0, plannerCalls = 0;
   const payloads: Array<Record<string, unknown>> = [];
   const secret = "enterprise-http-test-secret";
-  async function request(route: string, who = "admin", body?: unknown, method = body === undefined ? "GET" : "POST") {
-    const response = await fetch(url + route, { method, headers: { "Content-Type": "application/json", ...(who ? { Authorization: `Bearer ${signToken({ sub: who, role: "admin" }, secret)}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+  async function request(route: string, who = "admin", body?: unknown, method = body === undefined ? "GET" : "POST", unlocked = false) {
+    const response = await fetch(url + route, { method, headers: { "Content-Type": "application/json", ...(unlocked ? { Cookie: `gplan_admin_tools=${signToken({ sub: who, role: "admin", scope: "admin_tools" }, secret)}` } : {}), ...(who ? { Authorization: `Bearer ${signToken({ sub: who, role: "admin" }, secret)}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: response.status, data: await response.json() as any };
   }
   const upstream = http.createServer(async (req, res) => {
@@ -94,5 +95,5 @@ export async function enterpriseDataFixture() {
     await new Promise(r => setTimeout(r, 100));
   }
   if (!ready) { await close(); throw Error(logs); }
-  return { url, dir, request, close, payloads, counts: () => ({ modelCalls, plannerCalls }), read: async () => JSON.parse(await fs.readFile(path.join(dir, "data/db.json"), "utf8")) };
+  return { url, dir, upstreamUrl: `http://127.0.0.1:${upstreamPort}`, request, close, payloads, counts: () => ({ modelCalls, plannerCalls }), read: async () => JSON.parse(await fs.readFile(path.join(dir, "data/db.json"), "utf8")) };
 }

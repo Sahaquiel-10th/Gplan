@@ -1729,7 +1729,7 @@ details {
 }
 
 .model-row.editable-row {
-  grid-template-columns: minmax(170px, 1.2fr) minmax(100px, auto) auto auto auto;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(90px, auto) auto auto auto auto;
 }
 
 .model-row span:first-child {

@@ -1,4 +1,5 @@
 import { EnterpriseDataSources } from "./EnterpriseDataSources";
+import { modelProviderPresets, officialProvider } from "../shared/modelProviders";
 import { FinanceAccounts } from "./FinanceAccounts";
 import type { EnterpriseDataEvidence } from "../server/enterpriseDataPolicy";
 import { DashboardWorkspace, DashboardSettings } from "./Dashboard";
@@ -73,6 +74,7 @@ type Model = {
   id: string;
   name: string;
   provider: string;
+  thinkingMode?: "enabled" | "disabled";
   kind: "chat" | "image";
   protocol: "openai" | "anthropic";
   baseUrl: string;
@@ -2516,6 +2518,8 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
 function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<void> }) {
   const [form, setForm] = useState({
     name: "",
+    provider: "custom",
+    thinkingMode: "disabled" as "enabled" | "disabled",
     kind: "chat" as "chat" | "image",
     protocol: "openai" as "openai" | "anthropic",
     baseUrl: "https://app.yylx.io/v1",
@@ -2525,13 +2529,34 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
     enabled: true,
     isDefault: false
   });
-  const [editing, setEditing] = useState<Record<string, { name: string; kind: "chat" | "image"; protocol: "openai" | "anthropic"; baseUrl: string; model: string; apiKey: string; systemPrompt: string; enabled: boolean; isDefault: boolean }>>({});
+  const [editing, setEditing] = useState<Record<string, { name: string; provider: string; thinkingMode?: "enabled" | "disabled"; kind: "chat" | "image"; protocol: "openai" | "anthropic"; baseUrl: string; model: string; apiKey: string; systemPrompt: string; enabled: boolean; isDefault: boolean }>>({});
+  const [connectionNotice, setConnectionNotice] = useState("");
+  const [connectionBusy, setConnectionBusy] = useState("");
+
+  function selectProvider(provider: string) {
+    const preset = officialProvider(provider) ? modelProviderPresets[provider] : undefined;
+    setForm(current => ({ ...current, provider, apiKey: "", thinkingMode: "disabled", kind: "chat", protocol: "openai", name: preset?.name || "", baseUrl: preset?.baseUrl || "https://app.yylx.io/v1", model: preset?.model || "" }));
+    setConnectionNotice("");
+  }
+
+  async function testConnection(model?: Model) {
+    const key = model?.id || "new";
+    setConnectionBusy(key); setConnectionNotice("");
+    try {
+      const result = await api<{ latencyMs: number; model: string; reply: string }>("/api/admin/models/test", { method: "POST", body: JSON.stringify(model ? { modelId: model.id, ...(editing[model.id] || {}) } : form) });
+      setConnectionNotice(`${model?.name || form.name || "模型"}：连接成功，用时${(result.latencyMs / 1000).toFixed(1)}秒，实际请求模型 ${result.model}。`);
+    } catch (error) { setConnectionNotice(error instanceof Error ? error.message : "连接测试失败"); }
+    finally { setConnectionBusy(""); }
+  }
 
   async function createModel(event: FormEvent) {
     event.preventDefault();
-    await api("/api/admin/models", { method: "POST", body: JSON.stringify(form) });
-    setForm({ name: "", kind: "chat", protocol: "openai", baseUrl: "https://app.yylx.io/v1", apiKey: "", model: "", systemPrompt: "", enabled: true, isDefault: false });
-    await reload();
+    try {
+      await api("/api/admin/models", { method: "POST", body: JSON.stringify(form) });
+      setForm(current => ({ ...current, apiKey: "", isDefault: false }));
+      setConnectionNotice("模型已保存。可先测试连接，再在聊天窗口切换模型进行对照。");
+      await reload();
+    } catch (error) { setConnectionNotice(error instanceof Error ? error.message : "保存失败"); }
   }
 
   async function toggle(model: Model) {
@@ -2542,12 +2567,13 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
   async function saveModel(model: Model) {
     const draft = editing[model.id];
     if (!draft) return;
-    await api(`/api/admin/models/${model.id}`, {
+    try { await api(`/api/admin/models/${model.id}`, {
       method: "PATCH",
       body: JSON.stringify(draft)
     });
     setEditing(({ [model.id]: _removed, ...rest }) => rest);
     await reload();
+    } catch (error) { setConnectionNotice(error instanceof Error ? error.message : "保存失败"); }
   }
 
   async function deleteModel(model: Model) {
@@ -2560,24 +2586,34 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
     <div className="admin-grid wide">
       <form className="admin-form" onSubmit={createModel}>
         <h3><img className="section-mark" src="/brand/xiaoxiang-mark.png" alt="" />接入模型</h3>
+        <label className="field-label">接入方式<select value={form.provider} onChange={event => selectProvider(event.target.value)}>
+          <option value="custom">自定义服务 / 现有中转</option>
+          <option value="deepseek">DeepSeek 官方</option>
+          <option value="doubao">豆包 · 火山方舟</option>
+        </select></label>
+        {officialProvider(form.provider) ? <p className="hint no-margin">{modelProviderPresets[form.provider].hint} <a href={modelProviderPresets[form.provider].docsUrl} target="_blank" rel="noreferrer">官方接入说明</a></p> : null}
         <input placeholder="展示名称，如 通义千问" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-        <select value={form.kind} onChange={(event) => setForm({ ...form, kind: event.target.value as "chat" | "image", protocol: event.target.value === "image" ? "openai" : form.protocol })}>
+        <select value={form.kind} disabled={officialProvider(form.provider)} onChange={(event) => setForm({ ...form, kind: event.target.value as "chat" | "image", protocol: event.target.value === "image" ? "openai" : form.protocol })}>
           <option value="chat">聊天模型</option>
           <option value="image">图片模型</option>
         </select>
         {form.kind === "chat" ? (
-          <select value={form.protocol} onChange={(event) => setForm({ ...form, protocol: event.target.value as "openai" | "anthropic" })}>
+          <select value={form.protocol} disabled={officialProvider(form.provider)} onChange={(event) => setForm({ ...form, protocol: event.target.value as "openai" | "anthropic" })}>
             <option value="openai">OpenAI 兼容协议</option>
             <option value="anthropic">Claude / Anthropic 协议</option>
           </select>
         ) : null}
         <input placeholder="Base URL，如 https://dashscope.aliyuncs.com/compatible-mode/v1" value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} />
         <input type="password" autoComplete="new-password" placeholder="API Key" value={form.apiKey} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} />
-        <input placeholder="模型 ID，如 qwen-plus / gpt-image-2" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} />
+        <input aria-label="模型 ID 或接入点 ID" list="official-model-ids" placeholder={form.provider === "doubao" ? "模型 ID 或 ep- 开头的接入点 ID" : "模型 ID，如 deepseek-flash"} value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} />
+        <datalist id="official-model-ids">{officialProvider(form.provider) ? modelProviderPresets[form.provider].models.map(id => <option key={id} value={id} />) : null}</datalist>
+        {officialProvider(form.provider) ? <label className="check"><input type="checkbox" checked={form.thinkingMode === "enabled"} onChange={event => setForm({ ...form, thinkingMode: event.target.checked ? "enabled" : "disabled" })} />深度思考（可选，首次连接测试建议关闭）</label> : null}
         <textarea placeholder="模型默认 System Prompt，可留空" value={form.systemPrompt} rows={4} onChange={(event) => setForm({ ...form, systemPrompt: event.target.value })} />
         <label className="check"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用</label>
         <label className="check"><input type="checkbox" checked={form.isDefault} disabled={form.kind !== "chat" || !form.enabled} onChange={(event) => setForm({ ...form, isDefault: event.target.checked })} />设为新聊天默认模型</label>
         <button className="primary"><Plus size={16} />保存模型</button>
+        <button type="button" className="secondary" disabled={Boolean(connectionBusy) || !form.apiKey || form.kind !== "chat"} onClick={() => testConnection()}>{connectionBusy === "new" ? "正在测试…" : "测试连接"}</button>
+        {connectionNotice ? <p className="hint" role="status">{connectionNotice}</p> : null}
       </form>
       <div className="table">
         {models.map((model) => (
@@ -2590,7 +2626,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
                     <option value="image">图片模型</option>
                   </select></label>
                 {editing[model.id].kind === "chat" ? (
-                  <label className="field-label">接口协议<select value={editing[model.id].protocol} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], protocol: event.target.value as "openai" | "anthropic" } })}>
+                  <label className="field-label">接口协议<select value={editing[model.id].protocol} disabled={officialProvider(model.provider)} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], protocol: event.target.value as "openai" | "anthropic" } })}>
                     <option value="openai">OpenAI 兼容协议</option>
                     <option value="anthropic">Claude / Anthropic 协议</option>
                   </select></label>
@@ -2599,19 +2635,21 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
                 <label className="field-label">模型 ID<input value={editing[model.id].model} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], model: event.target.value } })} /></label>
                 <label className="field-label">替换 API Key<input type="password" autoComplete="new-password" placeholder="留空则保持原 Key" value={editing[model.id].apiKey} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], apiKey: event.target.value } })} /></label>
                 <label className="field-label model-prompt-field">System Prompt<textarea rows={4} value={editing[model.id].systemPrompt} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], systemPrompt: event.target.value } })} /></label>
+                {officialProvider(model.provider) ? <label className="inline-check"><input type="checkbox" checked={editing[model.id].thinkingMode === "enabled"} onChange={event => setEditing({ ...editing, [model.id]: { ...editing[model.id], thinkingMode: event.target.checked ? "enabled" : "disabled" } })} />深度思考</label> : null}
                 <label className="inline-check"><input type="checkbox" checked={editing[model.id].enabled} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], enabled: event.target.checked } })} />启用</label>
                 <label className="inline-check"><input type="radio" checked={editing[model.id].isDefault} disabled={editing[model.id].kind !== "chat" || !editing[model.id].enabled} onChange={() => setEditing({ ...editing, [model.id]: { ...editing[model.id], isDefault: true } })} />新聊天默认</label>
                 <button className="secondary" onClick={() => saveModel(model)}><Save size={15} />保存</button>
               </>
             ) : (
               <>
-                <span>{model.name}<small>{model.kind === "image" ? "图片" : model.protocol === "anthropic" ? "聊天 · Anthropic" : "聊天 · OpenAI"} · {model.model}{model.isDefault ? " · 新聊天默认" : ""}</small></span>
+                <span>{model.name}<small>{model.kind === "image" ? "图片" : officialProvider(model.provider) ? modelProviderPresets[model.provider].label : model.protocol === "anthropic" ? "聊天 · Anthropic兼容" : "聊天 · OpenAI兼容"} · {model.model}{model.isDefault ? " · 新聊天默认" : ""}</small></span>
                 <span>{model.hasApiKey ? "已配置 Key" : "缺少 Key"}</span>
-                <button className="secondary" onClick={() => setEditing({ ...editing, [model.id]: { name: model.name, kind: model.kind, protocol: model.protocol, baseUrl: model.baseUrl, model: model.model, apiKey: "", systemPrompt: model.systemPrompt || "", enabled: model.enabled, isDefault: model.isDefault } })}><Edit3 size={15} />编辑</button>
+                <button className="secondary" onClick={() => setEditing({ ...editing, [model.id]: { name: model.name, provider: model.provider, thinkingMode: model.thinkingMode, kind: model.kind, protocol: model.protocol, baseUrl: model.baseUrl, model: model.model, apiKey: "", systemPrompt: model.systemPrompt || "", enabled: model.enabled, isDefault: model.isDefault } })}><Edit3 size={15} />编辑</button>
                 <button className="secondary" onClick={() => toggle(model)}>{model.enabled ? "停用" : "启用"}</button>
                 <button className="danger" onClick={() => deleteModel(model)}><Trash2 size={15} />删除</button>
               </>
             )}
+            {model.kind === "chat" ? <button type="button" className="secondary" disabled={Boolean(connectionBusy)} onClick={() => testConnection(model)}>{connectionBusy === model.id ? "正在测试…" : "测试连接"}</button> : null}
           </div>
         ))}
       </div>

@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { modelConnectionDraft, testModelConnection } from "./modelConnections.js";
 import { createAlipayAccountRouter } from "./alipayAccountRoutes.js";
 import { createFinanceDirectoryRouter } from "./financeDirectoryRoutes.js";
 import { buildEnterpriseDataContext } from "./enterpriseData.js";
@@ -1275,7 +1276,7 @@ app.post(
           user: req.user!, model, messages: [...historyMessages, userMessage], requestId: res.locals.requestId,
           connectorEnabled: db.dataConnectors.some(c => c.id === "wanliniu" && c.enabled),
           liveAllowed: sourceCompanyId === req.user!.companyId && missingWanliniuSyncConfig().length === 0,
-          ensureAccess: ensureEnterpriseAccess, deadline: enterpriseDeadline - 30000,
+          ensureAccess: ensureEnterpriseAccess, deadline: enterpriseDeadline - 30000, referenceDate: new Date(userMessage.createdAt),
         });
         modelMessages.unshift({ role: "system", content: enterpriseResult.context, createdAt: now(), modelId: model.id });
         await logRetrieval({ companyId: req.user!.companyId, userId: req.user!.id, conversationId: conversation.id, query: content, sourceType: "enterprise_data", matchedItemsJson: enterpriseResult.evidence, injectedContext: "", threshold: 0, topK: enterpriseResult.evidence.sources.length });
@@ -1746,17 +1747,29 @@ app.get("/api/admin/models", ...protectedAdmin, asyncRoute(async (_req, res) => 
   res.json({ models: db.models.map(adminModel) });
 }));
 
+app.post("/api/admin/models/test", ...protectedAdmin, asyncRoute(async (req, res) => {
+  const db = await store.read();
+  const existing = typeof req.body.modelId === "string" ? db.models.find(model => model.id === req.body.modelId) : undefined;
+  if (req.body.modelId && !existing) return void res.status(404).json({ error: "模型不存在" });
+  try {
+    const result = await testModelConnection(modelConnectionDraft(req.body, existing), res.locals.requestId + ":connection-test");
+    res.json(result);
+  } catch (error) { res.status(400).json({ error: (error as Error).message }); }
+}));
+
 app.post("/api/admin/models", ...protectedAdmin, asyncRoute(async (req, res) => {
+  const connection = modelConnectionDraft(req.body);
   const created = await store.mutate((db) => {
     const model: ModelConfig = {
       id: uid("mdl"),
-      name: requiredString(req.body.name, "展示名称"),
-      provider: typeof req.body.provider === "string" && req.body.provider.trim() ? req.body.provider.trim() : "yylx",
+      name: requiredString(connection.name, "展示名称"),
+      provider: connection.provider,
       kind: req.body.kind === "image" ? "image" : "chat",
-      protocol: req.body.protocol === "anthropic" ? "anthropic" : "openai",
-      baseUrl: requiredString(req.body.baseUrl, "Base URL"),
+      protocol: connection.protocol,
+      baseUrl: requiredString(connection.baseUrl, "Base URL"),
       apiKey: typeof req.body.apiKey === "string" ? req.body.apiKey.trim() : "",
-      model: requiredString(req.body.model, "模型 ID"),
+      model: requiredString(connection.model, "模型 ID"),
+      thinkingMode: connection.thinkingMode,
       systemPrompt: typeof req.body.systemPrompt === "string" ? req.body.systemPrompt : "",
       enabled: Boolean(req.body.enabled),
       isDefault: Boolean(req.body.isDefault),
@@ -1779,13 +1792,20 @@ app.patch("/api/admin/models/:id", ...protectedAdmin, asyncRoute(async (req, res
   const model = await store.mutate((db) => {
     const target = db.models.find((item) => item.id === req.params.id);
     if (!target) throw new Error("模型不存在");
+    const nextProvider = typeof req.body.provider === "string" && req.body.provider.trim() ? req.body.provider.trim() : target.provider;
+    if (["deepseek", "doubao"].includes(nextProvider) && (req.body.kind || target.kind) === "image") throw new Error("官方预设用于聊天模型，不能改为图片生成模型");
+    if (typeof req.body.provider === "string" && req.body.provider.trim() && req.body.provider.trim() !== target.provider) {
+      if (typeof req.body.apiKey !== "string" || !req.body.apiKey.trim()) throw new Error("切换服务商时请填写新服务商的 API Key");
+      target.provider = req.body.provider.trim();
+    }
+    if (req.body.thinkingMode === "enabled" || req.body.thinkingMode === "disabled") target.thinkingMode = req.body.thinkingMode;
     for (const field of ["name", "baseUrl", "model"] as const) {
       if (typeof req.body[field] === "string" && req.body[field].trim()) target[field] = req.body[field].trim();
     }
     if (typeof req.body.systemPrompt === "string") target.systemPrompt = req.body.systemPrompt;
     if (req.body.kind === "image" || req.body.kind === "chat") target.kind = req.body.kind;
     if (req.body.protocol === "openai" || req.body.protocol === "anthropic") target.protocol = req.body.protocol;
-    if (target.kind === "image") target.protocol = "openai";
+    if (target.kind === "image" || ["deepseek", "doubao"].includes(nextProvider)) target.protocol = "openai";
     if (typeof req.body.apiKey === "string" && req.body.apiKey.trim()) target.apiKey = req.body.apiKey.trim();
     if (typeof req.body.enabled === "boolean") target.enabled = req.body.enabled;
     if (req.body.isDefault === true) {

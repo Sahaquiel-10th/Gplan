@@ -1,3 +1,4 @@
+import { buildBrandDocumentQuery } from "./enterpriseBrandDocuments.js";
 // Only the server builds SQL. Model output supplies validated business parameters.
 export const enterpriseTools = {
   source_status: "万里牛各资源同步状态",
@@ -6,6 +7,7 @@ export const enterpriseTools = {
   products: "商品与 SKU 资料",
   inventory: "当前分仓库存",
   sales_summary: "销售出库汇总与排行",
+  sales_brand_documents: "品牌销售笔数与笔数占比（出库单据去重）",
   sales_details: "销售出库明细",
   inbound_summary: "采购入库汇总与排行",
   inbound_details: "采购入库明细（含供应商、批次、效期）",
@@ -85,7 +87,7 @@ export function normalizeDataQuery(tool: string, input: unknown): { tool: Enterp
     throw new EnterpriseQueryValidationError(tool === "inventory" ? "当前库存不支持历史日期查询" : "该查询不支持日期筛选");
   }
   // Reject unsupported filters rather than silently returning a wider scope.
-  if (p.shopIds?.length && !["shops", "sales_summary", "sales_details"].includes(tool)) throw new EnterpriseQueryValidationError("此数据按仓库或商品组织，不能按店铺筛选");
+  if (p.shopIds?.length && !["shops", "sales_summary", "sales_details", "sales_brand_documents"].includes(tool)) throw new EnterpriseQueryValidationError("此数据按仓库或商品组织，不能按店铺筛选");
   if (p.warehouseIds?.length && ["shops", "products", "source_status"].includes(tool)) throw new EnterpriseQueryValidationError("该查询不支持仓库筛选");
   if ((p.skuCodes?.length || p.brands?.length) && ["shops", "warehouses", "source_status"].includes(tool)) throw new EnterpriseQueryValidationError("该查询不支持商品筛选");
   if (tool === "source_status" && p.search) throw new EnterpriseQueryValidationError("同步状态不支持搜索词");
@@ -95,6 +97,7 @@ export function normalizeDataQuery(tool: string, input: unknown): { tool: Enterp
 export function buildEnterpriseQuery(companyId: string, toolName: string, input: unknown): EnterpriseQuery {
   if (!companyId) throw new EnterpriseQueryValidationError("企业范围不能为空");
   const { tool, params: p } = normalizeDataQuery(toolName, input);
+  if (tool === "sales_brand_documents") return buildBrandDocumentQuery(companyId, p);
   const values: (string | number)[] = [companyId];
   const where: string[] = [];
   const inFilter = (column: string, list?: string[]) => {
@@ -183,7 +186,7 @@ export function buildEnterpriseQuery(companyId: string, toolName: string, input:
       };
       const names: Record<string, string> = { day: dimensions.day, shop: "h.shop_name", product: "COALESCE(i.goods_name,p.goods_name)", warehouse: "h.storage_name", supplier: "h.supplier_name", brand: brandSql };
       select = `${dimensions[group]} dimension, MAX(${names[group]}) name, COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY') currencyCode, ${totals}`;
-      if (group === "brand") select += `, CASE WHEN SUM(SUM(${amount} IS NULL)) OVER (PARTITION BY COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY'))>0 THEN NULL ELSE ROUND(SUM(${amount})*100.0/NULLIF(SUM(SUM(${amount})) OVER (PARTITION BY COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY')),0),4) END amountSharePercent`;
+      if (group === "brand") select += `, CASE WHEN SUM(SUM(${amount} IS NULL)) OVER (PARTITION BY COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY'))>0 THEN NULL ELSE ROUND(SUM(${amount})*100.0/NULLIF(SUM(SUM(${amount})) OVER (PARTITION BY COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY')),0),4) END amountSharePercent, ROUND(SUM(i.quantity)*100.0/NULLIF(SUM(SUM(i.quantity)) OVER (PARTITION BY COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY')),0),4) quantitySharePercent`;
       // Currency is always a separate group; totals never mix currencies into one amount.
       suffix = `GROUP BY ${dimensions[group]}, COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY') ${page("amount DESC, dimension, currencyCode")}`;
     }
@@ -208,7 +211,8 @@ export function buildEnterpriseQuery(companyId: string, toolName: string, input:
         CASE WHEN SUM(t.missingAmountLines)>0 THEN NULL ELSE SUM(t.amount) END amount,SUM(t.missingAmountLines) missingAmountLines,
         CASE WHEN SUM(t.missingCostLines)>0 THEN NULL ELSE SUM(t.cost) END cost,SUM(t.missingCostLines) missingCostLines,
         CASE WHEN SUM(SUM(t.missingAmountLines)) OVER (PARTITION BY t.currencyCode)>0 THEN NULL
-          ELSE ROUND(SUM(t.amount)*100.0/NULLIF(SUM(SUM(t.amount)) OVER (PARTITION BY t.currencyCode),0),4) END amountSharePercent
+          ELSE ROUND(SUM(t.amount)*100.0/NULLIF(SUM(SUM(t.amount)) OVER (PARTITION BY t.currencyCode),0),4) END amountSharePercent,
+        ROUND(SUM(t.quantity)*100.0/NULLIF(SUM(SUM(t.quantity)) OVER (PARTITION BY t.currencyCode),0),4) quantitySharePercent
         FROM (${inner}) t LEFT JOIN
         (SELECT sku_code,${brandSql} brandName FROM ods_wln_products p WHERE company_id=? LIMIT 18446744073709551615) p ON p.sku_code=t.sku_code
         GROUP BY p.brandName,t.currencyCode ${page("amount DESC, dimension, currencyCode")}`,

@@ -29,6 +29,7 @@ jobs:
       - run: npm run test:alipay-accounts
       - run: npm run test:finance-directory
       - run: npm run test:enterprise-data
+      - run: npm run test:model-connections
       - run: npm run test:commerce
       - run: npm run test:review-replies
       - run: npm run test:invoices

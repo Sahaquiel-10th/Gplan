@@ -1,4 +1,5 @@
 import { Message, ModelConfig } from "./types.js";
+import { modelChatEndpoint, providerRequestOptions } from "../shared/modelProviders.js";
 
 type ChatResult = {
   content: string;
@@ -61,7 +62,7 @@ export async function callModel(
       modelId: model.id
     }));
 
-  const endpoint = `${model.baseUrl.replace(/\/$/, "")}/chat/completions`;
+  const endpoint = modelChatEndpoint(model.baseUrl);
   const startedAt = Date.now();
   console.log(JSON.stringify({
     event: "model_request_started",
@@ -90,14 +91,14 @@ export async function callModel(
               ]
             : message.content
         })),
-        temperature: 0.7,
+        ...(model.provider === "deepseek" || model.provider === "doubao" ? providerRequestOptions(model.provider, model.thinkingMode) : { temperature: 0.7 }),
         max_tokens: maxOutputTokens
       })
     }, effectiveTimeoutMs);
 
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
+      const detail = (typeof payload?.error?.message === "string" ? payload.error.message : response.statusText).replaceAll(model.apiKey, "[已隐藏密钥]");
       console.error(JSON.stringify({
         event: "model_upstream_error",
         requestId,
@@ -114,7 +115,7 @@ export async function callModel(
     }
 
     const content = payload?.choices?.[0]?.message?.content;
-    if (typeof content !== "string") throw new Error("模型响应格式不正确");
+    if (typeof content !== "string" || !content.trim()) throw new Error(payload?.choices?.[0]?.finish_reason === "length" ? "模型输出达到长度限制，未返回完整回答；可关闭深度思考或增加输出额度后重试" : "模型没有返回可显示的正文，请检查模型及思考模式配置");
     const providerInputTokens = Number(payload?.usage?.prompt_tokens ?? payload?.usage?.input_tokens);
     const providerOutputTokens = Number(payload?.usage?.completion_tokens ?? payload?.usage?.output_tokens);
     const hasProviderUsage = Number.isFinite(providerInputTokens) && Number.isFinite(providerOutputTokens);
@@ -187,10 +188,10 @@ async function callAnthropicModel(
         temperature: 0.7,
         max_tokens: maxOutputTokens
       })
-    }, requestTimeoutMs);
+    }, effectiveTimeoutMs);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
+      const detail = (typeof payload?.error?.message === "string" ? payload.error.message : response.statusText).replaceAll(model.apiKey, "[已隐藏密钥]");
       console.error(JSON.stringify({
         event: "model_upstream_error",
         requestId,

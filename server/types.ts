@@ -20,6 +20,7 @@ export type ModelConfig = {
   apiKey: string;
   model: string;
   systemPrompt: string;
+  thinkingMode?: "enabled" | "disabled";
   enabled: boolean;
   isDefault: boolean;
   createdAt: string;

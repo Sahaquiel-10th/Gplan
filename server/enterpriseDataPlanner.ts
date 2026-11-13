@@ -15,9 +15,15 @@ export function planBrandReport(messages: Message[], today = shanghaiDate()) {
   if (!isReport(last) && !(prior && (followup.test(last) || ((last.match(/\d{4}-\d{2}-\d{2}/g) || []).length >= 2 && /查|看|统计/.test(last) && !/库存|采购|入库|支付宝/.test(last))))) return undefined;
   const intent = isReport(last) ? last : prior!.content;
   if (/店|仓|sku|供应商|渠道|剔除|排除|不含|不包括|只看|仅|指定|其中|按月|分月|逐月|按天|逐日|趋势|环比|同比|对比|比较|退款|成交|到账|净|实时/i.test(intent + last)) return undefined;
+  if (/(?:上上周|上周|本周|这周)[一二三四五六日天1-7]|(?:昨天|前天|今天|昨日|今日).*(?:至|到).*(?:昨天|今天|今日|昨日)/.test(last)) return undefined;
   let startDate: string, endDate = today, note = "";
-  const dates = [...last.matchAll(/\d{4}-\d{2}-\d{2}/g)].map(m => m[0]);
+  const dates = [...last.matchAll(/(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?/g)].map(m => `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`);
   if (dates.length >= 2) [startDate, endDate] = dates;
+  else if (dates.length === 1) startDate = endDate = dates[0];
+  else if (/大前天|前天|昨天|昨日|今天|今日/.test(last)) {
+    const days = /大前天/.test(last) ? 3 : /前天/.test(last) ? 2 : /昨天|昨日/.test(last) ? 1 : 0;
+    startDate = endDate = shift(today, -days);
+  }
   else if (/上上周|上周|本周|这周/.test(last)) {
     const weekday = (new Date(today + "T00:00:00Z").getUTCDay() + 6) % 7;
     const monday = shift(today, -weekday);
@@ -32,10 +38,20 @@ export function planBrandReport(messages: Message[], today = shanghaiDate()) {
     endDate = shift(today.slice(0, 8) + "01", -1);
     startDate = endDate.slice(0, 8) + "01";
   } else {
+    // An unhandled explicit period must go to the general planner, never silently
+    // become the default 30-day range.
+    if (/今年|去年|季度|半年|年初|月初|上周[一二三四五六日天]|\d+月\d+日|最近[^，。]*(?:月|年)/.test(last)) return undefined;
     const earlierDates = [...intent.matchAll(/\d{4}-\d{2}-\d{2}/g)].map(m => m[0]);
     if (earlierDates.length >= 2) [startDate, endDate] = earlierDates;
     else { startDate = shift(today, -29); note = "未指定起止日期，按最近30天（含今天）统计。"; }
   }
   const { params } = normalizeDataQuery("sales_summary", { startDate, endDate, groupBy: "brand", limit: 100 });
-  return { calls: [{ tool: "sales_summary", params }], note };
+  const requestedMetrics = ["amount", "amountSharePercent"];
+  if (/件数|数量|销量/.test(intent + last)) requestedMetrics.push("quantity", "quantitySharePercent");
+  const calls: Array<{ tool: string; params: Record<string, unknown> }> = [{ tool: "sales_summary", params }];
+  if (/笔数|单据数|单数|订单数/.test(intent + last)) {
+    requestedMetrics.push("documentCount", "documentSharePercent");
+    calls.push({ tool: "sales_brand_documents", params: { startDate, endDate, limit: 100 } });
+  }
+  return { calls, note, requestedMetrics, startDate, endDate };
 }

@@ -22,6 +22,8 @@ export type EnterpriseDataSource = {
   hasMore: boolean;
   status: "success" | "error";
   note: string;
+  fields?: string[];
+  querySteps?: Array<{ name: string; status: "success" | "error"; durationMs: number; returnedRows: number }>;
   coverage?: {
     startDate: string; endDate: string; queriedDays: number;
     recordsByCurrency: Array<{ currencyCode: string; daysWithRecords?: number; firstRecordDate?: string; lastRecordDate?: string }>;
@@ -33,6 +35,12 @@ export type EnterpriseDataEvidence = {
   status: "queried" | "partial" | "skipped" | "unavailable";
   sources: EnterpriseDataSource[];
   notices: string[];
+  task?: {
+    startDate: string; endDate: string;
+    requestedMetrics: string[]; providedMetrics: string[]; missingMetrics: string[];
+    completed: boolean;
+  };
+  context?: { characters: number; sha256: string };
 };
 
 export function enterpriseEvidenceStatus(evidence: EnterpriseDataEvidence) {
@@ -40,5 +48,5 @@ export function enterpriseEvidenceStatus(evidence: EnterpriseDataEvidence) {
   const relevant = business.length ? business : evidence.sources;
   if (!relevant.length) return evidence.status;
   const succeeded = relevant.filter(source => source.status === "success").length;
-  return succeeded ? succeeded < relevant.length ? "partial" : "queried" : "unavailable";
+  return succeeded ? succeeded < relevant.length || evidence.task?.missingMetrics.length ? "partial" : "queried" : "unavailable";
 }
