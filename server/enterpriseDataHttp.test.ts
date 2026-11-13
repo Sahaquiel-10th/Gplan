@@ -85,7 +85,7 @@ test("full-day analysis uses saved source dates through the normal chat history 
     assert.equal(f.counts().plannerCalls, before);
     assert.equal(followup.data.message.enterpriseData.sources.length, 7);
     assert.equal(followup.data.message.enterpriseData.task.startDate, first.data.message.enterpriseData.task.startDate);
-    assert.ok(followup.data.message.enterpriseData.timing.budgetMs <= 60000);
+    assert.ok(followup.data.message.enterpriseData.timing.budgetMs <= 45000);
     assert.match(JSON.stringify(f.payloads.at(-1)), /AUTO-KB-CONTEXT/);
   } finally { await f.close(); }
 });

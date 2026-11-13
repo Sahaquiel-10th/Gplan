@@ -1,7 +1,7 @@
 import type { Conversation, User } from "./types.js";
 
-export const enterpriseQueryBudgetMs = 60000;
-export const enterpriseAnswerTimeoutMs = 90000;
+export const enterpriseQueryBudgetMs = 45000;
+export const enterpriseAnswerTimeoutMs = 120000;
 
 export function canReadEnterpriseConversation(conversation: Conversation, user: User) {
   return !conversation.enterpriseData || (

@@ -359,14 +359,14 @@ test("SQL execution is bounded by remaining data budget and stops before extra s
     query: async sql => {
       queries++;
       assert.match(sql, /MAX_EXECUTION_TIME\(12000\)/);
-      clock = 59500;
+      clock = 44500;
       return [{ amount: 100, amountSharePercent: 100 }];
     },
   });
   assert.equal(queries, 1);
   assert.equal(result.evidence.sources[0].failureReason, "budget");
-  assert.equal(result.evidence.timing!.totalMs, 59500);
-  assert.equal(result.evidence.timing!.budgetMs, 60000);
+  assert.equal(result.evidence.timing!.totalMs, 44500);
+  assert.equal(result.evidence.timing!.budgetMs, 45000);
   assert.equal(result.evidence.status, "partial");
 });
 
