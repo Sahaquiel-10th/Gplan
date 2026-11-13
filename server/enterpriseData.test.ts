@@ -316,6 +316,7 @@ test("incident follow-up uses the established day and seven prior days without y
   assert.equal(result.evidence.sources.length, 7);
   assert.equal(result.evidence.task!.completed, true);
   assert.match(result.context, /目标日前7天/);
+  assert.match(result.context, /避免重复上一轮完整品牌表/);
   const scoped = structuredClone(analysisHistory);
   scoped[1].enterpriseData!.sources[0].filters = { ...scoped[1].enterpriseData!.sources[0].filters, brands: ["品牌A"] } as any;
   assert.equal(planCompanyAnalysis(scoped), undefined);

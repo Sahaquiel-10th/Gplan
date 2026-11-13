@@ -54,6 +54,7 @@ export async function buildEnterpriseDataContext(params: {
   const evidence: EnterpriseDataEvidence = { status: "skipped", sources: [], notices: [] };
   const usages: ModelUsage[] = [];
   const results: Array<Record<string, unknown>> = [];
+  let companyAnalysis = false;
   const ready = deps.databaseReady();
   const today = shanghaiDate(params.referenceDate);
   if (!params.connectorEnabled || (!ready && !params.liveAllowed)) {
@@ -65,7 +66,13 @@ export async function buildEnterpriseDataContext(params: {
     const seen = new Set<string>();
     const failedRanges = new Set<string>();
     let knownPlan: ReturnType<typeof planBrandReport>;
-    try { if (ready) knownPlan = planCompanyAnalysis(params.messages, today) || planBrandReport(params.messages, today); } catch { /* Use validated model planning for unsupported dates. */ }
+    try {
+      if (ready) {
+        const analysis = planCompanyAnalysis(params.messages, today);
+        companyAnalysis = Boolean(analysis);
+        knownPlan = analysis || planBrandReport(params.messages, today);
+      }
+    } catch { /* Use validated model planning for unsupported dates. */ }
     // Two planning rounds allow resolving a shop/SKU before querying its facts.
     // General planning allows six queries; a known daily analysis has seven
     // bounded facts. Both share the same data-stage time budget.
@@ -254,6 +261,7 @@ export async function buildEnterpriseDataContext(params: {
     "summary覆盖查询范围内全部匹配明细，rows仅为当前返回页。源币种缺失按企业约定默认人民币CNY，直接用人民币/元表述，不要再因缺失币种阻塞查询；源数据明确标注的其他币种不得混加。查询范围内无记录的日期不等于已同步且销售额为零；按coverage说明请求日期、实际记录日期和天数，不能把起止日期相减就声称每天都有数据。缺失金额或成本为null，不能当0。不根据销售出库额推断平台成交额、到账金额或净利润。",
     "同一问题的数据可能分布在多个来源块；按品牌dimension和币种currencyCode关联读取，不要只看第一个块。销售笔数来自sales_brand_documents，不能把matchedLines当成笔数。指标完整时直接回答用户的问题；部分指标失败时仍应呈现已取得的指标，单独说明缺口，不因一个缺口拒绝整题。amountSharePercent、quantitySharePercent、documentSharePercent已是百分数，不要再乘100。",
     "用户要求金额、笔数、件数及占比时，优先用一张品牌表列出已取得的这些指标，并写明日期、币种和各占比分母；不要以长篇缺口说明代替可提供的数据。用户未指定综合价值评分权重时，不要自行编造权重或把自拟评分说成客观价值。",
+    companyAnalysis ? "本轮是对已有单日品牌表的综合分析追问。优先完整覆盖大盘与源成本毛利、前7天对照、品牌集中度及异常、店铺结构、主要SKU、采购与当前库存、可核实结论和待核实原因。每个有数据的维度都给出具体数值和解读；品牌用头部及异常摘要，避免重复上一轮完整品牌表占满输出空间。历史对照只代表实际查询的7天，店铺/SKU/库存排行按实际返回行数说明范围。大促、投放、库存积压等原因在缺少对应证据时列为假设，不能将日期接近双11直接当作已证实的促销活动。" : "",
     "知识库由聊天入口另行自动召回，以同次请求的其他知识库上下文为准；企业数据工具没有知识库工具不代表系统无法访问知识库。未命中时说明本轮未召回相关资料，不能声称已经读完全部知识库。",
     JSON.stringify({ status: evidence.status, notices: evidence.notices }),
     evidence.task ? JSON.stringify({ task: evidence.task }) : "",

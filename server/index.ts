@@ -1293,6 +1293,7 @@ app.post(
         }
         throw error;
       }
+      if (wantsEnterpriseData && result.truncated) result.content += "\n\n---\n本次回答达到模型输出长度上限，正文尚未完整结束。可以继续询问剩余分析，已取得的数据范围见下方来源。";
       generatedImage = await persistGeneratedImage({
         imageUrl: result.imageUrl,
         companyId: req.user!.companyId,

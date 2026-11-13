@@ -11,6 +11,7 @@ type ChatResult = {
     source: "provider";
   };
   raw?: unknown;
+  truncated?: boolean;
 };
 
 const requestTimeoutMs = numberEnv("MODEL_REQUEST_TIMEOUT_MS", 150000);
@@ -135,6 +136,7 @@ export async function callModel(
     }));
     return {
       content,
+      truncated: payload?.choices?.[0]?.finish_reason === "length",
       usage: hasProviderUsage ? {
         inputTokens: providerInputTokens,
         outputTokens: providerOutputTokens,
@@ -230,6 +232,7 @@ async function callAnthropicModel(
     }));
     return {
       content,
+      truncated: payload?.stop_reason === "max_tokens",
       usage: hasProviderUsage ? {
         inputTokens,
         outputTokens,

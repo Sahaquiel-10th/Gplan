@@ -43,3 +43,18 @@ test("model timeout covers response body after headers for both protocols", asyn
     }
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+test("both protocols expose a provider output-length stop", async () => {
+  const server = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(req.url === "/messages" ? { content: [{ type: "text", text: "partial" }], stop_reason: "max_tokens" } : { choices: [{ message: { content: "partial" }, finish_reason: "length" }] }));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    for (const protocol of ["openai", "anthropic"] as const) {
+      const result = await callModel({ id: "m", model: "test", kind: "chat", protocol, enabled: true, apiKey: "test", baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, systemPrompt: "" } as ModelConfig, [], "", "length-stop-test", 128, 1000);
+      assert.equal(result.truncated, true);
+      assert.equal(result.content, "partial");
+    }
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});

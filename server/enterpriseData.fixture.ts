@@ -65,7 +65,7 @@ export async function enterpriseDataFixture(options: { modelTimeoutMs?: number }
       ? JSON.stringify({ calls: existing ? [] : [{ tool: "sales_summary", params: { startDate: "2026-10-28", endDate: "2026-10-28", groupBy: "product", limit: 1 } }] })
       : text.includes("本轮企业数据查询结果") ? "根据万里牛销售出库数据，测试汇总金额为999999元。仅返回一条排行，不能据此声称看完全部明细。" : "普通聊天回答";
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+    res.end(JSON.stringify({ choices: [{ message: { content }, finish_reason: !planning && text.includes("TRUNCATED_ANSWER") ? "length" : "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
   });
   await new Promise<void>(r => upstream.listen(0, "127.0.0.1", r));
   const upstreamPort = (upstream.address() as net.AddressInfo).port;

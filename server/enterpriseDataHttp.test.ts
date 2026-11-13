@@ -102,3 +102,14 @@ test("answer timeout identifies the answer stage and keeps completed query diagn
     assert.ok(state.ragRetrievalLogs.some((log: any) => log.sourceType === "enterprise_data" && log.matchedItemsJson.sources.some((source: any) => source.status === "success")));
   } finally { await f.close(); }
 });
+
+test("a provider length stop is visible in the saved enterprise answer", { timeout: 10000 }, async () => {
+  const f = await enterpriseDataFixture();
+  try {
+    const response = await f.request("/api/chat", "admin", { modelId: "model", content: "TRUNCATED_ANSWER 昨天所有品牌销售额占比", enterpriseData: true });
+    assert.equal(response.status, 200);
+    assert.match(response.data.message.content, /本次回答达到模型输出长度上限/);
+    const saved = await f.request("/api/conversations/" + response.data.conversation.id);
+    assert.match(saved.data.conversation.messages.at(-1).content, /正文尚未完整结束/);
+  } finally { await f.close(); }
+});
