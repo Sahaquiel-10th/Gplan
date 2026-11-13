@@ -5,6 +5,7 @@ import mysql from "mysql2/promise";
 import { DataConnector, DataMetricDefinition, Database, MessageRecord, ModelConfig, User } from "./types.js";
 import { defaultManagementBriefDefinitions } from "./managementBriefs.js";
 import { hashPassword, uid } from "./security.js";
+import { writeJsonFileAtomic } from "./jsonFile.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -221,9 +222,7 @@ class JsonStore implements Store {
   }
 
   private save() {
-    const tmp = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.db, null, 2));
-    fs.renameSync(tmp, dbPath);
+    writeJsonFileAtomic(dbPath, this.db as unknown as Record<string, unknown>);
   }
 
 }
