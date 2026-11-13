@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
 const required=[
+  'shared/invoiceFilePolicy.mjs','shared/invoiceFilePolicy.d.mts',
   'server/clientDataApi.ts','server/clientDailyReport.ts','server/clientReportPublication.ts',
   'server/apiNotFound.ts','server/gracefulShutdown.ts','server/gracefulShutdown.test.ts',
   'server/clientDataApi.test.ts','server/clientDailyReport.test.ts','deploy/deploy-gplan.sh',

@@ -1,6 +1,7 @@
 import React,{useEffect,useRef,useState} from "react";
 import {ArrowLeft,Menu,Upload,FolderOpen,FileArchive,History,Download,Plus,Check,LoaderCircle,RefreshCw,X,FileSpreadsheet,ChevronRight} from "lucide-react";
 import type {InvoiceRow,PublicInvoiceJob} from "../server/invoiceTypes";
+import {isInvoiceAuxiliaryPath} from "../shared/invoiceFilePolicy.mjs";
 import "./commerce.css";
 import "./invoices.css";
 type Api=<T>(url:string,options?:RequestInit)=>Promise<T>;
@@ -36,6 +37,8 @@ export function InvoiceWorkspace({api,userId,agentId,onBack,onOpenSidebar}:{api:
   async function submitExisting(){const state=ref.current;if(!state.files.length)return;const requestKey=state.requestKey||uid();save({requestKey});const r=await api<{job:PublicInvoiceJob}>(`${apiRoot}/jobs`,{method:"POST",body:JSON.stringify({fileIds:state.files.map(f=>f.id),requestKey})});if(alive.current){accept(r.job);save({files:[],requestKey:""});void loadHistory().catch(()=>undefined);}}
   async function upload(selected:File[]){
     if(!selected.length||disabled||lock.current)return;
+    selected = selected.filter(file => !isInvoiceAuxiliaryPath(file.webkitRelativePath || file.name));
+    if(!selected.length){setError("没有找到发票文件，文件夹附带的系统文件会自动忽略");return;}
     if(!config?.ready){setError("请先由管理员配置识别模型");return;}
     const old=ref.current.files;
     const fingerprint=(f:File)=>`${f.webkitRelativePath||f.name}:${f.size}:${f.lastModified}`;

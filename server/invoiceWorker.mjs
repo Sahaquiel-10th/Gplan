@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import { createRequire } from 'node:module';
+import { isInvoiceAuxiliaryPath } from '../shared/invoiceFilePolicy.mjs';
 const require = createRequire(import.meta.url);
 const MAX_FILES=500, MAX_BYTES=250*1024*1024, MAX_FILE=100*1024*1024;
 const safe=name=>{const n=name.replace(/\\/g,'/');if(!n||n.length>500||n.startsWith('/')||/^[a-z]:/i.test(n)||/[\x00-\x1f\x7f]/.test(n)||n.split('/').some(p=>p==='..'||p==='.'))throw Error('压缩包包含不安全路径');return n;};
@@ -17,12 +18,46 @@ async function archive(file,out) {
   const blocks=log.join('\n').split(/\n\s*\n/).filter(b=>/^Path = /m.test(b));
   if(blocks.length>MAX_FILES+500)throw Error('压缩包目录过多，请拆分上传');
   let total=0,count=0;
-  for(const block of blocks){safe(block.match(/^Path = (.*)$/m)[1]);if(/Symbolic Link =|Hard Link =|Reparse|^Attributes = .*l[rwx-]/m.test(block))throw Error('压缩包不能包含链接');const size=Number(block.match(/^Size = (\d+)/m)?.[1]||0);total+=size;if(size>MAX_FILE||total>MAX_BYTES)throw Error('压缩包展开后过大，请拆分上传');if(!/^Folder = \+/m.test(block)&&!/^Attributes = D/m.test(block))count++;}
+  for(const block of blocks) {
+    const filename = safe(block.match(/^Path = (.*)$/m)[1]);
+    if(/Symbolic Link =|Hard Link =|Reparse|^Attributes = .*l[rwx-]/m.test(block)) {
+      throw Error('压缩包不能包含链接');
+    }
+    const size = Number(block.match(/^Size = (\d+)/m)?.[1] || 0);
+    total += size;
+    if(size > MAX_FILE || total > MAX_BYTES) {
+      throw Error('压缩包展开后过大，请拆分上传');
+    }
+    const directory = /^Folder = \+/m.test(block) || /^Attributes = D/m.test(block);
+    if(!directory && !isInvoiceAuxiliaryPath(filename)) count++;
+  }
   if(count>MAX_FILES)throw Error('压缩包最多包含500个文件');
   log=[];z.FS.mkdir('/out');
   if(z.callMain(['x',name,'-o/out','-y','-p__NO_PASSWORD__','-bb0'])!==0)throw Error('压缩包解压失败，可能已加密、损坏或缺少分卷');
   const files=[];let bytes=0;
-  const walk=async(dir,prefix)=>{for(const n of z.FS.readdir(dir)){if(n==='.'||n==='..')continue;const relative=safe(prefix+n),p=dir+'/'+n,stat=z.FS.lstat(p);if(z.FS.isLink(stat.mode))throw Error('压缩包不能包含链接');if(z.FS.isDir(stat.mode)){await walk(p,relative+'/');continue;}if(!z.FS.isFile(stat.mode))throw Error('压缩包包含特殊文件');if(relative.split('/').some(v=>v==='__MACOSX'||v==='.DS_Store'||v.startsWith('._')))continue;bytes+=stat.size;if(files.length>=MAX_FILES||stat.size>MAX_FILE||bytes>MAX_BYTES)throw Error('压缩包展开后超过文件数量或大小限制');const dest=path.join(out,`entry-${files.length}${path.extname(relative).replace(/[^.a-z0-9]/ig,'').slice(0,16)||'.bin'}`);await fs.writeFile(dest,z.FS.readFile(p));files.push({name:relative,path:dest,size:stat.size});}};
+  const walk = async (dir, prefix) => {
+    for (const name of z.FS.readdir(dir)) {
+      if (name === '.' || name === '..') continue;
+      const relative = safe(prefix + name);
+      const source = dir + '/' + name;
+      const stat = z.FS.lstat(source);
+      if (z.FS.isLink(stat.mode)) throw Error('压缩包不能包含链接');
+      if (isInvoiceAuxiliaryPath(relative)) continue;
+      if (z.FS.isDir(stat.mode)) {
+        await walk(source, relative + '/');
+        continue;
+      }
+      if (!z.FS.isFile(stat.mode)) throw Error('压缩包包含特殊文件');
+      bytes += stat.size;
+      if (files.length >= MAX_FILES || stat.size > MAX_FILE || bytes > MAX_BYTES) {
+        throw Error('压缩包展开后超过文件数量或大小限制');
+      }
+      const extension = path.extname(relative).replace(/[^.a-z0-9]/ig, '').slice(0, 16) || '.bin';
+      const destination = path.join(out, `entry-${files.length}${extension}`);
+      await fs.writeFile(destination, z.FS.readFile(source));
+      files.push({name: relative, path: destination, size: stat.size});
+    }
+  };
   await walk('/out','');if(!files.length)throw Error('压缩包内没有可处理的文件');return {files};
 }
 async function document(file,out,ext) {

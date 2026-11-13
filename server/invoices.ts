@@ -8,14 +8,36 @@ import { callModel } from "./modelGateway.js";
 import { invoiceAccess, invoiceAttachment, invoiceDate, invoiceCents, invoiceSystem, invoicePrompt, normalizeInvoiceRow, safeInvoicePath } from "./invoicePolicy.js";
 import { invoiceExtensions, invoiceLimits, type InvoiceItem, type InvoiceJob, type InvoiceRow } from "./invoiceTypes.js";
 import { runInvoiceWorker, type InvoiceExpanded, type InvoicePrepared } from "./invoiceFiles.js";
+import { isInvoiceAuxiliaryPath } from "../shared/invoiceFilePolicy.mjs";
 
 const now=()=>new Date().toISOString();
 const clone=<T>(v:T):T=>structuredClone(v);
 const key=(v:unknown)=>{if(typeof v!=="string"||!/^[\w-]{8,100}$/.test(v))throw Error("请求编号无效，请刷新后重试");return v;};
 const archives=[".zip",".rar",".7z"];
 const pending=(j:InvoiceJob)=>j.items.some(i=>i.status==="pending"||i.units.some(p=>p.status==="pending"));
-export function invoiceStats(job:InvoiceJob){const leaf=job.items.filter(i=>i.status!=="expanded"),rows=leaf.flatMap(i=>i.units.flatMap(p=>p.rows)).filter(r=>!r.duplicateOf);return {files:leaf.length,processed:leaf.filter(i=>!["pending","processing"].includes(i.status)).length,invoices:rows.length,duplicates:leaf.filter(i=>i.status==="duplicate").length+leaf.flatMap(i=>i.units.flatMap(p=>p.rows)).filter(r=>r.duplicateOf).length,failed:leaf.filter(i=>["failed","interrupted","partial"].includes(i.status)).length,review:rows.filter(r=>r.warnings.length).length,total:rows.length&&rows.every(r=>r.total!==null&&["CNY","RMB","人民币"].includes(r.currency))?rows.reduce((n,r)=>n+r.total!,0)/100:null};}
+export function invoiceStats(job: InvoiceJob) {
+  const files = job.items.filter(item =>
+    item.status !== "expanded" && !isInvoiceAuxiliaryPath(item.filename)
+  );
+  const allRows = files.flatMap(item => item.units.flatMap(unit => unit.rows));
+  const rows = allRows.filter(row => !row.duplicateOf);
+  const completeTotal = rows.length > 0 && rows.every(row =>
+    row.total !== null && ["CNY", "RMB", "人民币"].includes(row.currency)
+  );
+  return {
+    files: files.length,
+    processed: files.filter(item => !["pending", "processing"].includes(item.status)).length,
+    invoices: rows.length,
+    duplicates: files.filter(item => item.status === "duplicate").length +
+      allRows.filter(row => row.duplicateOf).length,
+    failed: files.filter(item => ["failed", "interrupted", "partial"].includes(item.status)).length,
+    review: rows.filter(row => row.warnings.length).length,
+    total: completeTotal ? rows.reduce((sum, row) => sum + row.total!, 0) / 100 : null,
+  };
+}
 export function reconcileInvoiceJob(job:InvoiceJob){
+  // Retain the original attachments while removing folder metadata from old jobs.
+  job.items = job.items.filter(item => !isInvoiceAuxiliaryPath(item.filename));
   const seen=new Map<string,InvoiceRow>();
   for(const item of job.items)for(const part of item.units)for(const row of part.rows){delete row.duplicateOf;if(!row.number)continue;const id=[row.code,row.number,row.seller.replace(/\s/g,"")].join(":");const old=seen.get(id);if(old){row.duplicateOf=old.id;if(["net","tax","total"].some(k=>old[k as "net"]!==row[k as "net"])){const warning="同号发票的金额信息不一致，请对照原件核对";if(!old.warnings.includes(warning))old.warnings.push(warning);if(!row.warnings.includes(warning))row.warnings.push(warning);}}else seen.set(id,row);}
   if(pending(job)||job.items.some(i=>i.status==="processing"))job.status="processing";
@@ -33,7 +55,9 @@ export class InvoiceService {
       const {agent}=invoiceAccess(db,user);
       const old=db.invoiceJobs?.find(j=>j.userId===user.id&&j.companyId===user.companyId&&j.requestKey===request);if(old)return clone(invoiceAccess(db,user,old.id).job);
       if(db.invoiceJobs?.some(j=>j.userId===user.id&&j.companyId===user.companyId&&["queued","processing"].includes(j.status)))throw Error("上一批发票仍在处理中，请完成后再上传新任务");
-      const files=ids.map(id=>invoiceAttachment(db,user,id));if(files.reduce((n,f)=>n+f.size,0)>invoiceLimits.totalBytes)throw Error("每批文件总大小最多500MB，请拆分上传");
+      const files=ids.map(id=>invoiceAttachment(db,user,id)).filter(file=>!isInvoiceAuxiliaryPath(file.originalName));
+      if(!files.length)throw Error("没有找到发票文件，文件夹附带的系统文件会自动忽略");
+      if(files.reduce((n,f)=>n+f.size,0)>invoiceLimits.totalBytes)throw Error("每批文件总大小最多500MB，请拆分上传");
       const at=now();const result:InvoiceJob={id:uid("inv"),companyId:user.companyId,userId:user.id,agentId:agent.id,requestKey:request,name:`发票汇总 ${at.slice(0,10)}`,status:"queued",sourceIds:[...ids],items:files.map(f=>({id:uid("ini"),attachmentId:f.id,filename:f.originalName,status:"pending",error:"",units:[]})),revision:1,retryKeys:[],createdAt:at,updatedAt:at};db.invoiceJobs??=[];db.invoiceJobs.push(result);return clone(result);
     });void this.tick();return job;
   }

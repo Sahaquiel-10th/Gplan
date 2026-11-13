@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import JSZip from "jszip";
 import type { InvoiceJob, InvoiceRow } from "./invoiceTypes.js";
+import { isInvoiceAuxiliaryPath } from "../shared/invoiceFilePolicy.mjs";
 
 export const invoiceHeaders = ["序号", "销货方", "开票日期", "发票号码", "未税金额（元）", "税额（元）", "价税合计（元）", "备注"];
 const xml = (s: string) => s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -13,6 +14,7 @@ function row(index: number, values: (string | number | null)[], styles: number[]
 export function invoiceExportRows(job: InvoiceJob) {
   const output: { row?: InvoiceRow; source: string; failure?: string }[] = [];
   for (const item of job.items) {
+    if (isInvoiceAuxiliaryPath(item.filename)) continue;
     if (["expanded", "duplicate"].includes(item.status)) continue;
     for (const unit of item.units) {
       for (const r of unit.rows) if (!r.duplicateOf) output.push({ row: r, source: `${item.filename}${item.units.length > 1 ? ` 第${unit.page}页` : ""}` });

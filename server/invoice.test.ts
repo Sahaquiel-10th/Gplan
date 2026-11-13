@@ -13,6 +13,7 @@ import {invoiceAgent,invoiceAccess,invoiceAttachment,invoiceCents,normalizeInvoi
 import {InvoiceService,invoiceStats} from "./invoices.js";
 import {runInvoiceWorker} from "./invoiceFiles.js";
 import {buildInvoiceWorkbook,invoiceHeaders} from "./invoiceWorkbook.js";
+import {isInvoiceAuxiliaryPath} from "../shared/invoiceFilePolicy.mjs";
 
 const at=new Date().toISOString();
 async function fixture(n=2){
@@ -27,6 +28,101 @@ async function fixture(n=2){
 const payload=(number="00123456789012345678",extra:Record<string,unknown>={})=>({seller:"测试销货方",buyer:"测试购买方",date:"2026-11-09",number,code:"",net:"100.00",tax:"6.00",total:"106.00",currency:"CNY",remark:"",...extra});
 const worker=(async(file:string)=>({units:[{page:1,text:path.basename(file)}]})) as typeof runInvoiceWorker;
 async function terminal(f:Awaited<ReturnType<typeof fixture>>,id:string){const end=Date.now()+6000;while(Date.now()<end){const j=f.db.invoiceJobs!.find(j=>j.id===id)!;if(!["queued","processing"].includes(j.status))return structuredClone(j);await new Promise(r=>setTimeout(r,5));}throw Error("invoice job timeout");}
+
+test("nested folder metadata is ignored without hiding actual invoices or unknown files", () => {
+  for (const name of [
+    "客户/十一月/.DS_Store", "客户\\十一月\\Thumbs.db", "客户/desktop.ini",
+    "__MACOSX/客户/._发票.pdf", "客户/十一月/._发票.pdf", "客户/空文件夹/",
+  ]) {
+    assert.equal(isInvoiceAuxiliaryPath(name), true, name);
+  }
+  for (const name of ["客户/十一月/发票.pdf", "客户/.发票.pdf", "客户/未知文件.bin"]) {
+    assert.equal(isInvoiceAuxiliaryPath(name), false, name);
+  }
+});
+
+test("folder uploads ignore system files and retain SUM formulas and the complete invoice total", async () => {
+  const f = await fixture(4);
+  try {
+    f.db.attachments[0].originalName = "客户/十一月/第一张.xml";
+    f.db.attachments[1].originalName = "客户/.DS_Store";
+    f.db.attachments[2].originalName = "客户/十一月/子文件夹/第二张.xml";
+    f.db.attachments[3].originalName = "客户/十一月/子文件夹/Thumbs.db";
+    let calls = 0;
+    const service = new InvoiceService(f.store, f.dir, {
+      worker,
+      model: async () => {
+        calls++;
+        return {content: JSON.stringify({invoices: [payload(String(calls))]})};
+      },
+    });
+    const created = await service.create(f.user, ["a0", "a1", "a2", "a3"], "nested-folder-request");
+    const job = await terminal(f, created.id);
+    assert.equal(calls, 2);
+    assert.equal(job.status, "completed");
+    assert.equal(job.items.length, 2);
+    assert.equal(invoiceStats(job).failed, 0);
+    const sheet = XLSX.read(await buildInvoiceWorkbook(job), {type: "buffer"}).Sheets["发票明细"];
+    assert.equal(sheet.E3.v, 2);
+    assert.equal(sheet.G3.v, 212);
+    for (const column of ["E", "F", "G"]) {
+      assert.match(sheet[`${column}8`].f, new RegExp(`SUM\\(${column}6:${column}7\\)`));
+    }
+    assert.equal(sheet.E8.v, 200);
+    assert.equal(sheet.F8.v, 12);
+    assert.equal(sheet.G8.v, 212);
+    assert.equal(sheet.B8?.v, undefined);
+  } finally {
+    await fs.rm(f.dir, {recursive: true, force: true});
+  }
+});
+
+test("old folder jobs recover clean exports without replaying recognition or dropping genuine failures", async () => {
+  const f = await fixture(2);
+  try {
+    let calls = 0;
+    const service = new InvoiceService(f.store, f.dir, {
+      worker,
+      model: async () => {
+        calls++;
+        return {content: JSON.stringify({invoices: [payload(String(calls))]})};
+      },
+    });
+    const saved = await terminal(f, (await service.create(f.user, ["a0", "a1"], "old-folder-request")).id);
+    const job = f.db.invoiceJobs!.find(j => j.id === saved.id)!;
+    const originalRows = job.items.flatMap(i => i.units.flatMap(u => u.rows));
+    job.items.unshift({
+      id: "folder-metadata", attachmentId: "metadata-original", filename: "客户/子文件夹/.DS_Store",
+      status: "failed", error: "暂不支持此格式", units: [],
+    });
+    job.sourceIds.push("metadata-original");
+    job.status = "partial";
+    const beforeRecovery = XLSX.read(await buildInvoiceWorkbook(job), {type: "buffer"}).Sheets["发票明细"];
+    assert.equal(beforeRecovery.G3.v, 212);
+
+    await service.recover();
+    const recovered = await service.get(f.user, job.id);
+    assert.equal(recovered.status, "completed");
+    assert.equal(recovered.items.length, 2);
+    assert.deepEqual(recovered.sourceIds, job.sourceIds);
+    assert.deepEqual(recovered.items.flatMap(i => i.units.flatMap(u => u.rows)), originalRows);
+    assert.equal(calls, 2);
+
+    job.items.push({
+      id: "unreadable-invoice", attachmentId: "unreadable-original", filename: "客户/子文件夹/损坏发票.pdf",
+      status: "failed", error: "文件损坏", units: [],
+    });
+    await service.recover();
+    assert.equal(job.status, "partial");
+    assert.equal(invoiceStats(job).failed, 1);
+    const incomplete = XLSX.read(await buildInvoiceWorkbook(job), {type: "buffer"}).Sheets["发票明细"];
+    assert.match(incomplete.H8.v, /文件损坏/);
+    assert.ok(incomplete.G3.v === "" || incomplete.G3.v === undefined);
+    assert.equal(calls, 2);
+  } finally {
+    await fs.rm(f.dir, {recursive: true, force: true});
+  }
+});
 
 test("invoice amounts preserve cents, red credits, zero and unknown; invoice numbers never become floats",()=>{
   assert.equal(invoiceCents("0.10"),10);assert.equal(invoiceCents("￥1,234.56"),123456);assert.equal(invoiceCents("-10.01"),-1001);assert.equal(invoiceCents("0"),0);assert.equal(invoiceCents("***"),null);assert.equal(invoiceCents("1.234"),null);

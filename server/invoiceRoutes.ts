@@ -11,6 +11,7 @@ import { invoiceAccess, invoiceAgent, invoiceAttachment, invoiceUsesAttachment, 
 import { invoiceExtensions, invoiceLimits } from "./invoiceTypes.js";
 import { InvoiceService, invoiceStats } from "./invoices.js";
 import { buildInvoiceWorkbook } from "./invoiceWorkbook.js";
+import { isInvoiceAuxiliaryPath } from "../shared/invoiceFilePolicy.mjs";
 
 export function createInvoiceRouter(store:Store,secret:string,uploadDir:string){
   const router=express.Router();const service=new InvoiceService(store,uploadDir);const ready=service.recover();
@@ -23,7 +24,14 @@ export function createInvoiceRouter(store:Store,secret:string,uploadDir:string){
     res.json({agentId:agent.id,ready:textReady,visionReady,limits:invoiceLimits,extensions:invoiceExtensions,message:!textReady?"请管理员配置可用的识别模型":!visionReady?"图片和扫描件识别需要配置支持图片理解的模型":""});
   }));
   const storage=multer.diskStorage({destination:(_req,_file,callback)=>{fs.mkdir(uploadDir,{recursive:true}).then(()=>callback(null,uploadDir),error=>callback(error,uploadDir));},filename:(_req,file,callback)=>{const ext=path.extname(file.originalname).replace(/[^.a-z0-9]/ig,"").slice(0,16);callback(null,`${uid("att")}${ext||".bin"}`);}});
-  const uploader=multer({storage,preservePath:true,limits:{fileSize:invoiceLimits.uploadBytes,files:20,fields:0},fileFilter:(_req,file,callback)=>{try{safeInvoicePath(normalizeUploadFilename(file.originalname));callback(null,true);}catch(error){callback(error as Error);}}}).array("files",20);
+  const uploader=multer({storage,preservePath:true,limits:{fileSize:invoiceLimits.uploadBytes,files:20,fields:0},fileFilter:(_req,file,callback)=>{
+    try {
+      const filename = safeInvoicePath(normalizeUploadFilename(file.originalname));
+      callback(null, !isInvoiceAuxiliaryPath(filename));
+    } catch(error) {
+      callback(error as Error);
+    }
+  }}).array("files",20);
   const uploading=new Set<string>();
   router.post("/invoices/uploads",asyncRoute(async(req,res)=>{
     const user=req.user!;const db=await store.read();invoiceAccess(db,user);if(uploading.has(user.id))return res.status(429).json({error:"文件仍在上传，请稍后继续"});
@@ -33,7 +41,7 @@ export function createInvoiceRouter(store:Store,secret:string,uploadDir:string){
     try{
       await new Promise<void>((resolve,reject)=>uploader(req,res,error=>error?reject(error):resolve()));
       const files=req.files as Express.Multer.File[];
-      if(!files?.length)throw Error("请选择发票文件");
+      if(!files?.length)throw Error("没有找到发票文件，文件夹附带的系统文件会自动忽略");
       if(pending.length+files.length>500||pending.reduce((n,a)=>n+a.size,0)+files.reduce((n,f)=>n+f.size,0)>invoiceLimits.totalBytes)throw Error("待提交文件合计超过500个或500MB，请分批处理");
       const attachments:Attachment[]=files.map(file=>({id:path.basename(file.filename,path.extname(file.filename)),companyId:user.companyId,userId:user.id,invoiceUpload:true,originalName:safeInvoicePath(normalizeUploadFilename(file.originalname)),mimeType:file.originalname.toLowerCase().endsWith(".pdf")?"application/pdf":/\.(?:png|jpe?g|webp)$/i.test(file.originalname)?file.mimetype:"application/octet-stream",kind:/\.(?:png|jpe?g|webp)$/i.test(file.originalname)?"image":"document",size:file.size,storagePath:file.path,extractedText:"",createdAt:new Date().toISOString()}));
       await store.mutate(d=>{invoiceAccess(d,user);d.attachments.push(...attachments);});
