@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { buildEnterpriseQuery, enterpriseTools, normalizeDataQuery, shanghaiDate } from "./enterpriseDataQueries.js";
 import { assertEnterpriseAdmin, canReadEnterpriseConversation } from "./enterpriseDataPolicy.js";
 import type { Conversation, ModelConfig, User } from "./types.js";
-import { planBrandReport } from "./enterpriseDataPlanner.js";
+import { planBrandReport, planCompanyAnalysis } from "./enterpriseDataPlanner.js";
 import { createEnterpriseQueryExecutor } from "./enterpriseQueryExecutor.js";
 import { enterpriseEvidenceStatus } from "./enterpriseDataPolicy.js";
 
@@ -217,7 +217,7 @@ test("sync success cannot hide failed business queries, including previously sav
     query: async sql => { if (sql.includes("data_sync_cursors")) return []; throw Object.assign(Error("private driver detail"), { code: "ER_QUERY_TIMEOUT" }); },
   });
   assert.equal(r.evidence.status, "unavailable");
-  assert.match(r.evidence.sources[1].note, /统计查询超时/);
+  assert.match(r.evidence.sources[1].note, /数据查询阶段超时/);
   assert.doesNotMatch(r.context, /private driver detail/);
   assert.equal(enterpriseEvidenceStatus({ ...r.evidence, status: "queried" }), "unavailable");
   assert.equal(enterpriseEvidenceStatus({ ...r.evidence, sources: [...r.evidence.sources, { ...r.evidence.sources[1], status: "success" }] }), "partial");
@@ -292,4 +292,91 @@ test("a successful summary does not prevent a second round for another fact", as
   assert.equal(rounds, 2);
   assert.deepEqual(result.evidence.sources.map(source => source.tool), ["sales_summary", "inventory"]);
   assert.ok(result.evidence.sources.every(source => source.status === "success"));
+});
+
+const analysisQuestion = "结合以往你可以查看的所有数据，和我们知识库中关于公司的所有内容，对我们这一天的数据进行全方位多方面的梳理和分析，越详细越完整越好。";
+const analysisHistory = [
+  { role: "user" as const, content: "昨天所有品牌销售额、笔数、件数及占比", createdAt: "2026-11-13T00:00:00Z" },
+  { role: "assistant" as const, content: "11月12日品牌表", createdAt: "2026-11-13T00:00:01Z", enterpriseData: { status: "queried" as const, notices: [], sources: [{ tool: "sales_summary", title: "销售", mode: "database" as const, filters: { startDate: "2026-11-12", endDate: "2026-11-12", groupBy: "brand", limit: 100, offset: 0 }, queriedAt: "now", returnedRows: 23, hasMore: false, status: "success" as const, note: "" }] } },
+  { role: "user" as const, content: analysisQuestion, createdAt: "2026-11-13T01:00:00Z" },
+];
+
+test("incident follow-up uses the established day and seven prior days without yearly scans", async () => {
+  const plan = planCompanyAnalysis(analysisHistory, "2026-11-14")!;
+  assert.equal(plan.startDate, "2026-11-12");
+  assert.equal(plan.calls.length, 7);
+  assert.deepEqual(plan.calls[2].params, { startDate: "2026-11-05", endDate: "2026-11-11", groupBy: "day", limit: 100 });
+  let planners = 0;
+  const result = await buildEnterpriseDataContext({ ...base, messages: analysisHistory }, {
+    databaseReady: () => true,
+    callModel: async () => { planners++; throw Error("unexpected planner"); },
+    query: async () => [{ amount: 100, amountSharePercent: 100, quantity: 10, quantitySharePercent: 100, documentCount: 5, documentSharePercent: 100 }],
+  });
+  assert.equal(planners, 0);
+  assert.equal(result.evidence.sources.length, 7);
+  assert.equal(result.evidence.task!.completed, true);
+  assert.match(result.context, /目标日前7天/);
+  const scoped = structuredClone(analysisHistory);
+  scoped[1].enterpriseData!.sources[0].filters = { ...scoped[1].enterpriseData!.sources[0].filters, brands: ["品牌A"] } as any;
+  assert.equal(planCompanyAnalysis(scoped), undefined);
+  assert.equal(planCompanyAnalysis([{ ...analysisHistory[2], content: "对薇诺娜全面分析" }]), undefined);
+  assert.equal(planCompanyAnalysis([...analysisHistory, { ...analysisHistory[2], content: "结合去年数据，对这一天全面分析" }]), undefined);
+});
+
+test("failed first page blocks subsequent offsets of the same normalized range", async () => {
+  let queries = 0;
+  const result = await buildEnterpriseDataContext(base, {
+    databaseReady: () => true,
+    callModel: async () => ({ content: JSON.stringify({ calls: [0, 100, 200].map(offset => ({ tool: "sales_summary", params: { startDate: "2025-11-13", endDate: "2026-11-12", groupBy: "day", limit: 100, offset } })) }) }),
+    query: async () => { queries++; throw Object.assign(Error("timeout"), { code: "ER_QUERY_TIMEOUT" }); },
+  });
+  assert.equal(queries, 1);
+  assert.equal(result.evidence.sources.length, 1);
+  assert.match(result.evidence.notices.join(""), /停止同范围/);
+});
+
+test("successful grouped values survive a later total timeout", async () => {
+  const result = await buildEnterpriseDataContext({ ...base, messages: [{ role: "user", content: "昨天所有品牌销售额占比", createdAt: "now" }] }, {
+    databaseReady: () => true,
+    query: async sql => {
+      if (!sql.includes("LIMIT")) throw Object.assign(Error("timeout"), { code: "ER_QUERY_TIMEOUT" });
+      return [{ dimension: "品牌A", amount: 100, amountSharePercent: 100 }];
+    },
+  });
+  assert.equal(result.evidence.status, "partial");
+  assert.equal(result.evidence.sources[0].status, "success");
+  assert.equal(result.evidence.sources[0].partial, true);
+  assert.equal(result.evidence.task!.completed, false);
+  assert.match(result.context, /"amount":100/);
+  assert.match(result.context, /已保留成功的分组数据/);
+});
+
+test("SQL execution is bounded by remaining data budget and stops before extra statements", async () => {
+  let clock = 0, queries = 0;
+  const result = await buildEnterpriseDataContext({ ...base, messages: [{ role: "user", content: "昨天所有品牌销售额占比", createdAt: "now" }], deadline: 60000 }, {
+    now: () => clock,
+    databaseReady: () => true,
+    query: async sql => {
+      queries++;
+      assert.match(sql, /MAX_EXECUTION_TIME\(12000\)/);
+      clock = 59500;
+      return [{ amount: 100, amountSharePercent: 100 }];
+    },
+  });
+  assert.equal(queries, 1);
+  assert.equal(result.evidence.sources[0].failureReason, "budget");
+  assert.equal(result.evidence.timing!.totalMs, 59500);
+  assert.equal(result.evidence.timing!.budgetMs, 60000);
+  assert.equal(result.evidence.status, "partial");
+});
+
+test("daily and shop aggregates omit an unused product join while brand filters keep it", () => {
+  for (const groupBy of ["day", "shop"] as const) {
+    const q = buildEnterpriseQuery("c1", "sales_summary", { startDate: "2026-11-05", endDate: "2026-11-11", groupBy });
+    assert.doesNotMatch(q.rows.sql, /ods_wln_products/);
+    assert.ok(q.rows.values.includes("c1"));
+    const scoped = buildEnterpriseQuery("c1", "sales_summary", { ...q.params, brands: ["品牌A"] });
+    assert.match(scoped.rows.sql, /ods_wln_products/);
+    assert.ok(scoped.rows.values.includes("品牌A"));
+  }
 });

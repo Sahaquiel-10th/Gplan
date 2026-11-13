@@ -192,7 +192,8 @@ export function buildEnterpriseQuery(companyId: string, toolName: string, input:
     }
     const totalsFrom = !p.brands?.length && !p.search ? from.replace(/ LEFT JOIN ods_wln_products p ON.*$/, "") : from;
     const summary = sql(`COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY') currencyCode, ${totals}`, totalsFrom, "GROUP BY COALESCE(NULLIF(TRIM(h.currency_code),''),'CNY')");
-    result = { tool, params: p, rows: sql(select, from, suffix), summary, freshness: freshness("h", totalsFrom), note: `${sales ? "销售出库单明细口径，不等于平台成交订单、净销售额或到账金额；单据数不是平台订单数。成本只反映源明细成本，不含其他费用，不能直接认定净利润。" : "仅采购入库，不默认包含销售退货、调拨或其他入库。"} 日期均为北京时间，含起止日。金额按币种分别统计，源币种缺失时按企业约定默认人民币CNY；明确标注的其他币种单独统计。汇总覆盖全部匹配明细，返回行可能分页；缺金额或成本保留null。按源单据类型原样统计，未自动排除红冲或其他特殊类型。` };
+    const rowsFrom = !details && !p.brands?.length && !p.search && ["day", "shop", "warehouse"].includes(p.groupBy || "day") ? totalsFrom : from;
+    result = { tool, params: p, rows: sql(select, rowsFrom, suffix), summary, freshness: freshness("h", totalsFrom), note: `${sales ? "销售出库单明细口径，不等于平台成交订单、净销售额或到账金额；单据数不是平台订单数。成本只反映源明细成本，不含其他费用，不能直接认定净利润。" : "仅采购入库，不默认包含销售退货、调拨或其他入库。"} 日期均为北京时间，含起止日。金额按币种分别统计，源币种缺失时按企业约定默认人民币CNY；明确标注的其他币种单独统计。汇总覆盖全部匹配明细，返回行可能分页；缺金额或成本保留null。按源单据类型原样统计，未自动排除红冲或其他特殊类型。` };
   }
   if (tool === "sales_summary" && p.groupBy === "brand" && !p.shopIds?.length && !p.warehouseIds?.length && !p.skuCodes?.length && !p.brands?.length && !p.search) {
     // Reduce millions of lines to a few thousand SKU totals before joining the
@@ -218,13 +219,20 @@ export function buildEnterpriseQuery(companyId: string, toolName: string, input:
         GROUP BY p.brandName,t.currencyCode ${page("amount DESC, dimension, currencyCode")}`,
       values: [...result.rows.values,companyId],
     };
-    // Global brand reports use the bounded connector watermark for freshness;
-    // computing MAX over the same millions of joined lines adds no business facts.
+    for (const statement of [result.summary, result.freshness]) if (statement) statement.sql = statement.sql.replace("SELECT /*+ MAX_EXECUTION_TIME(12000) */", "SELECT /*+ MAX_EXECUTION_TIME(30000) */ /* enterprise-sales */");
+  }
+  if (tool === "sales_summary") {
+    // All sales aggregate dimensions can use the existing covering indexes.
+    for (const statement of [result.rows, result.summary, result.freshness]) {
+      if (statement && !statement.sql.includes("/* enterprise-sales */")) statement.sql = statement.sql.replace(/^(SELECT \/\*\+ MAX_EXECUTION_TIME\(\d+\) \*\/)/, "$1 /* enterprise-sales */");
+    }
+  }
+  if (tool === "sales_summary" && !p.shopIds?.length && !p.warehouseIds?.length && !p.skuCodes?.length && !p.brands?.length && !p.search) {
+    // The connector watermark avoids another scan of the same matching lines.
     result.freshness = {
       sql: "SELECT c.last_success_at latestSyncedAt FROM data_sync_cursors c JOIN (SELECT ? company_id) tenant_scope ON tenant_scope.company_id=? WHERE c.connector_id='wanliniu' AND c.resource_name='sale_outbound' LIMIT 1",
       values: [companyId,process.env.WANLINIU_COMPANY_ID?.trim() || "company_default"],
     };
-    for (const statement of [result.summary, result.freshness]) if (statement) statement.sql = statement.sql.replace("SELECT /*+ MAX_EXECUTION_TIME(12000) */", "SELECT /*+ MAX_EXECUTION_TIME(30000) */ /* enterprise-sales */");
   }
   return result;
 }

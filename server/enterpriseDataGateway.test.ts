@@ -28,3 +28,18 @@ test("OpenAI and Anthropic both receive enterprise facts and automatic knowledge
     }
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
 });
+
+test("model timeout covers response body after headers for both protocols", async () => {
+  const server = http.createServer(async (_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.write('{"pending":');
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    for (const protocol of ["openai", "anthropic"] as const) {
+      const started = Date.now();
+      await assert.rejects(callModel({ id: "m", model: "test", kind: "chat", protocol, enabled: true, apiKey: "test", baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, systemPrompt: "" } as ModelConfig, [], "", "body-timeout-test", 128, 1000), /模型响应超时/);
+      assert.ok(Date.now() - started < 3000);
+    }
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});

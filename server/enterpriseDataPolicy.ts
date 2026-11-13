@@ -1,5 +1,8 @@
 import type { Conversation, User } from "./types.js";
 
+export const enterpriseQueryBudgetMs = 60000;
+export const enterpriseAnswerTimeoutMs = 90000;
+
 export function canReadEnterpriseConversation(conversation: Conversation, user: User) {
   return !conversation.enterpriseData || (
     user.enabled && user.role === "admin" && conversation.enterpriseData.companyId === user.companyId
@@ -21,6 +24,8 @@ export type EnterpriseDataSource = {
   returnedRows: number;
   hasMore: boolean;
   status: "success" | "error";
+  partial?: boolean;
+  failureReason?: "timeout" | "source_error" | "invalid_params" | "budget";
   note: string;
   fields?: string[];
   querySteps?: Array<{ name: string; status: "success" | "error"; durationMs: number; returnedRows: number }>;
@@ -41,6 +46,7 @@ export type EnterpriseDataEvidence = {
     completed: boolean;
   };
   context?: { characters: number; sha256: string };
+  timing?: { planningMs: number; queryMs: number; totalMs: number; budgetMs: number };
 };
 
 export function enterpriseEvidenceStatus(evidence: EnterpriseDataEvidence) {
@@ -48,5 +54,5 @@ export function enterpriseEvidenceStatus(evidence: EnterpriseDataEvidence) {
   const relevant = business.length ? business : evidence.sources;
   if (!relevant.length) return evidence.status;
   const succeeded = relevant.filter(source => source.status === "success").length;
-  return succeeded ? succeeded < relevant.length || evidence.task?.missingMetrics.length ? "partial" : "queried" : "unavailable";
+  return succeeded ? succeeded < relevant.length || relevant.some(source => source.partial) || evidence.task?.completed === false ? "partial" : "queried" : "unavailable";
 }

@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { hashPassword, signToken } from "./security.js";
 
-export async function enterpriseDataFixture() {
+export async function enterpriseDataFixture(options: { modelTimeoutMs?: number } = {}) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gplan-enterprise-http-"));
   await fs.cp(path.join(root, "server"), path.join(dir, "server"), { recursive: true });
@@ -52,6 +52,11 @@ export async function enterpriseDataFixture() {
     const text = JSON.stringify(payload.messages);
     const planning = text.includes("你是企业数据只读查询规划器");
     if (planning) plannerCalls++;
+    if (!planning && text.includes("STALL_ANSWER")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write('{"pending":');
+      return;
+    }
     if ((planning && text.includes("REVOKE_DURING_PLAN")) || (!planning && text.includes("REVOKE_DURING_ANSWER"))) {
       await request("/api/admin/users/admin", "controller", { role: "user" }, "PATCH");
     }
@@ -76,7 +81,7 @@ export async function enterpriseDataFixture() {
   url = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ["--import", "tsx", path.join(dir, "server/index.ts")], {
     cwd: dir,
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: "production", PORT: String(port), JWT_SECRET: secret, DB_PROVIDER: "json", DATA_DB_PROVIDER: "disabled", WANLINIU_SYNC_ENABLED: "false", KNOWLEDGE_SYNC_ENABLED: "false", MEMORY_SCAN_INTERVAL_MINUTES: "9999" },
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: "production", PORT: String(port), JWT_SECRET: secret, DB_PROVIDER: "json", DATA_DB_PROVIDER: "disabled", WANLINIU_SYNC_ENABLED: "false", KNOWLEDGE_SYNC_ENABLED: "false", MEMORY_SCAN_INTERVAL_MINUTES: "9999", ...(options.modelTimeoutMs ? { MODEL_REQUEST_TIMEOUT_MS: String(options.modelTimeoutMs) } : {}) },
   });
   let logs = "";
   child.stdout.on("data", b => { logs += b; });

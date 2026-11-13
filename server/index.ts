@@ -3,7 +3,7 @@ import { modelConnectionDraft, testModelConnection } from "./modelConnections.js
 import { createAlipayAccountRouter } from "./alipayAccountRoutes.js";
 import { createFinanceDirectoryRouter } from "./financeDirectoryRoutes.js";
 import { buildEnterpriseDataContext } from "./enterpriseData.js";
-import { assertEnterpriseAdmin, canReadEnterpriseConversation } from "./enterpriseDataPolicy.js";
+import { assertEnterpriseAdmin, canReadEnterpriseConversation, enterpriseAnswerTimeoutMs, enterpriseQueryBudgetMs } from "./enterpriseDataPolicy.js";
 import { createDashboardRouter } from "./dashboardRoutes.js";
 import { commerceLibraryUsesAttachment } from "./commerceMaterials.js";
 import { createCommerceRouter } from "./commerceRoutes.js";
@@ -1046,7 +1046,7 @@ app.post(
   "/api/chat",
   auth(jwtSecret),
   asyncRoute(async (req, res) => {
-    const enterpriseDeadline = Date.now() + 165000;
+    const enterpriseQueryDeadline = Date.now() + enterpriseQueryBudgetMs;
     const attachmentIds = Array.isArray(req.body.attachmentIds)
       ? [...new Set(req.body.attachmentIds.filter((id: unknown): id is string => typeof id === "string" && Boolean(id.trim())).map((id: string) => id.trim()))].slice(0, attachmentMaxFiles)
       : [];
@@ -1203,6 +1203,7 @@ app.post(
         role: message.role,
         content: message.content,
         imageUrl: message.imageUrl,
+        enterpriseData: message.enterpriseData,
         modelId: message.modelId,
         createdAt: message.createdAt
       }));
@@ -1276,13 +1277,22 @@ app.post(
           user: req.user!, model, messages: [...historyMessages, userMessage], requestId: res.locals.requestId,
           connectorEnabled: db.dataConnectors.some(c => c.id === "wanliniu" && c.enabled),
           liveAllowed: sourceCompanyId === req.user!.companyId && missingWanliniuSyncConfig().length === 0,
-          ensureAccess: ensureEnterpriseAccess, deadline: enterpriseDeadline - 30000, referenceDate: new Date(userMessage.createdAt),
+          ensureAccess: ensureEnterpriseAccess, deadline: enterpriseQueryDeadline, referenceDate: new Date(userMessage.createdAt), knowledgeMatches: companyKnowledge.length,
         });
         modelMessages.unshift({ role: "system", content: enterpriseResult.context, createdAt: now(), modelId: model.id });
         await logRetrieval({ companyId: req.user!.companyId, userId: req.user!.id, conversationId: conversation.id, query: content, sourceType: "enterprise_data", matchedItemsJson: enterpriseResult.evidence, injectedContext: "", threshold: 0, topK: enterpriseResult.evidence.sources.length });
       }
       if (enterpriseConversation || conversation.enterpriseData) await ensureEnterpriseAccess();
-      result = await callModel(executionModel, modelMessages, db.settings.safetyRules, res.locals.requestId, undefined, wantsEnterpriseData ? Math.max(1000, enterpriseDeadline - Date.now()) : undefined);
+      try {
+        result = await callModel(executionModel, modelMessages, db.settings.safetyRules, res.locals.requestId, undefined, wantsEnterpriseData ? enterpriseAnswerTimeoutMs : undefined);
+      } catch (error) {
+        if (wantsEnterpriseData && /模型响应超时/.test(String((error as Error).message))) {
+          const dataNotice = enterpriseResult?.evidence.sources.some(source => source.failureReason === "timeout") ? "数据查询阶段也有超时，已取得的来源记录可用于排查。" : "数据查询阶段已结束。";
+          const waited = String((error as Error).message).match(/已等待 (\d+) 秒/)?.[1] || String(enterpriseAnswerTimeoutMs / 1000);
+          throw Object.assign(new Error(`模型回答阶段响应超时（已等待${waited}秒）。${dataNotice}本次请求号 ${res.locals.requestId}。`), { status: 504, stage: "model_answer" });
+        }
+        throw error;
+      }
       generatedImage = await persistGeneratedImage({
         imageUrl: result.imageUrl,
         companyId: req.user!.companyId,
@@ -2600,7 +2610,7 @@ app.use((err: Error, req: Request, res: Response, _next: unknown) => {
     status,
     error: message
   }));
-  res.status(status).json({ error: message, requestId: res.locals.requestId });
+  res.status(status).json({ error: message, requestId: res.locals.requestId, stage: (err as Error & { stage?: string }).stage });
 });
 
 app.use('/api', apiNotFound);

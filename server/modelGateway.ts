@@ -22,13 +22,21 @@ function numberEnv(name: string, fallback: number) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, readBody = true) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (!readBody) return { response, payload: undefined };
+    let payload: any;
+    try { payload = await response.json(); }
+    catch (error) {
+      if (controller.signal.aborted) throw error;
+      payload = {};
+    }
+    return { response, payload };
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
+    if (controller.signal.aborted || error instanceof Error && error.name === "AbortError") {
       throw new Error(`模型响应超时（已等待 ${Math.max(1, Math.round(timeoutMs / 1000))} 秒），请缩短问题或稍后重试`);
     }
     throw new Error("无法连接模型服务，请稍后重试");
@@ -74,7 +82,7 @@ export async function callModel(
     maxOutputTokens
   }));
   try {
-    const response = await fetchWithTimeout(endpoint, {
+    const { response, payload } = await fetchWithTimeout(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -96,7 +104,6 @@ export async function callModel(
       })
     }, effectiveTimeoutMs);
 
-    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = (typeof payload?.error?.message === "string" ? payload.error.message : response.statusText).replaceAll(model.apiKey, "[已隐藏密钥]");
       console.error(JSON.stringify({
@@ -172,7 +179,7 @@ async function callAnthropicModel(
     maxOutputTokens
   }));
   try {
-    const response = await fetchWithTimeout(endpoint, {
+    const { response, payload } = await fetchWithTimeout(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -189,7 +196,6 @@ async function callAnthropicModel(
         max_tokens: maxOutputTokens
       })
     }, effectiveTimeoutMs);
-    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = (typeof payload?.error?.message === "string" ? payload.error.message : response.statusText).replaceAll(model.apiKey, "[已隐藏密钥]");
       console.error(JSON.stringify({
@@ -275,9 +281,9 @@ async function callImageModel(
           size
         })
       };
-  const response = await fetchWithTimeout(endpoint, {
+  const { response } = await fetchWithTimeout(endpoint, {
     ...request
-  }, imageRequestTimeoutMs);
+  }, imageRequestTimeoutMs, false);
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {

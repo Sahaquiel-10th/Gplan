@@ -73,3 +73,32 @@ test("enterprise chat HTTP: real orchestration, automatic KB, ownership, revocat
     }
   } finally { await f.close(); }
 });
+
+test("full-day analysis uses saved source dates through the normal chat history path", { timeout: 60000 }, async () => {
+  const f = await enterpriseDataFixture();
+  try {
+    const first = await f.request("/api/chat", "admin", { modelId: "model", content: "昨天所有品牌销售额、笔数、件数及占比", enterpriseData: true });
+    assert.equal(first.status, 200);
+    const before = f.counts().plannerCalls;
+    const followup = await f.request("/api/chat", "admin", { modelId: "model", conversationId: first.data.conversation.id, content: "结合以往你可以查看的所有数据，和我们知识库中关于公司的所有内容，对我们这一天的数据进行全方位多方面的梳理和分析，越详细越完整越好。", enterpriseData: true });
+    assert.equal(followup.status, 200, JSON.stringify(followup.data));
+    assert.equal(f.counts().plannerCalls, before);
+    assert.equal(followup.data.message.enterpriseData.sources.length, 7);
+    assert.equal(followup.data.message.enterpriseData.task.startDate, first.data.message.enterpriseData.task.startDate);
+    assert.ok(followup.data.message.enterpriseData.timing.budgetMs <= 60000);
+    assert.match(JSON.stringify(f.payloads.at(-1)), /AUTO-KB-CONTEXT/);
+  } finally { await f.close(); }
+});
+
+test("answer timeout identifies the answer stage and keeps completed query diagnostics", { timeout: 10000 }, async () => {
+  const f = await enterpriseDataFixture({ modelTimeoutMs: 1000 });
+  try {
+    const response = await f.request("/api/chat", "admin", { modelId: "model", content: "STALL_ANSWER 查看销售数据", enterpriseData: true });
+    assert.equal(response.status, 504);
+    assert.equal(response.data.stage, "model_answer");
+    assert.match(response.data.error, /模型回答阶段响应超时（已等待1秒）/);
+    assert.ok(response.data.requestId);
+    const state = await f.read();
+    assert.ok(state.ragRetrievalLogs.some((log: any) => log.sourceType === "enterprise_data" && log.matchedItemsJson.sources.some((source: any) => source.status === "success")));
+  } finally { await f.close(); }
+});
