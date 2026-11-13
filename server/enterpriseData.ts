@@ -268,5 +268,5 @@ export async function buildEnterpriseDataContext(params: {
     serialized,
   ].join("\n\n");
   evidence.context = { characters: context.length, sha256: createHash("sha256").update(context).digest("hex") };
-  return { context, evidence, usages };
+  return { context, evidence, usages, companyAnalysis };
 }

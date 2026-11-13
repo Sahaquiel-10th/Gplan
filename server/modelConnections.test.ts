@@ -49,3 +49,20 @@ test("connection checks reject absent keys and sanitize provider errors", async 
   await assert.rejects(testModelConnection({ ...model, apiKey: "" }, "test"), /填写 API Key/);
   await assert.rejects(testModelConnection(model, "test", async () => { throw Error("上游 401 TOP-SECRET"); }), error => !String(error).includes("TOP-SECRET") && /认证/.test(String(error)));
 });
+
+test("trusted detailed analysis can request 6000 tokens while ordinary calls use the default", async () => {
+  const limits: number[] = [];
+  const upstream = http.createServer(async (req, res) => {
+    let raw = ""; for await (const chunk of req) raw += chunk;
+    limits.push(JSON.parse(raw).max_tokens);
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ choices: [{ message: { content: "complete" }, finish_reason: "stop" }] }));
+  });
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  try {
+    const model = modelConnectionDraft({ provider: "deepseek", apiKey: "test", baseUrl: `http://127.0.0.1:${(upstream.address() as { port: number }).port}` });
+    await callModel(model, [], "", "analysis-limit", 6000, 1000);
+    await callModel(model, [], "", "default-limit", undefined, 1000);
+    assert.deepEqual(limits, [6000, Number(process.env.MODEL_MAX_OUTPUT_TOKENS) || 3000]);
+  } finally { upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
+});

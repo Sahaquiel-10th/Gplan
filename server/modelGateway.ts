@@ -55,7 +55,7 @@ export async function callModel(
   timeoutMs = requestTimeoutMs
 ): Promise<ChatResult> {
   const effectiveTimeoutMs = Math.max(1000, Math.min(requestTimeoutMs, Number.isFinite(timeoutMs) ? timeoutMs : requestTimeoutMs));
-  const maxOutputTokens = Math.max(128, Math.min(defaultMaxOutputTokens, Math.round(outputTokenLimit)));
+  const maxOutputTokens = Number.isFinite(outputTokenLimit) ? Math.max(128, Math.round(outputTokenLimit)) : defaultMaxOutputTokens;
   if (!model.enabled) throw new Error("模型未启用");
   if (!model.apiKey) throw new Error("模型缺少 API Key");
   if (model.kind === "image") return callImageModel(model, messages, safetyRules, requestId);

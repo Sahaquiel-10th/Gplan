@@ -1284,7 +1284,8 @@ app.post(
       }
       if (enterpriseConversation || conversation.enterpriseData) await ensureEnterpriseAccess();
       try {
-        result = await callModel(executionModel, modelMessages, db.settings.safetyRules, res.locals.requestId, undefined, wantsEnterpriseData ? enterpriseAnswerTimeoutMs : undefined);
+        const detailedOfficialAnalysis = enterpriseResult?.companyAnalysis && (executionModel.provider === "deepseek" || executionModel.provider === "doubao");
+        result = await callModel(executionModel, modelMessages, db.settings.safetyRules, res.locals.requestId, detailedOfficialAnalysis ? 6000 : undefined, wantsEnterpriseData ? enterpriseAnswerTimeoutMs : undefined);
       } catch (error) {
         if (wantsEnterpriseData && /模型响应超时/.test(String((error as Error).message))) {
           const dataNotice = enterpriseResult?.evidence.sources.some(source => source.failureReason === "timeout") ? "数据查询阶段也有超时，已取得的来源记录可用于排查。" : "数据查询阶段已结束。";
