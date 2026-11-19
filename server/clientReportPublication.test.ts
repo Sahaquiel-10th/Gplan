@@ -13,6 +13,7 @@ test('交易游标推进后批次失效，库存采样修正也会失效',()=>{
   assert.equal(publicationVersion(a),publicationVersion(a));
   assert.notEqual(publicationVersion(a),publicationVersion(b));
   assert.notEqual(publicationVersion(a,'old'),publicationVersion(a,'corrected'));
+  assert.notEqual(publicationVersion(a),publicationVersion([...a,{resource_name:'transfer_in',modified_through:'2026-11-19T03:00:00Z'}] as RowDataPacket[]));
   assert.equal(publicationVersion([{resource_name:'inventory',modified_through:'yesterday'}] as RowDataPacket[],'frozen'),publicationVersion([{resource_name:'inventory',modified_through:'today'}] as RowDataPacket[],'frozen'));
 });
 test('错误客户端和未来日期不能生成数据',async()=>{

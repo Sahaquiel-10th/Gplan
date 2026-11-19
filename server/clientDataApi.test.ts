@@ -26,7 +26,7 @@ test('正式接口 HTTP 合约：JSON、分页、过滤、权限、日期、批�
       }]];
       if(sql.includes('UPDATE data_api_clients') || sql.includes('INSERT INTO data_api_request_logs')) return [{affectedRows:1}];
       if(sql.includes('SELECT batch_id,rows_json')) return [[{
-        batch_id:'stable-batch', rows_json:rows, source_version:publicationVersion([] as RowDataPacket[],'test'), inventory_status_json:{status:'complete',source:'internal',missing_rows:0},prepared_at:'2026-10-27T03:30:00+08:00'
+        batch_id:'stable-batch', rows_json:rows, source_version:publicationVersion([] as RowDataPacket[],'test'), inventory_status_json:{status:'complete',source:'internal',missing_rows:0},movement_status_json:JSON.stringify({status:'complete',available_from:'2026-08-22',synced_through:'2026-11-19T03:00:00Z'}),prepared_at:'2026-10-27T03:30:00+08:00'
       }]];
       throw new Error('Unexpected execute: '+sql+' '+args?.length);
     }
@@ -49,6 +49,7 @@ test('正式接口 HTTP 合约：JSON、分页、过滤、权限、日期、批�
     await request('/open/v1/daily-report?date=2026-10-13',401,false);
     const first=await request('/open/v1/daily-report?date=2026-10-13&page_size=1');
     assert.deepEqual(first.inventory_status,{status:'complete',missing_rows:0});
+    assert.deepEqual(first.movement_status,{status:'complete',available_from:'2026-08-22',synced_through:'2026-11-19T03:00:00Z'});
     assert.equal(first.data.length,1);assert.equal(first.pagination.total,2);assert.equal(first.pagination.has_more,true);
     const second=await request('/open/v1/daily-report?date=2026-10-13&page=2&page_size=1&batch_id=stable-batch');
     assert.equal(second.data[0].record_type,'inventory');assert.equal(second.pagination.has_more,false);

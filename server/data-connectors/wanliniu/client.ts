@@ -1,10 +1,34 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+// Large movement responses can be truncated when the upstream CLI exits before
+// flushing a pipe. A regular file makes its stdout writes synchronous.
+export async function cliJsonToFile(executable: string, args: string[], directory: string, timeout: number) {
+  const output = path.join(directory, 'response.json');
+  const file = await fs.open(output, 'wx', 0o600);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(executable, args, { stdio: ['ignore', file.fd, 'pipe'] });
+      let stderr = '', expired = false;
+      const timer = setTimeout(() => { expired = true; child.kill('SIGKILL'); }, timeout);
+      child.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-16000); });
+      child.on('error', error => { clearTimeout(timer); reject(error); });
+      child.on('close', code => {
+        clearTimeout(timer);
+        if (expired) reject(new Error('万里牛接口请求超时'));
+        else if (code !== 0) reject(new Error(stderr || `万里牛 CLI 退出码 ${code}`));
+        else resolve();
+      });
+    });
+  } finally { await file.close(); }
+  if ((await fs.stat(output)).size > 20 * 1024 * 1024) throw new Error('万里牛单页响应超过20MB，请缩小分页');
+  return fs.readFile(output, 'utf8');
+}
 
 export type WanliniuRecord = Record<string, unknown>;
 
@@ -13,7 +37,10 @@ const allowedPaths = new Set([
   "/erp/goods/spec/open/query/goodswithspeclist",
   "/erp/open/inventory/items/get/by/modifytimev2",
   "/erp/sale/stock/out/query",
-  "/erp/purchase/purchasebill/stockin/query"
+  "/erp/purchase/purchasebill/stockin/query",
+  "/erp/allocation/in/changebill/query",
+  "/erp/allocation/out/changebill/query",
+  "/erp/sale/stock/in/query"
 ]);
 
 function cliPath() {
@@ -100,9 +127,14 @@ export class WanliniuClient {
         host: process.env.HUPUN_API_HOST?.trim() || "https://open-api.hupun.com",
         timeout_seconds: Math.ceil(timeoutMs() / 1000)
       }), { mode: 0o600 });
+      const args = ["-c", configPath, apiPath, JSON.stringify(params), "--agent", "GPlan-Wanliniu-Sync"];
+      if (apiPath === '/erp/sale/stock/in/query' || apiPath.startsWith('/erp/allocation/')) {
+        const stdout = await cliJsonToFile(cliPath(), args, temporaryDirectory, timeoutMs() + 15_000);
+        return unwrapRecords(parseCliJson(stdout));
+      }
       const { stdout, stderr } = await execFileAsync(
         cliPath(),
-        ["-c", configPath, apiPath, JSON.stringify(params), "--agent", "GPlan-Wanliniu-Sync"],
+        args,
         { timeout: timeoutMs() + 15_000, maxBuffer: 20 * 1024 * 1024 }
       );
       if (!stdout.trim() && stderr.trim()) throw new Error(stderr.trim());
@@ -174,6 +206,18 @@ export class WanliniuClient {
       modify_time: modifiedAfter,
       modify_end: modifiedBefore
     });
+  }
+
+  listTransferInbound(page: number, limit: number, modifiedAfter: string, modifiedBefore: string) {
+    return this.call('/erp/allocation/in/changebill/query', { page, limit, modify_time: modifiedAfter, modify_end: modifiedBefore });
+  }
+
+  listTransferOutbound(page: number, limit: number, modifiedAfter: string, modifiedBefore: string) {
+    return this.call('/erp/allocation/out/changebill/query', { page, limit, modify_time: modifiedAfter, modify_end: modifiedBefore });
+  }
+
+  listSalesReturn(page: number, limit: number, modifiedAfter: string, modifiedBefore: string) {
+    return this.call('/erp/sale/stock/in/query', { page, limit, modify_time: modifiedAfter, modify_end_time: modifiedBefore, is_split: true });
   }
 
   async checkCredentials() {

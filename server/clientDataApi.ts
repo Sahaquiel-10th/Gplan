@@ -183,6 +183,7 @@ router.get('/daily-report', authenticate('daily-report:read'), async (req,res,ne
     const {page,pageSize,offset}=paging(req);
     res.json({code:0,message:'success',request_id:res.locals.requestId,business_date:date,
       inventory_status:quality?{status:quality.status,missing_rows:quality.missing_rows,...(quality.message?{message:quality.message}:{})}:null,
+      movement_status:typeof batch.movement_status_json==='string'?JSON.parse(batch.movement_status_json):batch.movement_status_json||null,
       batch_id:batch.batch_id,data_updated_at:batch.prepared_at,
       data:rows.slice(offset,offset+pageSize),pagination:{page,page_size:pageSize,total:rows.length,has_more:offset+pageSize<rows.length}});
     await recordRequest(client.id,res,'/daily-report',Math.min(pageSize,Math.max(0,rows.length-offset)),startedAt);

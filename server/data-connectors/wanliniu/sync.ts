@@ -3,6 +3,7 @@ import { uid } from "../../security.js";
 import { wanliniuClient, type WanliniuClient, type WanliniuRecord } from "./client.js";
 import { publishLatestClientReport } from '../../clientReportPublication.js';
 import {MissingInventoryIdentityError} from '../../inventoryIdentity.js';
+import { syncClientMovements } from '../../clientMovements.js';
 import {
   mysqlDateInShanghai,
   normalizeInbound,
@@ -76,6 +77,10 @@ export class WanliniuSyncService {
         } catch (error) {
           failures.push(error instanceof Error ? error.message : String(error));
         }
+      }
+      if (this.dataStore === dataPlatformStore) {
+        try { await syncClientMovements(companyId); }
+        catch (error) { failures.push(`调拨和退货同步失败：${(error as Error).message}`); }
       }
       if (failures.length) {
         throw new Error(`万里牛同步有 ${failures.length} 类资源失败：${failures.join("；")}`);
