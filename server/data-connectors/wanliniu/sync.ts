@@ -4,6 +4,7 @@ import { wanliniuClient, type WanliniuClient, type WanliniuRecord } from "./clie
 import { publishLatestClientReport } from '../../clientReportPublication.js';
 import {MissingInventoryIdentityError} from '../../inventoryIdentity.js';
 import { syncClientMovements } from '../../clientMovements.js';
+import {syncApprovedStock,syncClientAfterSales,syncClientStockReferenceMetadata} from '../../clientApprovedScope.js';
 import {
   mysqlDateInShanghai,
   normalizeInbound,
@@ -81,6 +82,12 @@ export class WanliniuSyncService {
       if (this.dataStore === dataPlatformStore) {
         try { await syncClientMovements(companyId); }
         catch (error) { failures.push(`调拨和退货同步失败：${(error as Error).message}`); }
+        try { await syncApprovedStock(companyId); }
+        catch(error){failures.push(`客户新增库存口径同步失败：${(error as Error).message}`);}
+        try {await syncClientStockReferenceMetadata(companyId);}
+        catch(error){failures.push(`客户加工关联信息同步失败：${(error as Error).message}`);}
+        try { await syncClientAfterSales(companyId); }
+        catch(error){failures.push(`客户待收货售后同步失败：${(error as Error).message}`);}
       }
       if (failures.length) {
         throw new Error(`万里牛同步有 ${failures.length} 类资源失败：${failures.join("；")}`);

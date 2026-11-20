@@ -1,6 +1,7 @@
 import type { Connection, RowDataPacket } from 'mysql2/promise';
 import {loadInventorySnapshot} from './inventorySnapshots.js';
 import { loadMovementCoverage } from './clientMovements.js';
+import {loadApprovedStock,loadClientAfterSales,mergeMovementCoverage} from './clientApprovedScope.js';
 
 // Explicit source identities, independent of mutable source display names.
 export const reportShops: Record<string, string> = {
@@ -64,20 +65,25 @@ export async function buildClientReport(db: Connection, companyId: string, date:
     WHERE m.company_id=? AND m.bill_date>=? AND m.bill_date<DATE_ADD(?,INTERVAL 1 DAY)
       AND m.resource IN ('transfer_in','transfer_out','sales_return') AND m.storage_code IN ('CK001','CK008') AND ${brand}
     ORDER BY m.bill_date,m.resource,m.document_no,m.line_key`,[companyId,date,date]);
+  const approved=await loadApprovedStock(db,companyId,date);
   for (const item of movements) {
+    // The canonical stream identifies every posting once, including transfer returns.
+    if(approved.coversTransfers&&(item.resource==='transfer_in'||item.resource==='transfer_out'))continue;
     if (item.resource === 'transfer_out') outbound.push({ ...item, outbound_type: 'TRANSFER', shop_id: null } as RowDataPacket);
     else inbound.push({ ...item, inbound_type: item.resource === 'transfer_in' ? 'TRANSFER' : 'SALES_RETURN' } as RowDataPacket);
   }
+  for(const item of approved.rows){if(item.record_type==='outbound')outbound.push(item);else inbound.push(item);}
   const snapshot=await loadInventorySnapshot(db,companyId,date);
-  const movementStatus=await loadMovementCoverage(db,companyId,date);
+  const movementStatus=mergeMovementCoverage(await loadMovementCoverage(db,companyId,date),approved.coverage);
+  const afterSales=await loadClientAfterSales(db,companyId,date,reportShops);
   const [unresolved]=await db.query<RowDataPacket[]>(`SELECT COUNT(*) unresolved_rows FROM ods_wln_stock_movements m
     WHERE m.company_id=? AND m.bill_date>=? AND m.bill_date<DATE_ADD(?,INTERVAL 1 DAY)
-      AND m.storage_code IN ('CK001','CK008') AND (m.source_spec_uid IS NULL OR NOT EXISTS (
-        SELECT 1 FROM ods_wln_products p WHERE p.company_id=m.company_id AND p.source_spec_uid=m.source_spec_uid))`,[companyId,date,date]);
+      AND m.storage_code IN ('CK001','CK008') AND (?=0 OR m.resource='sales_return') AND (m.source_spec_uid IS NULL OR NOT EXISTS (
+        SELECT 1 FROM ods_wln_products p WHERE p.company_id=m.company_id AND p.source_spec_uid=m.source_spec_uid))`,[companyId,date,date,Number(approved.coversTransfers)]);
   const unresolvedRows=Number(unresolved[0]?.unresolved_rows||0);
   if(unresolvedRows){
     if(movementStatus.status==='complete')movementStatus.status='partial';
-    movementStatus.unresolved_rows=unresolvedRows;
+    movementStatus.unresolved_rows=(movementStatus.unresolved_rows||0)+unresolvedRows;
     movementStatus.message=[movementStatus.message,`${unresolvedRows}条仓库出入库明细尚未匹配到商品规格，无法确认品牌，未对外提供；不能视为零`].filter(Boolean).join('；');
   }
   const inventory=snapshot.rows;
@@ -89,6 +95,8 @@ export async function buildClientReport(db: Connection, companyId: string, date:
     movement_times: string[]; inventory_as_of: string | null;
     inbound_type: string | null;
     outbound_type: string | null;
+    source_documents:string[];
+    source_orders:string[];operation_type:string|null;business_reason:string|null;
   };
   const grouped = new Map<string, ReportRow>();
   for (const [type, source] of [['outbound',outbound],['inbound',inbound],['inventory',inventory]] as const) {
@@ -97,7 +105,8 @@ export async function buildClientReport(db: Connection, companyId: string, date:
       const inboundType=type==='inbound'?String(item.inbound_type || 'UNKNOWN'):null;
       const outboundItem = item as RowDataPacket;
       const outboundType=type==='outbound'?String(outboundItem.outbound_type || (outboundItem.bill_type===2?'OFFLINE_SALES':'SALES')):null;
-      const key = JSON.stringify([type,shop,item.storage_code,item.product_code,item.product_name,type==='inventory'?item.inventory_date:null,inboundType,outboundType]);
+      const operation=outboundItem.operation_type||null,businessReason=outboundItem.business_reason||null;
+      const key = JSON.stringify([type,shop,item.storage_code,item.product_code,item.product_name,type==='inventory'?item.inventory_date:null,inboundType,outboundType,operation,businessReason]);
       let row = grouped.get(key);
       if (!row) {
         row={record_type:type,business_date:date,inventory_date:type==='inventory'?item.inventory_date:null,
@@ -105,7 +114,7 @@ export async function buildClientReport(db: Connection, companyId: string, date:
           product_code:item.product_code || null,product_name:item.product_name || '',
           inventory_quantity:type==='inventory'?0:null,outbound_quantity:type==='outbound'?0:null,
           inbound_quantity:type==='inbound'?0:null,movement_times:[],inventory_as_of:type==='inventory'?item.snapshot_time:null,
-          inbound_type:inboundType,outbound_type:outboundType};
+          inbound_type:inboundType,outbound_type:outboundType,source_documents:[],source_orders:[],operation_type:operation,business_reason:businessReason};
         grouped.set(key,row);
       }
       const quantity=item.quantity===null?null:Number(item.quantity);
@@ -115,10 +124,12 @@ export async function buildClientReport(db: Connection, companyId: string, date:
         row.inventory_quantity=quantity===null||row.inventory_quantity===null?null:row.inventory_quantity+quantity;
         if(item.snapshot_time>row.inventory_as_of!)row.inventory_as_of=item.snapshot_time;
       } else row.movement_times.push(item.movement_time);
+      const document=(item as RowDataPacket).source_document_no;if(document)row.source_documents.push(String(document));
+      const order=(item as RowDataPacket).related_order_no;if(order)row.source_orders.push(String(order));
     }
   }
   const rows=[...grouped.values()];
-  for(const row of rows)row.movement_times=[...new Set(row.movement_times)].sort();
-  rows.sort((a,b)=>JSON.stringify([a.record_type,a.shop_name,a.storage_name,a.product_code,a.product_name,a.inbound_type,a.outbound_type]).localeCompare(JSON.stringify([b.record_type,b.shop_name,b.storage_name,b.product_code,b.product_name,b.inbound_type,b.outbound_type])));
-  return {rows,inventoryStatus:snapshot.quality,movementStatus,sourceCounts:{outbound:outbound.length,inbound:inbound.length,inventory:inventory.length},missingBarcodes:rows.filter(x=>!x.product_code).length};
+  for(const row of rows){row.movement_times=[...new Set(row.movement_times)].sort();row.source_documents=[...new Set(row.source_documents)].sort();row.source_orders=[...new Set(row.source_orders)].sort();}
+  rows.sort((a,b)=>JSON.stringify([a.record_type,a.shop_name,a.storage_name,a.product_code,a.product_name,a.inbound_type,a.outbound_type,a.operation_type,a.business_reason]).localeCompare(JSON.stringify([b.record_type,b.shop_name,b.storage_name,b.product_code,b.product_name,b.inbound_type,b.outbound_type,b.operation_type,b.business_reason])));
+  return {rows,inventoryStatus:snapshot.quality,movementStatus,afterSalesRows:afterSales.rows,afterSalesStatus:afterSales.coverage,sourceCounts:{outbound:outbound.length,inbound:inbound.length,inventory:inventory.length},missingBarcodes:rows.filter(x=>!x.product_code).length};
 }

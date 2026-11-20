@@ -162,7 +162,8 @@ router.get("/ping", authenticate(), (req, res) => {
   });
 });
 
-router.get('/daily-report', authenticate('daily-report:read'), async (req,res,next) => {
+function reportHandler(afterSales=false):(req:Request,res:Response,next:NextFunction)=>Promise<void> {
+ return async (req,res,next) => {
   const startedAt=Date.now();
   try {
     let date: string;
@@ -176,19 +177,24 @@ router.get('/daily-report', authenticate('daily-report:read'), async (req,res,ne
     }
     const expectedBatch=optionalFilter(req,'batch_id');
     if(expectedBatch && expectedBatch!==batch.batch_id)return void res.status(409).json({code:40901,message:'数据批次已更新，请从第一页重新读取',request_id:res.locals.requestId});
-    let rows: RowDataPacket[]=typeof batch.rows_json==='string'?JSON.parse(batch.rows_json):batch.rows_json;
+    const payload=afterSales?batch.after_sales_rows_json:batch.rows_json;
+    let rows: RowDataPacket[]=typeof payload==='string'?JSON.parse(payload):payload||[];
     const quality=typeof batch.inventory_status_json==='string'?JSON.parse(batch.inventory_status_json):batch.inventory_status_json;
     const product=optionalFilter(req,'product_code');
     if(product)rows=rows.filter(row=>row.product_code===product);
     const {page,pageSize,offset}=paging(req);
     res.json({code:0,message:'success',request_id:res.locals.requestId,business_date:date,
-      inventory_status:quality?{status:quality.status,missing_rows:quality.missing_rows,...(quality.message?{message:quality.message}:{})}:null,
-      movement_status:typeof batch.movement_status_json==='string'?JSON.parse(batch.movement_status_json):batch.movement_status_json||null,
+      ...(afterSales?{inventory_effect:false,after_sales_status:typeof batch.after_sales_status_json==='string'?JSON.parse(batch.after_sales_status_json):batch.after_sales_status_json||null}: {
+       inventory_status:quality?{status:quality.status,missing_rows:quality.missing_rows,...(quality.message?{message:quality.message}:{})}:null,
+       movement_status:typeof batch.movement_status_json==='string'?JSON.parse(batch.movement_status_json):batch.movement_status_json||null}),
       batch_id:batch.batch_id,data_updated_at:batch.prepared_at,
       data:rows.slice(offset,offset+pageSize),pagination:{page,page_size:pageSize,total:rows.length,has_more:offset+pageSize<rows.length}});
-    await recordRequest(client.id,res,'/daily-report',Math.min(pageSize,Math.max(0,rows.length-offset)),startedAt);
+    await recordRequest(client.id,res,afterSales?'/after-sales':'/daily-report',Math.min(pageSize,Math.max(0,rows.length-offset)),startedAt);
   }catch(error){next(error);}
-});
+ };
+}
+router.get('/daily-report',authenticate('daily-report:read'),reportHandler());
+router.get('/after-sales',authenticate('daily-report:read'),reportHandler(true));
 
 router.get("/shipments", authenticate("shipments:read"), async (req, res, next) => {
   const startedAt = Date.now();

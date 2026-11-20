@@ -2,6 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildClientReport,reportDate,reportShops } from './clientDailyReport.js';
 import type { Connection } from 'mysql2/promise';
+function mockDb(sources:any[][],unresolved=0):Connection{
+ return {query:async(sql:string,params:any[])=>{
+  if(sql.includes('FROM ods_wln_sale_outbound h'))return[sources[0]||[]];
+  if(sql.includes('FROM ods_wln_purchase_inbound h'))return[sources[1]||[]];
+  if(sql.includes('SELECT COUNT(*) unresolved_rows FROM ods_wln_stock_movements'))return[[{unresolved_rows:unresolved}]];
+  if(sql.includes('FROM ods_wln_stock_movements m'))return[sources[2]||[]];
+  if(sql.includes('SELECT resource_name,cursor_json'))return[sources[4]||[]];
+  if(sql.includes('SELECT cursor_json'))return[[{cursor_json:{initialFrom:'2026-08-22T16:00:00Z',modifiedThrough:'2026-11-19T03:00:00Z'}}]];
+  if(sql.includes('SELECT COUNT(*) unresolved_rows'))return[[{unresolved_rows:0}]];
+  if(sql.includes('FROM ods_wln_approved_stock_stream m'))return[[
+   ...(sources[2]||[]).filter(r=>r.resource!=='sales_return').map(r=>({...r,bill_type_name:r.resource==='transfer_out'?'调拨出库':'调拨入库',quantity_delta:r.resource==='transfer_out'?-r.quantity:r.quantity,document_no:'D-test'}))
+  ]];
+  if(sql.includes('FROM ods_wln_client_after_sales'))return[[]];
+  if(sql.includes('FROM data_client_scope_sync_progress'))return[[]];
+  throw Error('Unexpected query '+sql);
+ },execute:async(sql:string)=>{if(sql.includes('FROM data_inventory_report_snapshots'))return[sources[3]||[]];throw Error('Unexpected execute '+sql);}} as unknown as Connection;
+}
 test('拒绝无效自然日，避免跨日数据错位',()=>{
   assert.equal(reportDate('2026-10-14'),'2026-10-14');
   for(const value of ['2026-02-30','2026-13-01','2026-1-1','',undefined])assert.throws(()=>reportDate(value));
@@ -19,7 +36,7 @@ test('合并指定来源的出库并保留仓库库存与独立业务日期',asy
     ['transfer_in','transfer_out','sales_return'].map(resource_name=>({resource_name,cursor_json:{initialFrom:'2026-08-22T16:00:00.000Z',modifiedThrough:'2026-11-19T03:00:00.000Z'}})),
     [{unresolved_rows:0}]
   ];
-  const db={query:async()=>[sources.shift()],execute:async()=>[sources.shift()]} as unknown as Connection;
+  const db=mockDb(sources);
   const result=await buildClientReport(db,'company_default','2026-10-14');
   const sale=result.rows.find(x=>x.record_type==='outbound'&&x.outbound_type==='SALES')!;
   assert.equal(sale.outbound_quantity,5);
@@ -49,7 +66,7 @@ test('只归并指定三个来源，不纳入其他抖店',()=>{
 });
 test('未能确认商品身份的仓库记录不外泄，并明确标注数据缺口',async()=>{
  const sources=[[],[],[],[],['transfer_in','transfer_out','sales_return'].map(resource_name=>({resource_name,cursor_json:{initialFrom:'2026-08-22T16:00:00Z',modifiedThrough:'2026-11-19T03:00:00Z'}})),[{unresolved_rows:2}]];
- const db={query:async()=>[sources.shift()],execute:async()=>[sources.shift()]} as unknown as Connection;
+ const db=mockDb([[],[],[],[],['transfer_in','transfer_out','sales_return'].map(resource_name=>({resource_name,cursor_json:{initialFrom:'2026-08-22T16:00:00Z',modifiedThrough:'2026-11-19T03:00:00Z'}}))],2);
  const result=await buildClientReport(db,'company_default','2026-11-18');
  assert.equal(result.rows.length,0);assert.equal(result.movementStatus.status,'partial');assert.equal(result.movementStatus.unresolved_rows,2);assert.match(result.movementStatus.message!,/无法确认品牌/);
 });

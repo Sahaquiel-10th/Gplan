@@ -3,18 +3,32 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import crypto from 'node:crypto';
+import {reserveWanliniuRead,noteWanliniuRateLimit} from './readRateLimit.js';
 
 const execFileAsync = promisify(execFile);
+// Official request/signature specification:
+// https://hpublic.hupun.com/mp/open/doc/pub-api-spec.json
+export function signedWanliniuForm(appKey:string,secret:string,params:Record<string,unknown>,timestamp:number){
+  if(Object.keys(params).some(key=>key.startsWith('_')))throw Error('业务参数不能覆盖系统签名参数');
+  const values:Record<string,string>={_app:appKey,_t:String(timestamp)};
+  for(const [key,value]of Object.entries(params))if(value!==undefined&&value!==null)values[key]=typeof value==='object'?JSON.stringify(value):String(value);
+  const encode=(value:string)=>encodeURIComponent(value).replace(/[!'()~]/g,c=>'%'+c.charCodeAt(0).toString(16).toUpperCase()).replace(/%20/g,'+');
+  const canonical=Object.keys(values).sort().map(key=>`${encode(key)}=${encode(values[key])}`).join('&');
+  values._sign=crypto.createHash('md5').update(secret+canonical+secret,'utf8').digest('hex');
+  return new URLSearchParams(values);
+}
 
 // Large movement responses can be truncated when the upstream CLI exits before
 // flushing a pipe. A regular file makes its stdout writes synchronous.
 export async function cliJsonToFile(executable: string, args: string[], directory: string, timeout: number) {
   const output = path.join(directory, 'response.json');
   const file = await fs.open(output, 'wx', 0o600);
+  let stderr = '';
   try {
     await new Promise<void>((resolve, reject) => {
       const child = spawn(executable, args, { stdio: ['ignore', file.fd, 'pipe'] });
-      let stderr = '', expired = false;
+      let expired = false;
       const timer = setTimeout(() => { expired = true; child.kill('SIGKILL'); }, timeout);
       child.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-16000); });
       child.on('error', error => { clearTimeout(timer); reject(error); });
@@ -27,7 +41,9 @@ export async function cliJsonToFile(executable: string, args: string[], director
     });
   } finally { await file.close(); }
   if ((await fs.stat(output)).size > 20 * 1024 * 1024) throw new Error('万里牛单页响应超过20MB，请缩小分页');
-  return fs.readFile(output, 'utf8');
+  const raw = await fs.readFile(output, 'utf8');
+  if (!raw.trim()) throw new Error(stderr || '万里牛 CLI 未返回JSON，不能视为空页');
+  return raw;
 }
 
 export type WanliniuRecord = Record<string, unknown>;
@@ -40,8 +56,17 @@ const allowedPaths = new Set([
   "/erp/purchase/purchasebill/stockin/query",
   "/erp/allocation/in/changebill/query",
   "/erp/allocation/out/changebill/query",
-  "/erp/sale/stock/in/query"
+  "/erp/sale/stock/in/query",
+  "/erp/open/inventory/stream/query",
+  "/erp/open/return/order/v2/list",
+  "/erp/product/bill/page",
+  "/erp/stock/product/in/bill/query",
+  "/erp/stock/product/out/bill/query",
+  "/erp/stock/in/stockbill/query",
+  "/erp/stock/out/stockbill/query"
 ]);
+const httpReadPaths=new Set(['/erp/open/inventory/stream/query','/erp/open/return/order/v2/list','/erp/product/bill/page',
+ '/erp/stock/product/in/bill/query','/erp/stock/product/out/bill/query','/erp/stock/in/stockbill/query','/erp/stock/out/stockbill/query']);
 
 function cliPath() {
   return process.env.HUPUN_API_CLI_PATH?.trim() || "hupun-api-cli";
@@ -74,7 +99,7 @@ function parseCliJson(raw: string) {
   }
 }
 
-export function unwrapRecords(payload: unknown): WanliniuRecord[] {
+export function unwrapRecords(payload: unknown): WanliniuRecord[] & {hasMore?:boolean} {
   if (Array.isArray(payload)) return payload.filter(isRecord);
   if (!isRecord(payload)) throw new Error("万里牛接口返回结构不是 JSON 对象");
   if (payload.code !== undefined && Number(payload.code) !== 0) {
@@ -84,7 +109,21 @@ export function unwrapRecords(payload: unknown): WanliniuRecord[] {
   // 这代表正常到达分页末尾，不应把增量同步标记为失败。
   if (Number(payload.code) === 0 && payload.data === undefined) return [];
   if (!Array.isArray(payload.data)) {
-    throw new Error(`万里牛接口缺少 data 数组：${JSON.stringify(payload).slice(0, 2000)}`);
+    if (isRecord(payload.data) && Array.isArray(payload.data.orders)) {
+      if(typeof payload.data.has_next!=='boolean')throw new Error('售后分页缺少has_next，不能确定是否完整');
+      const rows=payload.data.orders.filter(isRecord);
+      Object.defineProperty(rows,'hasMore',{value:payload.data.has_next,enumerable:false});
+      return rows;
+    }
+    if(isRecord(payload.data)&&Array.isArray(payload.data.data)){
+      if(typeof payload.data.has_more!=='boolean')throw new Error('加工分页缺少has_more，不能确定是否完整');
+      const rows=payload.data.data.filter(isRecord);Object.defineProperty(rows,'hasMore',{value:payload.data.has_more,enumerable:false});return rows;
+    }
+    if(isRecord(payload.data)&&Array.isArray(payload.data.elements)){
+      if(typeof payload.data.next!=='boolean')throw new Error('加工分页缺少next，不能确定是否完整');
+      const rows=payload.data.elements.filter(isRecord);Object.defineProperty(rows,'hasMore',{value:payload.data.next,enumerable:false});return rows;
+    }
+    throw new Error(`万里牛接口缺少 data 数组；顶层字段：${Object.keys(payload).join(',')}；data字段：${isRecord(payload.data)?Object.keys(payload.data).join(','):typeof payload.data}`);
   }
   return payload.data.filter(isRecord);
 }
@@ -118,6 +157,19 @@ export class WanliniuClient {
 
   private async callOnce(apiPath: string, params: Record<string, unknown>) {
     const { appKey, appSecret } = credentials();
+    if(httpReadPaths.has(apiPath)){
+      await reserveWanliniuRead(appKey);
+      const body=signedWanliniuForm(appKey,appSecret,params,Math.floor(Date.now()/1000));
+      let host=(process.env.HUPUN_API_HOST?.trim()||'https://open-api.hupun.com').replace(/\/+$/,'');
+      if(!new URL(host).pathname.endsWith('/api'))host+='/api';
+      const response=await fetch(host+apiPath,{
+        method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=utf-8','User-Agent':'GPlan-Approved-ReadOnly'},body,signal:AbortSignal.timeout(timeoutMs())});
+      const raw=await response.text();if(raw.length>20*1024*1024)throw Error('万里牛单页响应超过20MB');
+      if(!response.ok){const detail=safeErrorMessage(raw);const message=response.status===429?`万里牛HTTP429：${detail}`:detail||`万里牛HTTP错误${response.status}`;await noteWanliniuRateLimit(appKey,message);throw Error(message);}
+      const parsed=parseCliJson(raw);
+      if(isRecord(parsed)&&parsed.code!==undefined&&Number(parsed.code)!==0){const message=safeErrorMessage(raw);await noteWanliniuRateLimit(appKey,message);throw Error(message);}
+      return unwrapRecords(parsed);
+    }
     const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "gplan-wln-sync-"));
     const configPath = path.join(temporaryDirectory, "config.json");
     try {
@@ -128,7 +180,7 @@ export class WanliniuClient {
         timeout_seconds: Math.ceil(timeoutMs() / 1000)
       }), { mode: 0o600 });
       const args = ["-c", configPath, apiPath, JSON.stringify(params), "--agent", "GPlan-Wanliniu-Sync"];
-      if (apiPath === '/erp/sale/stock/in/query' || apiPath.startsWith('/erp/allocation/')) {
+      if (apiPath === '/erp/sale/stock/in/query' || apiPath.startsWith('/erp/allocation/') || apiPath === '/erp/open/inventory/stream/query' || apiPath === '/erp/open/return/order/v2/list') {
         const stdout = await cliJsonToFile(cliPath(), args, temporaryDirectory, timeoutMs() + 15_000);
         return unwrapRecords(parseCliJson(stdout));
       }
@@ -220,6 +272,19 @@ export class WanliniuClient {
     return this.call('/erp/sale/stock/in/query', { page, limit, modify_time: modifiedAfter, modify_end_time: modifiedBefore, is_split: true });
   }
 
+  listInventoryStream(page: number, limit: number, start: string, end: string, skuCodes: string[]) {
+    return this.call('/erp/open/inventory/stream/query', {page_no:page,page_size:limit,storage_code:'CK001,CK008',sku_code:skuCodes.join(','),his:true,start_time:start,end_time:end});
+  }
+
+  listAfterSales(page: number, limit: number, start: string, end: string) {
+    return this.call('/erp/open/return/order/v2/list', {page,limit,start_time:start,end_time:end,time_type:2,ext:{query_custom:false,is_split:true}});
+  }
+  listProductionOrders(page:number,limit:number){return this.call('/erp/product/bill/page',{condition:{page,limit}});}
+  listStockReferences(resource:'other_in'|'other_out'|'production_in'|'production_out',page:number,limit:number,start:string,end:string){
+    const paths={other_in:'/erp/stock/in/stockbill/query',other_out:'/erp/stock/out/stockbill/query',production_in:'/erp/stock/product/in/bill/query',production_out:'/erp/stock/product/out/bill/query'};
+    return this.call(paths[resource],{page,limit,modify_time:start,modify_time_end:end});
+  }
+
   async checkCredentials() {
     const records = await this.listShops(1, 1);
     return { reachable: true, sampleCount: records.length };
@@ -229,7 +294,7 @@ export class WanliniuClient {
 export const wanliniuClient = new WanliniuClient();
 
 function isRetryable(message: string) {
-  return /timeout|timed out|ECONN|socket|429|请求过于频繁|限流|系统繁忙|服务异常|bad gateway|gateway timeout|\b5\d\d\b/i.test(message);
+  return /timeout|timed out|ECONN|socket|\b801\b|429|请求过于频繁|调用超过频次|限流|系统繁忙|服务异常|bad gateway|gateway timeout|\b5\d\d\b/i.test(message);
 }
 
 function delay(milliseconds: number) {

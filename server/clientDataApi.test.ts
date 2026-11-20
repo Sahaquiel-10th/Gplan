@@ -26,7 +26,7 @@ test('正式接口 HTTP 合约：JSON、分页、过滤、权限、日期、批�
       }]];
       if(sql.includes('UPDATE data_api_clients') || sql.includes('INSERT INTO data_api_request_logs')) return [{affectedRows:1}];
       if(sql.includes('SELECT batch_id,rows_json')) return [[{
-        batch_id:'stable-batch', rows_json:rows, source_version:publicationVersion([] as RowDataPacket[],'test'), inventory_status_json:{status:'complete',source:'internal',missing_rows:0},movement_status_json:JSON.stringify({status:'complete',available_from:'2026-08-22',synced_through:'2026-11-19T03:00:00Z'}),prepared_at:'2026-10-27T03:30:00+08:00'
+        batch_id:'stable-batch', rows_json:rows,after_sales_rows_json:[{record_type:'after_sales_request',product_code:'6900000000001',request_quantity:2,received_quantity:0,inventory_effect:false}],after_sales_status_json:{status:'complete',available_from:'2026-08-23',synced_through:'2026-11-20T03:00:00Z'}, source_version:publicationVersion([] as RowDataPacket[],'test'), inventory_status_json:{status:'complete',source:'internal',missing_rows:0},movement_status_json:JSON.stringify({status:'complete',available_from:'2026-08-22',synced_through:'2026-11-19T03:00:00Z'}),prepared_at:'2026-10-27T03:30:00+08:00'
       }]];
       throw new Error('Unexpected execute: '+sql+' '+args?.length);
     }
@@ -55,6 +55,12 @@ test('正式接口 HTTP 合约：JSON、分页、过滤、权限、日期、批�
     assert.equal(second.data[0].record_type,'inventory');assert.equal(second.pagination.has_more,false);
     const filtered=await request('/open/v1/daily-report?date=2026-10-13&product_code=6900000000002');
     assert.equal(filtered.pagination.total,1);assert.equal(filtered.data[0].product_code,'6900000000002');
+    const after=await request('/open/v1/after-sales?date=2026-10-13');
+    assert.equal(after.inventory_effect,false);assert.equal(after.data[0].record_type,'after_sales_request');assert.equal(after.data[0].request_quantity,2);
+    assert(!('inbound_quantity' in after.data[0]));assert.equal(after.pagination.total,1);
+    await request('/open/v1/after-sales?date=2026-10-13',401,false);
+    await request('/open/v1/after-sales?date=2026-10-13&batch_id=old',409);
+    await request('/open/v1/after-sales',400);
     await request('/open/v1/daily-report',400);
     await request('/open/v1/daily-report?date=2026-02-30',400);
     await request('/open/v1/daily-report?date=2999-01-01',404);
