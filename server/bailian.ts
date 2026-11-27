@@ -69,7 +69,7 @@ function workspaceId() {
   return process.env.BAILIAN_WORKSPACE_ID?.trim() || "";
 }
 
-async function createKnowledgeClient() {
+async function createKnowledgeClient(testTimeout = false) {
   const accessKeyId = process.env.ALIBABA_CLOUD_ACCESS_KEY_ID?.trim();
   const accessKeySecret = process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET?.trim();
   if (!accessKeyId || !accessKeySecret) return null;
@@ -95,6 +95,7 @@ async function createKnowledgeClient() {
   const config = new Config({
     accessKeyId,
     accessKeySecret,
+    ...(testTimeout ? {readTimeout:8000,connectTimeout:2500} : {}),
     endpoint: process.env.BAILIAN_OPENAPI_ENDPOINT?.trim() || "bailian.cn-beijing.aliyuncs.com"
   });
   return {
@@ -162,23 +163,27 @@ function dateOf(value: unknown) {
 }
 
 export class BailianCompanyKnowledgeService {
-  async retrieveCompanyKnowledge(params: { companyId: string; userId: string; query: string }): Promise<RetrievedItem[]> {
+  async retrieveCompanyKnowledge(params: { companyId: string; userId: string; query: string }, testOptions?: {
+    observe: (nodes: {score?:number; text?:string}[]) => void;
+  }): Promise<RetrievedItem[]> {
     const indexId = process.env.BAILIAN_COMPANY_KB_ID?.trim();
     const ws = workspaceId();
-    const knowledgeClient = await createKnowledgeClient();
+    const knowledgeClient = await createKnowledgeClient(Boolean(testOptions));
     if (!knowledgeClient || !indexId || !ws) return [];
-    const response = await knowledgeClient.client.retrieve(ws, new knowledgeClient.RetrieveRequest({
+    const request = new knowledgeClient.RetrieveRequest({
       indexId,
       query: params.query,
       denseSimilarityTopK: companyKnowledgeConfig.topK,
       rerankTopN: companyKnowledgeConfig.topK,
       rerankMinScore: companyKnowledgeConfig.threshold,
       enableReranking: true
-    }));
+    });
+    const response = await knowledgeClient.client.retrieve(ws, request);
     if (response.body?.success === false || (response.body?.code && response.body.code !== "Success")) {
       throw new Error(`百炼知识库检索失败：${response.body.code || "UnknownError"} ${response.body.message || ""}`.trim());
     }
     const nodes = response.body?.data?.nodes ?? [];
+    testOptions?.observe(nodes);
     return nodes
       .map((node): RetrievedItem | null => {
         const text = node.text?.trim() ?? "";

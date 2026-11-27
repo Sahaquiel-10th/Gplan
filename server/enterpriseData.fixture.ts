@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 // Isolated synthetic HTTP fixture. Never reads the checkout's .env or data/db.json.
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -17,7 +18,7 @@ export async function enterpriseDataFixture(options: { modelTimeoutMs?: number }
   await fs.symlink(path.join(root, "node_modules"), path.join(dir, "node_modules"));
   await fs.mkdir(path.join(dir, "data"));
   await fs.writeFile(path.join(dir, "package.json"), '{"type":"module"}');
-  await fs.writeFile(path.join(dir, ".env"), "ENTERPRISE_BOOTSTRAP_PROBE=loaded\nADMIN_TOOLS_PASSWORD=fixture-admin-tools\n");
+  await fs.writeFile(path.join(dir, ".env"), `ENTERPRISE_BOOTSTRAP_PROBE=loaded\nADMIN_TOOLS_PASSWORD=${randomBytes(24).toString("hex")}\n`);
   // Replace only the I/O boundaries in this ephemeral fixture; run the real planner and routes.
   const operations = path.join(dir, "server/operationsData.ts");
   let code = await fs.readFile(operations, "utf8");
@@ -38,7 +39,7 @@ export async function enterpriseDataFixture(options: { modelTimeoutMs?: number }
   let url = "";
   let modelCalls = 0, plannerCalls = 0;
   const payloads: Array<Record<string, unknown>> = [];
-  const secret = "enterprise-http-test-secret";
+  const secret = randomBytes(32).toString("hex");
   async function request(route: string, who = "admin", body?: unknown, method = body === undefined ? "GET" : "POST", unlocked = false) {
     const response = await fetch(url + route, { method, headers: { "Content-Type": "application/json", ...(unlocked ? { Cookie: `gplan_admin_tools=${signToken({ sub: who, role: "admin", scope: "admin_tools" }, secret)}` } : {}), ...(who ? { Authorization: `Bearer ${signToken({ sub: who, role: "admin" }, secret)}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: response.status, data: await response.json() as any };
@@ -61,7 +62,8 @@ export async function enterpriseDataFixture(options: { modelTimeoutMs?: number }
       await request("/api/admin/users/admin", "controller", { role: "user" }, "PATCH");
     }
     const existing = text.includes("SKU-ONLY-C1");
-    const content = planning
+    const retrieval = text.includes('根据用户当前问题和最近对话');
+    const content = retrieval ? JSON.stringify({queries:['管理课程 培养口径'],followup:true}) : planning
       ? JSON.stringify({ calls: existing ? [] : [{ tool: "sales_summary", params: { startDate: "2026-10-28", endDate: "2026-10-28", groupBy: "product", limit: 1 } }] })
       : text.includes("本轮企业数据查询结果") ? "根据万里牛销售出库数据，测试汇总金额为999999元。仅返回一条排行，不能据此声称看完全部明细。" : "普通聊天回答";
     res.setHeader("Content-Type", "application/json");
@@ -70,10 +72,10 @@ export async function enterpriseDataFixture(options: { modelTimeoutMs?: number }
   await new Promise<void>(r => upstream.listen(0, "127.0.0.1", r));
   const upstreamPort = (upstream.address() as net.AddressInfo).port;
   const createdAt = new Date().toISOString();
-  const passwordHash = hashPassword("test-password");
+  const passwordHash = hashPassword(randomBytes(24).toString("hex"));
   const users = [["admin", "c1", "admin"], ["controller", "c1", "admin"], ["member", "c1", "user"], ["other", "c2", "admin"]].map(([id, companyId, role]) => ({ id, companyId, username: id, role, enabled: true, passwordHash, createdAt }));
   const agent = { id: "public", companyId: "c1", ownerId: "admin", name: "公开助手", description: "", prompt: "test", modelId: "model", group: "test", avatar: "", color: "#3984de", favoriteUserIds: [], useCount: 0, allowFileUpload: true, allowImageInput: true, allowWebSearch: false, published: true, publicSlug: "public", createdAt, updatedAt: createdAt };
-  await fs.writeFile(path.join(dir, "data/db.json"), JSON.stringify({ users, models: [{ id: "model", name: "测试模型", provider: "fixture", protocol: "openai", kind: "chat", baseUrl: `http://127.0.0.1:${upstreamPort}`, apiKey: "fixture-only", model: "fixture", systemPrompt: "", enabled: true, isDefault: true, createdAt }], agents: [agent, { ...agent, id: "restricted", publicSlug: "restricted", access: { mode: "members", userIds: ["admin", "member"] } }], conversations: [], messages: [], workspaces: [], integrationTokens: [], attachments: [], settings: { safetyRules: "" } }));
+  await fs.writeFile(path.join(dir, "data/db.json"), JSON.stringify({ users, models: [{ id: "model", name: "测试模型", provider: "fixture", protocol: "openai", kind: "chat", baseUrl: `http://127.0.0.1:${upstreamPort}`, apiKey: randomBytes(24).toString("hex"), model: "fixture", systemPrompt: "", enabled: true, isDefault: true, createdAt }], agents: [agent, { ...agent, id: "restricted", publicSlug: "restricted", access: { mode: "members", userIds: ["admin", "member"] } }], conversations: [], messages: [], workspaces: [], integrationTokens: [], attachments: [], settings: { safetyRules: "" } }));
   const socket = net.createServer();
   await new Promise<void>(r => socket.listen(0, "127.0.0.1", r));
   const port = (socket.address() as net.AddressInfo).port;

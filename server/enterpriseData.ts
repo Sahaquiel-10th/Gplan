@@ -44,6 +44,7 @@ export async function buildEnterpriseDataContext(params: {
   deadline?: number;
   referenceDate?: Date;
   knowledgeMatches?: number;
+  observeResults?: (results: Record<string, unknown>[]) => void;
 }, dependencies: Partial<Dependencies> = {}) {
   assertEnterpriseAdmin(params.user);
   await params.ensureAccess();
@@ -239,6 +240,7 @@ export async function buildEnterpriseDataContext(params: {
   // Trim whole rows, preserving JSON validity and all aggregate/coverage metadata.
   // Execution diagnostics stay in the saved evidence. The answer needs the
   // business rows and coverage, so omit repeated step/field metadata here.
+  params.observeResults?.(results);
   const serialize = () => JSON.stringify(results, (key, value) => key === "querySteps" || key === "fields" ? undefined : value);
   let serialized = serialize();
   while (serialized.length > 26000) {

@@ -3,6 +3,10 @@ import {config} from 'dotenv';
 import mysql from 'mysql2/promise';
 import assert from 'node:assert/strict';
 config({path:process.env.GPLAN_ENV_FILE||'.env',quiet:true});
+// The production deploy invokes this check against the live environment before stopping the app.
+if (process.env.GPLAN_ENV_FILE && !process.env.ADMIN_TOOLS_PASSWORD?.trim()) {
+  throw new Error('请先配置 ADMIN_TOOLS_PASSWORD，现有服务尚未切换。');
+}
 process.env.DATA_DB_PROVIDER='disabled';
 const{MySqlDataPlatformStore}=await import('../server/dataPlatformDb.js');
 const{normalizeInventory,normalizeProducts}=await import('../server/data-connectors/wanliniu/mappers.js');

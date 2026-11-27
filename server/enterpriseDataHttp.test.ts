@@ -113,3 +113,40 @@ test("a provider length stop is visible in the saved enterprise answer", { timeo
     assert.match(saved.data.conversation.messages.at(-1).content, /正文尚未完整结束/);
   } finally { await f.close(); }
 });
+
+test("admin retrieval preview shares chat inputs and keeps the comparison outside saved chats", {timeout:60000},async()=>{
+  const f=await enterpriseDataFixture();
+  const body={retrievalPreview:true,modelId:"model",content:"我们公司的人才培养口径是什么？"};
+  try {
+    assert.equal((await f.request("/api/chat","",body)).status,401);
+    assert.equal((await f.request("/api/chat","member",body)).status,403);
+    const ordinary=await f.request("/api/chat","admin",{modelId:"model",content:"上一个问题关注人才培养。"});
+    assert.equal(ordinary.status,200);
+    const conversationId=ordinary.data.conversation.id;
+    const before=await f.read();
+    const first=await f.request("/api/chat","admin",{...body,conversationId});
+    assert.equal(first.status,200,JSON.stringify(first.data));
+    assert.ok(first.data.previewId);
+    assert.equal(first.data.diagnostics.via,'智能判断');
+    assert.equal(first.data.diagnostics.searches[0].query,'管理课程 培养口径');
+    assert.equal(first.data.diagnostics.sources[0].full,true);
+    assert.ok(JSON.stringify(f.payloads.at(-1)).includes("上一个问题关注人才培养"));
+    assert.equal(first.data.message.enterpriseData,undefined);
+    assert.equal(f.counts().plannerCalls,0);
+    const second=await f.request("/api/chat","admin",{...body,conversationId,previewId:first.data.previewId,content:"那主管呢？"});
+    assert.equal(second.status,200);
+    assert.ok(JSON.stringify(f.payloads.at(-1)).includes(body.content));
+    assert.equal((await f.request("/api/chat","other",{...body,previewId:first.data.previewId})).status,409);
+    const withData=await f.request("/api/chat","admin",{...body,conversationId,enterpriseData:true,content:"昨天全部商品的销售出库排行"});
+    assert.equal(withData.status,200,JSON.stringify(withData.data));
+    assert.equal(withData.data.message.enterpriseData.status,"queried");
+    assert.match(JSON.stringify(f.payloads.at(-1)),/999999/);
+    const after=await f.read();
+    assert.deepEqual(after.conversations,before.conversations);
+    assert.deepEqual(after.messages,before.messages);
+    assert.deepEqual(after.ragRetrievalLogs,before.ragRetrievalLogs);
+    const regular=await f.request("/api/chat","admin",{modelId:"model",conversationId,content:"继续正常聊天"});
+    assert.equal(regular.status,200);
+    assert.ok(!JSON.stringify(f.payloads.at(-1)).includes("那主管呢"));
+  } finally {await f.close();}
+});

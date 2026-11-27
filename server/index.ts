@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { randomBytes } from "node:crypto";
+import { planSearch, plannerPrompt, mergeEvidence, queriesFromFacts, previewHistory, savePreview } from "./adminRagPlan.js";
 import { modelConnectionDraft, testModelConnection } from "./modelConnections.js";
 import { createAlipayAccountRouter } from "./alipayAccountRoutes.js";
 import { createFinanceDirectoryRouter } from "./financeDirectoryRoutes.js";
@@ -65,8 +67,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
-const jwtSecret = process.env.JWT_SECRET?.trim() || "dev-secret-change-me";
-const adminToolsPassword = process.env.ADMIN_TOOLS_PASSWORD?.trim() || "laozhu15658855442";
+const jwtSecret = process.env.JWT_SECRET?.trim() || randomBytes(32).toString("hex");
+const adminToolsPassword = process.env.ADMIN_TOOLS_PASSWORD?.trim();
 const companyKnowledgeService = new BailianCompanyKnowledgeService();
 const dingtalkKnowledgeService = new DingTalkKnowledgeService();
 const knowledgeSyncService = new KnowledgeSyncService(store, dingtalkKnowledgeService, companyKnowledgeService);
@@ -126,7 +128,7 @@ const attachmentUpload = multer({
   }
 });
 
-if (process.env.NODE_ENV === "production" && jwtSecret === "dev-secret-change-me") {
+if (process.env.NODE_ENV === "production" && (!process.env.JWT_SECRET?.trim() || jwtSecret === "dev-secret-change-me")) {
   throw new Error("生产环境必须配置安全的 JWT_SECRET");
 }
 
@@ -1042,10 +1044,21 @@ app.post("/api/public/agents/:slug/chat", asyncRoute(async (req, res) => {
   });
 }));
 
+const previewRequests = new Set<string>();
+
 app.post(
   "/api/chat",
   auth(jwtSecret),
   asyncRoute(async (req, res) => {
+    const preview = req.body.retrievalPreview === true;
+    if (preview) {
+      assertEnterpriseAdmin(req.user!);
+      const key=req.user!.id;
+      if(previewRequests.has(key) || previewRequests.size>=8) return res.status(429).json({error:"已有检索测试正在处理，请稍后再试"});
+      previewRequests.add(key);
+      res.once("close",()=>previewRequests.delete(key));
+    }
+    const startedAt = Date.now();
     const enterpriseQueryDeadline = Date.now() + enterpriseQueryBudgetMs;
     const attachmentIds = Array.isArray(req.body.attachmentIds)
       ? [...new Set(req.body.attachmentIds.filter((id: unknown): id is string => typeof id === "string" && Boolean(id.trim())).map((id: string) => id.trim()))].slice(0, attachmentMaxFiles)
@@ -1108,6 +1121,9 @@ app.post(
     }
     if (wantsWebSearch && agent && !agent.allowWebSearch) throw new Error("这个智能体没有开启联网搜索");
     if (wantsWebSearch && executionModel.kind !== "chat") throw new Error("生成图片时不能同时使用联网搜索");
+    if (preview && executionModel.kind !== "chat") return res.status(400).json({error:"检索测试仅用于文字回答"});
+    const previewScope = JSON.stringify([req.user!.companyId,req.user!.id,conversationId,lockedAgentId,model.id,wantsEnterpriseData]);
+    const previousTest = preview && req.body.previewId ? previewHistory(String(req.body.previewId),previewScope) : undefined;
     const searchSources = wantsWebSearch ? await searchWeb(content) : [];
 
     const userMessage: Message = {
@@ -1118,7 +1134,10 @@ app.post(
       modelId: model.id,
       createdAt: now()
     };
-    const conversation = await store.mutate((mutableDb) => {
+    const conversation: Conversation = preview ? (existing ?? {
+      id:"",userId:req.user!.id,modelId:model.id,agentId:agent?.id,archived:false,title:"检索测试",
+      createdAt:userMessage.createdAt,updatedAt:userMessage.createdAt,messages:[]
+    }) : await store.mutate((mutableDb) => {
       const currentUser = mutableDb.users.find(u => u.id === req.user!.id && u.enabled);
       if (!currentUser || (enterpriseConversation && (currentUser.role !== "admin" || currentUser.companyId !== req.user!.companyId))) throw Object.assign(new Error("权限已变更"), { status: 403 });
       if (agent && !existing) {
@@ -1170,13 +1189,42 @@ app.post(
     });
 
     const isolatedAgent = Boolean(agent?.operations || agent?.access?.mode === "members");
-    const [implicitMemories, companyKnowledge]: [RetrievedMemory[], RetrievedItem[]] = executionModel.kind === "chat" && !isolatedAgent
+    const diagnostics: {query:string; round:number; status:string; matched:number; ms:number}[] = [];
+    let plan: Awaited<ReturnType<typeof planSearch>> | undefined;
+    let planningMs=0;
+    async function searchPreview(query:string, round:number) {
+      const start=Date.now();
+      let status="知识库未配置";
+      let items: RetrievedItem[]=[];
+      try {
+        items=await companyKnowledgeService.retrieveCompanyKnowledge({companyId:req.user!.companyId,userId:req.user!.id,query},{
+          observe(nodes) {
+            status=nodes.length===0 ? "上游返回空" : nodes.every(n=>(n.score ?? 0)<companyKnowledgeConfig.threshold) ? "低于阈值" : "无有效片段";
+          }
+        });
+        if(items.length) status="已召回";
+      } catch { status="检索请求失败"; }
+      diagnostics.push({query,round,status,matched:items.length,ms:Date.now()-start});
+      return items;
+    }
+    async function firstKnowledge() {
+      if(!preview) return companyKnowledgeService.retrieveCompanyKnowledge({companyId:req.user!.companyId,userId:req.user!.id,query:content}).catch(()=>[]);
+      const start=Date.now();
+      const turns=(previousTest ?? existing?.messages ?? []).slice(-Math.min(4,chatHistoryMessages || 4));
+      const plannerModel=db.models.find(m=>m.id===process.env.ADMIN_RAG_PLANNER_MODEL_ID && m.enabled && m.kind==="chat" && m.apiKey) ?? executionModel;
+      plan=await planSearch([...turns,userMessage], async history=>(await callModel({...plannerModel, systemPrompt:"",thinkingMode:"disabled"},
+        history.map(({role,content,createdAt})=>({role,content,createdAt})),plannerPrompt,res.locals.requestId+":retrieval-plan",128,4500)).content);
+      planningMs=Date.now()-start;
+      return mergeEvidence(await Promise.all(plan.queries.map(q=>searchPreview(q,1))),Math.min(5,companyKnowledgeConfig.topK));
+    }
+    const [implicitMemories, firstItems]: [RetrievedMemory[], RetrievedItem[]] = executionModel.kind === "chat" && !isolatedAgent
       ? await Promise.all([
           enterpriseConversation ? Promise.resolve([]) : memoryService.searchMemory({ companyId: req.user!.companyId, userId: req.user!.id, query: content }).catch(() => []),
-          companyKnowledgeService.retrieveCompanyKnowledge({ companyId: req.user!.companyId, userId: req.user!.id, query: content }).catch(() => [])
+          firstKnowledge()
         ])
       : [[], []];
 
+    let companyKnowledge=firstItems;
     const latestDb = await store.read();
     const explicitMemories: RetrievedMemory[] = (isolatedAgent || enterpriseConversation ? [] : latestDb.userSavedMemories)
       .filter(
@@ -1194,7 +1242,7 @@ app.post(
         metadata: { visibility: "explicit" }
       }));
     const memories = [...explicitMemories, ...implicitMemories];
-    const historyMessages: Message[] = latestDb.messages
+    const historyMessages: Message[] = previousTest ?? latestDb.messages
       .filter((message) => message.conversationId === conversation.id && message.id !== userMessage.id)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .slice(-chatHistoryMessages)
@@ -1207,12 +1255,12 @@ app.post(
         modelId: message.modelId,
         createdAt: message.createdAt
       }));
-    const injectedContext = executionModel.kind === "chat"
+    let injectedContext = executionModel.kind === "chat"
       ? buildPromptContext({ memories, companyKnowledge })
       : "";
     const attachmentContext = buildAttachmentContext(selectedAttachments);
     const searchContext = buildSearchContext(searchSources);
-    if (executionModel.kind === "chat") {
+    if (!preview && executionModel.kind === "chat") {
       await Promise.all([
         logRetrieval({
           companyId: req.user!.companyId,
@@ -1265,22 +1313,31 @@ app.post(
     async function ensureEnterpriseAccess() {
       const current = await store.read();
       const user = current.users.find(u => u.id === req.user!.id && u.enabled && u.companyId === req.user!.companyId && u.role === "admin");
-      const target = current.conversations.find(c => c.id === conversation.id && c.userId === req.user!.id);
+      const target = preview && !existing ? conversation : current.conversations.find(c => c.id === conversation.id && c.userId === req.user!.id);
       if (!user || !target || !canReadEnterpriseConversation(target, user) || (target.agentId && !current.agents.some(a => a.id === target.agentId && canUseAgent(a, user, current.users)))) throw Object.assign(new Error("权限已变更，企业数据查询已取消"), { status: 403 });
       if (wantsEnterpriseData && !current.dataConnectors.some(c => c.id === "wanliniu" && c.enabled)) throw Object.assign(new Error("万里牛数据源已停用"), { status: 403 });
     }
     try {
-      if (enterpriseConversation || conversation.enterpriseData) await ensureEnterpriseAccess();
+      if (preview || enterpriseConversation || conversation.enterpriseData) await ensureEnterpriseAccess();
       if (wantsEnterpriseData) {
         const sourceCompanyId = process.env.WANLINIU_COMPANY_ID?.trim() || "company_default";
+        let supplement:string[]=[];
         enterpriseResult = await buildEnterpriseDataContext({
           user: req.user!, model, messages: [...historyMessages, userMessage], requestId: res.locals.requestId,
           connectorEnabled: db.dataConnectors.some(c => c.id === "wanliniu" && c.enabled),
           liveAllowed: sourceCompanyId === req.user!.companyId && missingWanliniuSyncConfig().length === 0,
           ensureAccess: ensureEnterpriseAccess, deadline: enterpriseQueryDeadline, referenceDate: new Date(userMessage.createdAt), knowledgeMatches: companyKnowledge.length,
+          observeResults: preview && plan?.followup ? results=>{supplement=queriesFromFacts(results);} : undefined,
         });
+        if(supplement.length && plan) {
+          const queries=supplement.filter(q=>!plan!.queries.includes(q));
+          const extra=await Promise.all(queries.map(q=>searchPreview(q,2)));
+          companyKnowledge=mergeEvidence([companyKnowledge,...extra],Math.min(5,companyKnowledgeConfig.topK));
+          injectedContext=buildPromptContext({memories,companyKnowledge});
+          modelMessages[0]={...modelMessages[0],content:injectedContext};
+        }
         modelMessages.unshift({ role: "system", content: enterpriseResult.context, createdAt: now(), modelId: model.id });
-        await logRetrieval({ companyId: req.user!.companyId, userId: req.user!.id, conversationId: conversation.id, query: content, sourceType: "enterprise_data", matchedItemsJson: enterpriseResult.evidence, injectedContext: "", threshold: 0, topK: enterpriseResult.evidence.sources.length });
+        if(!preview) await logRetrieval({ companyId: req.user!.companyId, userId: req.user!.id, conversationId: conversation.id, query: content, sourceType: "enterprise_data", matchedItemsJson: enterpriseResult.evidence, injectedContext: "", threshold: 0, topK: enterpriseResult.evidence.sources.length });
       }
       if (enterpriseConversation || conversation.enterpriseData) await ensureEnterpriseAccess();
       try {
@@ -1303,6 +1360,7 @@ app.post(
         messageId: assistantMessageId
       });
     } catch (error) {
+      if(preview) throw error;
       await store.mutate((mutableDb) => {
         const target = mutableDb.conversations.find((item) => item.id === conversation.id && item.userId === req.user!.id);
         if (!target) return;
@@ -1327,6 +1385,14 @@ app.post(
       createdAt: now()
     };
 
+    if(preview) {
+      await ensureEnterpriseAccess();
+      const previewId=uid("preview");
+      savePreview(previewId,previewScope,[...historyMessages,userMessage,assistantMessage],chatHistoryMessages);
+      return res.json({previewId,message:assistantMessage,diagnostics:{via:plan?.via ?? "沿用智能体资料权限",
+        planningMs,totalMs:Date.now()-startedAt,searches:diagnostics,
+        sources:companyKnowledge.map(item=>({source:item.source || "企业知识库",score:item.score,full:injectedContext.includes(item.text),excerpt:item.text.slice(0,180)}))}});
+    }
     let savedConversation: Conversation;
     try {
       savedConversation = await store.mutate((mutableDb) => {
@@ -1566,6 +1632,7 @@ app.post("/api/admin/tools/unlock", ...admin, asyncRoute(async (req, res) => {
   }
   if (attempt && attempt.resetAt <= currentTime) adminToolsAttempts.delete(attemptKey);
   const password = requiredString(req.body.password, "后台密码");
+  if (!adminToolsPassword) return res.status(503).json({ error: "请在服务器配置后台验证口令" });
   if (hashToken(password) !== hashToken(adminToolsPassword)) {
     const latest = adminToolsAttempts.get(attemptKey);
     adminToolsAttempts.set(attemptKey, {
