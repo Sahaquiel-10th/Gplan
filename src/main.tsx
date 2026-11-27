@@ -41,6 +41,7 @@ import {
   LogOut,
   LayoutDashboard,
   Menu,
+  FlaskConical,
   MessageSquare,
   Paperclip,
   Plus,
@@ -492,7 +493,6 @@ function Login({ onDone }: { onDone: (user: User) => void }) {
 
 function ChatApp({ user, onLogout, onUserChange }: { user: User; onLogout: () => void; onUserChange: (user: User) => void }) {
   const conversationPageSize = 30;
-  const [showRetrievalPreview,setShowRetrievalPreview]=useState(false);
   const [models, setModels] = useState<Model[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationPage, setConversationPage] = useState(1);
@@ -509,7 +509,7 @@ function ChatApp({ user, onLogout, onUserChange }: { user: User; onLogout: () =>
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "dashboard" | "memories" | "account" | "agents" | "agentEditor" | "operations" | "operationsNotifications" | "commerce" | "imageEdit" | "reviewReplies" | "invoices">("chat");
+  const [view, setView] = useState<"chat" | "retrievalTest" | "admin" | "dashboard" | "memories" | "account" | "agents" | "agentEditor" | "operations" | "operationsNotifications" | "commerce" | "imageEdit" | "reviewReplies" | "invoices">("chat");
   const [operationDate, setOperationDate] = useState("");
   const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
@@ -984,6 +984,9 @@ function ChatApp({ user, onLogout, onUserChange }: { user: User; onLogout: () =>
         </>
         {user.role === "admin" ? (
           <>
+            <button className={`nav-item ${view === "retrievalTest" ? "active" : ""}`} onClick={() => { setView("retrievalTest"); setSidebarOpen(false); }}>
+              <FlaskConical size={16} />测试聊天
+            </button>
             <button className={`nav-item ${view === "admin" ? "active" : ""}`} onClick={() => { setView("admin"); setSidebarOpen(false); }}>
               <Settings size={16} />
               管理后台
@@ -1106,7 +1109,10 @@ function ChatApp({ user, onLogout, onUserChange }: { user: User; onLogout: () =>
         </div>
       </aside>
 
-      {view === "admin" && user.role === "admin" ? (
+      {user.role === "admin" && <RetrievalPreview key={user.id} visible={view === "retrievalTest"}
+        api={api} models={models.filter(model => model.kind === "chat")}
+        onOpenMenu={() => setSidebarOpen(true)} />}
+      {view === "retrievalTest" && user.role === "admin" ? null : view === "admin" && user.role === "admin" ? (
         <AdminPanel refreshModels={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "dashboard" ? (
         <DashboardWorkspace api={api} onOpenSidebar={() => setSidebarOpen(true)} />
@@ -1205,12 +1211,6 @@ function ChatApp({ user, onLogout, onUserChange }: { user: User; onLogout: () =>
           {activeLoading ? <div className="typing" role="status">{useEnterpriseData ? "正在按问题查询万里牛并整理回答…" : waitMessages[waitIndex % waitMessages.length]}</div> : null}
         </div>
 
-        {showRetrievalPreview && user.role==="admin" && currentModel?.kind==="chat" && <RetrievalPreview
-          key={[user.id,activeId,activeModelId,activeAgentId,draftWorkspaceId,useEnterpriseData,webSearch].join(":")}
-          api={api} initialText={content} modelId={activeModelId} modelName={currentModel.name}
-          workspaceId={active?.workspaceId || draftWorkspaceId} agentId={activeAgentId} conversationId={active?.id}
-          attachmentIds={pendingAttachments.map(a=>a.id)} webSearch={webSearch} enterpriseData={useEnterpriseData}
-          onClose={()=>setShowRetrievalPreview(false)} onCopyQuestion={setContent}/>}
         <form className="composer" onSubmit={send}>
           {notice ? <div className="notice">{notice}</div> : null}
           {error ? (
@@ -1263,7 +1263,6 @@ function ChatApp({ user, onLogout, onUserChange }: { user: User; onLogout: () =>
                 disabled={!canUseEnterpriseData || activeLoading}
                 onClick={() => setEnterpriseDataByConversation(items => ({ ...items, [enterpriseKey]: !enterpriseData }))}
               ><Database size={17} aria-hidden="true" /><span>企业数据</span></button> : null}
-              {user.role==="admin" && currentModel?.kind==="chat" && <button type="button" className="composer-tool enterprise-data-toggle" disabled={activeLoading || uploadingAttachments} onClick={()=>setShowRetrievalPreview(true)}>中间层测试</button>}
             </div>
             <textarea
               value={content}

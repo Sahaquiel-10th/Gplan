@@ -1,47 +1,105 @@
-import React,{useEffect,useRef,useState} from "react";
+import React, { Fragment, useEffect, useRef, useState } from "react";
+import { Menu, Plus, Send } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-type Diagnostics={via:string;planningMs:number;totalMs:number;searches:{query:string;round:number;status:string;matched:number;ms:number}[];sources:{source:string;score:number;full:boolean;excerpt:string}[]};
-type Result={previewId:string;message:{content:string};diagnostics:Diagnostics};
-type Props={api:<T>(path:string,options?:RequestInit)=>Promise<T>; initialText:string; modelId:string; modelName:string; conversationId?:string;
-  workspaceId?:string; agentId?:string; attachmentIds:string[]; webSearch:boolean; enterpriseData:boolean; onClose:()=>void; onCopyQuestion:(s:string)=>void};
-export function RetrievalPreview(p:Props){
-  const dialog=useRef<HTMLDialogElement>(null);
-  const [text,setText]=useState(p.initialText);
-  const [turns,setTurns]=useState<{question:string;result:Result}[]>([]);
-  const [busy,setBusy]=useState(false);
-  const [error,setError]=useState("");
-  useEffect(()=>{const el=dialog.current;el?.showModal();return ()=>el?.close();},[]);
-  const turnAttachments = turns.length ? [] : p.attachmentIds;
-  async function send(e:React.FormEvent){
-    e.preventDefault();
-    const question=text.trim();
-    if(busy || (!question && !turnAttachments.length))return;
-    setBusy(true);setError("");
+type Result = {
+  previewId: string;
+  message: { content: string };
+  diagnostics: {
+    via: string;
+    totalMs: number;
+    searches: { query: string; status: string; matched: number }[];
+    sources: { source: string; excerpt: string }[];
+  };
+};
+type Props = {
+  visible: boolean;
+  api: <T>(path: string, options?: RequestInit) => Promise<T>;
+  models: { id: string; name: string; isDefault: boolean }[];
+  onOpenMenu: () => void;
+};
+
+export function RetrievalPreview({ visible, api, models, onOpenMenu }: Props) {
+  const [turns, setTurns] = useState<{ question: string; answer: Result }[]>([]);
+  const [draft, setDraft] = useState("");
+  const [selected, setSelected] = useState("");
+  const [enterpriseData, setEnterpriseData] = useState(false);
+  const [pending, setPending] = useState("");
+  const [error, setError] = useState("");
+  const end = useRef<HTMLDivElement>(null);
+  const modelId = selected || (models.find(model => model.isDefault) ?? models[0])?.id;
+  const locked = Boolean(pending || turns.length);
+
+  useEffect(() => {
+    if (visible) end.current?.scrollIntoView({ block: "nearest" });
+  }, [turns, pending, visible]);
+
+  async function send(event: React.FormEvent) {
+    event.preventDefault();
+    const question = draft.trim();
+    if (!question || !modelId || pending) return;
+    setSelected(modelId);
+    setPending(question);
+    setDraft("");
+    setError("");
     try {
-      const result=await p.api<Result>("/api/chat",{method:"POST",body:JSON.stringify({retrievalPreview:true,
-        content:question,modelId:p.modelId,conversationId:p.conversationId,workspaceId:p.workspaceId,agentId:p.agentId,
-        webSearch:p.webSearch,enterpriseData:p.enterpriseData,attachmentIds:turnAttachments,previewId:turns.at(-1)?.result.previewId})});
-      setTurns(old=>[...old,{question,result}]);setText("");
-    } catch(err){setError(err instanceof Error?err.message:"测试请求失败");}finally{setBusy(false);}
+      const answer = await api<Result>("/api/chat", {
+        method: "POST",
+        body: JSON.stringify({ content: question, modelId, enterpriseData,
+          retrievalPreview: true, previewId: turns.at(-1)?.answer.previewId })
+      });
+      setTurns(previous => [...previous, { question, answer }]);
+    } catch (cause) {
+      setDraft(question);
+      setError(cause instanceof Error ? cause.message : "发送失败，请重试");
+    } finally {
+      setPending("");
+    }
   }
-  return <dialog ref={dialog} className="retrieval-preview" aria-labelledby="retrieval-preview-title" onCancel={e=>{e.preventDefault();p.onClose();}}>
-    <header><h2 id="retrieval-preview-title">中间层测试</h2><button type="button" onClick={p.onClose}>返回原聊天</button></header>
-    <p>{p.modelName} · 企业数据{p.enterpriseData?"已开启":"已关闭"} · 联网搜索{p.webSearch?"已开启":"已关闭"}{turnAttachments.length?" · 已带入 "+turnAttachments.length+" 个附件":""}</p>
-    <div className="preview-turns">{turns.map(({question,result},i)=><section key={result.previewId}>
-      <strong>{question || "分析附件"}</strong>
-      <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{result.message.content}</ReactMarkdown></div>
-      <details><summary>检索记录 · {result.diagnostics.sources.length} 个候选片段 · 总耗时 {(result.diagnostics.totalMs/1000).toFixed(1)} 秒</summary>
-        <p>{result.diagnostics.via} · 判断耗时 {result.diagnostics.planningMs} 毫秒</p>
-        {result.diagnostics.searches.map((s,j)=><p key={j}>第 {s.round} 轮 · {s.query} · {s.status}（{s.matched} 段，{s.ms} 毫秒）</p>)}
-        {result.diagnostics.sources.map((s,j)=><p key={j}>{s.source} · {s.score.toFixed(3)} · {s.full?"已完整带入":"未完整带入"}<br/>{s.excerpt}</p>)}
-      </details><button type="button" onClick={()=>{p.onCopyQuestion(question);p.onClose();}}>把第 {i+1} 问带回原输入框</button>
-    </section>)}</div>
-    <form onSubmit={send}><label htmlFor="preview-question">测试问题</label><textarea id="preview-question" rows={3} value={text} onChange={e=>setText(e.target.value)} autoFocus/>
-      <div>{turns.length>0 && <button type="button" disabled={busy} onClick={()=>{setTurns([]);setError("");setText(p.initialText);}}>重新对照</button>}
-      <button className="primary" disabled={busy || (!text.trim()&&!turnAttachments.length)}>{busy?"正在处理…":"发送测试问题"}</button></div>
-      {error && <p role="alert">{error}</p>}
+
+  if (!visible) return null;
+  return <section className="chat retrieval-chat" aria-label="测试聊天">
+    <header className="chat-header">
+      <button className="mobile-menu" aria-label="打开导航" onClick={onOpenMenu}><Menu size={20} /></button>
+      <div className="chat-title"><strong>测试聊天</strong><span>中间层已启用</span></div>
+      <div className="chat-controls">
+        <select aria-label="测试模型" value={modelId ?? ""} disabled={locked} onChange={e => setSelected(e.target.value)}>
+          {models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
+        </select>
+        <button type="button" className="secondary" disabled={Boolean(pending)} onClick={() => {
+          setTurns([]); setDraft(""); setError("");
+        }}><Plus size={15} />新测试</button>
+      </div>
+    </header>
+    <div className="messages">
+      {turns.map(({ question, answer }) => <Fragment key={answer.previewId}>
+        <article className="message user"><div className="bubble">{question}</div></article>
+        <article className="message assistant"><div className="bubble">
+          <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{answer.message.content}</ReactMarkdown></div>
+          <details><summary>检索记录</summary>
+            <p>{answer.diagnostics.via} · {(answer.diagnostics.totalMs / 1000).toFixed(1)} 秒</p>
+            {answer.diagnostics.searches.map((s,i) => <p key={i}>{s.query} · {s.status} · {s.matched} 段</p>)}
+            {answer.diagnostics.sources.map((s,i) => <p key={i}><strong>{s.source}</strong><br />{s.excerpt}</p>)}
+          </details>
+        </div></article>
+      </Fragment>)}
+      {pending && <><article className="message user"><div className="bubble">{pending}</div></article>
+        <div className="typing" role="status">正在生成回答…</div></>}
+      <div ref={end} />
+    </div>
+    <form className="composer" onSubmit={send}>
+      {error && <p className="chat-error" role="alert">{error}</p>}
+      <div className="test-composer">
+        <label><input type="checkbox" checked={enterpriseData} disabled={locked}
+          onChange={e => setEnterpriseData(e.target.checked)} /> 企业数据</label>
+        <textarea aria-label="测试消息" placeholder={modelId ? "输入测试问题，可继续追问" : "请先在管理后台启用聊天模型"} rows={2}
+          value={draft} disabled={Boolean(pending)} onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== 229) {
+            e.preventDefault(); e.currentTarget.form?.requestSubmit();
+          } }} />
+        <button className="primary send" aria-label="发送测试消息" disabled={!modelId || !draft.trim() || Boolean(pending)}><Send size={18} /></button>
+      </div>
     </form>
-  </dialog>;
+  </section>;
 }
