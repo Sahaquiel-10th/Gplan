@@ -29,9 +29,9 @@ test("AES-GCM has per-write IV, tenant/account/revision binding and tamper prote
   assert.throws(() => openCredential({ ...a, tag: randomBytes(16).toString("base64") }, "c1:a1:r1", key), /解密失败/);
 });
 
-test("default closed; explicit allowlist, valid <=24h window, master key required", async () => {
+test("default closed; explicit allowlist, valid <=7-day window, master key required", async () => {
   const f = fixture(), user = f.users[0];
-  for (const override of [{ FINANCE_CONFIG_ENABLED: "false" }, { FINANCE_CONFIG_EPOCH: "" }, { FINANCE_CONFIG_ADMIN_IDS: "" }, { FINANCE_CONFIG_EXPIRES_AT: "bad" }, { FINANCE_CONFIG_EXPIRES_AT: new Date(Date.now() - 1000).toISOString() }, { FINANCE_CONFIG_EXPIRES_AT: new Date(Date.now() + 25 * 3600_000).toISOString() }]) {
+  for (const override of [{ FINANCE_CONFIG_ENABLED: "false" }, { FINANCE_CONFIG_EPOCH: "" }, { FINANCE_CONFIG_ADMIN_IDS: "" }, { FINANCE_CONFIG_EXPIRES_AT: "" }, { FINANCE_CONFIG_EXPIRES_AT: "bad" }, { FINANCE_CONFIG_EXPIRES_AT: new Date(Date.now() - 1000).toISOString() }, { FINANCE_CONFIG_EXPIRES_AT: new Date(Date.now() + (7 * 24 + 1) * 3600_000).toISOString() }]) {
     const service = new AlipayAccountService(f.store, { ...f.env, ...override });
     assert.equal((await service.state(user)).configurationOpen, false);
     await assert.rejects(service.save(user, body), (e: unknown) => e instanceof FinanceError && e.status === 403);
@@ -41,6 +41,25 @@ test("default closed; explicit allowlist, valid <=24h window, master key require
   await assert.rejects(noKey.save(user, body), /主密钥/);
   await assert.rejects(f.service.save(f.users[1], body), /锁定/);
   await assert.rejects(f.service.state(f.users[2]), /无权/);
+});
+
+test("seven-day onboarding allows only approved admins, can lock early, and expires", async () => {
+  const f = fixture(), owner = f.users[0];
+  f.env.FINANCE_CONFIG_EXPIRES_AT = new Date(Date.now() + 7 * 24 * 3600_000).toISOString();
+  assert.equal((await f.service.state(owner)).configurationOpen, true);
+  assert.equal((await f.service.state(f.users[1])).configurationOpen, false);
+  await assert.rejects(f.service.state(f.users[2]), /无权/);
+  const account = await f.service.save(owner, body);
+  await f.service.lock(owner);
+  const restarted = new AlipayAccountService(f.store, f.env);
+  assert.equal((await restarted.state(owner)).configurationOpen, false);
+  await assert.rejects(restarted.save(owner, body, account.id), /锁定/);
+  assert.ok(f.db.alipayAccounts![0].credentials.ciphertext);
+  f.env.FINANCE_CONFIG_EPOCH = "next-server-approved-window";
+  assert.equal((await restarted.state(owner)).configurationOpen, true);
+  f.env.FINANCE_CONFIG_EXPIRES_AT = new Date(Date.now() - 1).toISOString();
+  assert.equal((await restarted.state(owner)).configurationOpen, false);
+  await assert.rejects(restarted.save(owner, body, account.id), /锁定/);
 });
 
 test("save, update, duplicates, isolation, no private credential readback or audit leakage", async () => {

@@ -97,9 +97,11 @@ export class AlipayAccountService {
   }
   canConfigure(db: Database, user: User) {
     const expires = Date.parse(this.env.FINANCE_CONFIG_EXPIRES_AT || "");
+    const now = Date.now();
     const epoch = this.env.FINANCE_CONFIG_EPOCH?.trim();
     const allowed = (this.env.FINANCE_CONFIG_ADMIN_IDS || "").split(",").map(x => x.trim());
-    return this.env.FINANCE_CONFIG_ENABLED === "true" && !!epoch && Number.isFinite(expires) && expires > Date.now() && expires <= Date.now() + 24 * 3600_000 && allowed.includes(user.id) && db.financeConfigLocks?.[user.companyId] !== epoch;
+    // A bounded onboarding window may last up to seven days; manual locks still win.
+    return this.env.FINANCE_CONFIG_ENABLED === "true" && !!epoch && Number.isFinite(expires) && expires > now && expires <= now + 7 * 24 * 3600_000 && allowed.includes(user.id) && db.financeConfigLocks?.[user.companyId] !== epoch;
   }
   private assertConfiguration(db: Database, user: User) {
     this.assertAdmin(db, user);
