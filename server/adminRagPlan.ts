@@ -54,7 +54,7 @@ const previews = new Map<string,PreviewTurn>();
 export function previewHistory(id:string,scope:string) {
   const entry=previews.get(id);
   if (!entry || entry.expires<Date.now() || entry.scope!==scope)
-    throw Object.assign(new Error("测试对话已过期，请重新开始测试"),{status:409});
+    return undefined;
   return entry.history;
 }
 export function savePreview(id:string,scope:string,history:Message[],limit:number) {

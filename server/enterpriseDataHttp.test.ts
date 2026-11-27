@@ -136,7 +136,14 @@ test("admin retrieval preview shares chat inputs and keeps the comparison outsid
     const second=await f.request("/api/chat","admin",{...body,conversationId,previewId:first.data.previewId,content:"那主管呢？"});
     assert.equal(second.status,200);
     assert.ok(JSON.stringify(f.payloads.at(-1)).includes(body.content));
-    assert.equal((await f.request("/api/chat","other",{...body,previewId:first.data.previewId})).status,409);
+    const callsBeforeConflict = f.counts();
+    for (const [who, previewId] of [["other", first.data.previewId], ["admin", "unknown-preview"]]) {
+      const conflict = await f.request("/api/chat", who, {...body, previewId});
+      assert.equal(conflict.status, 409, JSON.stringify(conflict.data));
+      assert.ok(conflict.data.requestId);
+      assert.equal(conflict.data.message, undefined);
+    }
+    assert.deepEqual(f.counts(), callsBeforeConflict);
     const withData=await f.request("/api/chat","admin",{...body,conversationId,enterpriseData:true,content:"昨天全部商品的销售出库排行"});
     assert.equal(withData.status,200,JSON.stringify(withData.data));
     assert.equal(withData.data.message.enterpriseData.status,"queried");

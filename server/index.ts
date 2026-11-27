@@ -1124,6 +1124,9 @@ app.post(
     if (preview && executionModel.kind !== "chat") return res.status(400).json({error:"检索测试仅用于文字回答"});
     const previewScope = JSON.stringify([req.user!.companyId,req.user!.id,conversationId,lockedAgentId,model.id,wantsEnterpriseData]);
     const previousTest = preview && req.body.previewId ? previewHistory(String(req.body.previewId),previewScope) : undefined;
+    if (preview && req.body.previewId && !previousTest) {
+      return res.status(409).json({ error: "测试对话已过期，请重新开始测试", requestId: res.locals.requestId });
+    }
     const searchSources = wantsWebSearch ? await searchWeb(content) : [];
 
     const userMessage: Message = {
