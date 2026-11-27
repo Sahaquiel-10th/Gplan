@@ -64,12 +64,12 @@ export function RetrievalPreview({ visible, api, models, onOpenMenu }: Props) {
       <button className="mobile-menu" aria-label="打开导航" onClick={onOpenMenu}><Menu size={20} /></button>
       <div className="chat-title"><strong>测试聊天</strong><span>中间层已启用</span></div>
       <div className="chat-controls">
-        <select aria-label="测试模型" value={modelId ?? ""} disabled={locked} onChange={e => setSelected(e.target.value)}>
-          {models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
-        </select>
         <button type="button" className="secondary" disabled={Boolean(pending)} onClick={() => {
           setTurns([]); setDraft(""); setError("");
         }}><Plus size={15} />新测试</button>
+        <select aria-label="测试模型" value={modelId ?? ""} disabled={locked} onChange={e => setSelected(e.target.value)}>
+          {models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
+        </select>
       </div>
     </header>
     <div className="messages">
